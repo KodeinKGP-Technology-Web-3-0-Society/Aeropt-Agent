@@ -1,0 +1,185 @@
+{
+  "user": {
+    "name": "Arjun Mehta",
+    "badge": "JEE Advanced",
+    "email": "you@example.com"
+  },
+  "dashboard": {
+    "stats": [
+      { "id": "proficiency", "label": "Overall Proficiency", "value": "—", "subtext": "loading..." },
+      { "id": "weak_concepts", "label": "Concepts Flagged Weak", "value": "—", "subtext": "loading...", "list": [] },
+      { "id": "streak", "label": "Session Streak", "value": "0", "subtext": "days in a row" }
+    ],
+    "conceptHealth": {
+      "title": "Physics — Concept Health",
+      "tabs": ["Laws of Motion", "Work Energy & Power", "Rotational Motion"],
+      "chapters": [
+        { "name": "Laws of Motion", "conceptCount": 0, "overallScore": 0, "concepts": [] },
+        { "name": "Work Energy & Power", "conceptCount": 0, "overallScore": 0, "concepts": [] },
+        { "name": "Rotational Motion", "conceptCount": 0, "overallScore": 0, "concepts": [] }
+      ]
+    }
+  },
+  "chat": {
+    "header": {
+      "title": "Session",
+      "concept": "Torque",
+      "secondaryConcept": "Moment of Inertia"
+    },
+    "sidebar": {
+      "concepts": [
+        { "name": "Torque", "score": 34, "status": "WEAK" },
+        { "name": "Moment of Inertia", "score": 58, "status": "AVERAGE" }
+      ],
+      "prerequisites": [
+        { "name": "Torque", "score": 34, "status": "WEAK" },
+        { "name": "Newton's 2nd Law", "score": 78, "status": "STRONG" },
+        { "name": "Free Body Diagram", "score": 82, "status": "STRONG" }
+      ]
+    },
+    "conversation": [
+      {
+        "id": "m1",
+        "sender": "user",
+        "text": "A block of mass 2kg is placed on a rough surface. Find the torque about the pivot if F = 10N at r = 0.5m."
+      },
+      {
+        "id": "m2",
+        "sender": "bot",
+        "isExplanation": true,
+        "gapTitle": "FILLING A GAP FIRST",
+        "gapDescription": "Before torque, recall Newton's 2nd Law: net force equals mass times acceleration, F = ma. Torque extends this rotational idea — it measures how a force tends to rotate a body about a pivot rather than translate it.",
+        "steps": [
+          "Torque is defined as the product of the force and the perpendicular distance from the pivot.",
+          "Substituting the given values with the force perpendicular to the lever arm (θ = 90°): $$\\tau = 0.5\\text{ m} \\times 10\\text{ N} = 5\\text{ N}\\cdot\\text{m}$$",
+          "The torque about the pivot is $5\\text{ N}\\cdot\\text{m}$, directed such that it tends to rotate the block about the pivot point."
+        ],
+        "keyInsight": "The mass (2kg) is a distractor here — torque depends only on force and lever arm, not on the object's weight unless gravity itself provides the force.",
+        "tryNext": [
+          "What if the force was applied at a 30° angle instead?",
+          "How does torque relate to moment of inertia?"
+        ]
+      }
+    ],
+    "diagnosticQuiz": {
+      "title": "DIAGNOSTIC QUIZ",
+      "topic": "Torque",
+      "totalSteps": 4,
+      "currentStep": 2,
+      "subTitle": "Let's break this down step by step",
+      "questionText": "A force of F = 20N is applied at a distance r = 0.4m from the pivot. What is the torque if the force is perpendicular to the moment arm?",
+      "options": [
+        { "label": "A", "value": "4", "text": "4 N·m" },
+        { "label": "B", "value": "8", "text": "8 N·m" },
+        { "label": "C", "value": "10", "text": "10 N·m" },
+        { "label": "D", "value": "16", "text": "16 N·m" }
+      ],
+      "hint": "Check your multiplication — torque = r × F = 0.4 × 20",
+      "correctAnswer": "B",
+      "weakPoint": {
+        "title": "Sign Convention in Torque",
+        "description": "You correctly applied τ = r × F but missed how the direction of rotation affects the sign. Revisit the right-hand rule and clockwise vs counter-clockwise conventions."
+      }
+    }
+  },
+  "practice": {
+    "filters": {
+      "chapters": ["All", "Laws of Motion", "Work Energy", "Rotational Motion"],
+      "difficulties": ["All", "1", "2", "3", "4", "5"],
+      "types": ["All", "SCQ", "MCQ", "Numerical", "PYQ"]
+    },
+    "questions": [
+      {
+        "id": "q4",
+        "questionNumber": 4,
+        "totalQuestions": 10,
+        "difficulty": 3,
+        "chapter": "Laws of Motion",
+        "type": "SCQ",
+        "source": "HCV",
+        "text": "A uniform rod of length L and mass M is pivoted at one end. A horizontal force F is applied at the free end. Find the angular acceleration of the rod.",
+        "options": [
+          { "label": "A", "text": "3F / 2ML" },
+          { "label": "B", "text": "2F / ML" },
+          { "label": "C", "text": "F / ML" },
+          { "label": "D", "text": "3F / ML" }
+        ],
+        "correctAnswer": "A",
+        "timeSpent": "1m 23s",
+        "solution": [
+          "The torque about the pivot due to force F at the free end equals $\\tau = F \\cdot L$.",
+          "Moment of inertia of a uniform rod about one end is $I = \\frac{1}{3}ML^2$.",
+          "Applying $\\tau = I\\alpha$ and solving for $\\alpha$ gives the angular acceleration: $$\\alpha = \\frac{\\tau}{I} = \\frac{F \\cdot L}{\\frac{1}{3}ML^2} = \\frac{3F}{2ML}$$"
+        ],
+        "keyInsight": "Always use the moment of inertia about the actual axis of rotation — here the pivot, not the center of mass. Mixing up axes is the most common error in rotational dynamics."
+      },
+      {
+        "id": "q5",
+        "questionNumber": 5,
+        "totalQuestions": 10,
+        "difficulty": 4,
+        "chapter": "Rotational Motion",
+        "type": "SCQ",
+        "source": "HCV",
+        "text": "A solid cylinder of mass M and radius R rolls without slipping down an inclined plane of angle θ. Find the acceleration of the cylinder.",
+        "options": [
+          { "label": "A", "text": "g sinθ" },
+          { "label": "B", "text": "2/3 g sinθ" },
+          { "label": "C", "text": "1/2 g sinθ" },
+          { "label": "D", "text": "2/5 g sinθ" }
+        ],
+        "correctAnswer": "B",
+        "timeSpent": "2m 10s",
+        "solution": [
+          "For rolling without slipping down an incline, acceleration is given by $a = \\frac{g \\sin\\theta}{1 + \\frac{I}{MR^2}}$.",
+          "The moment of inertia of a solid cylinder is $I = \\frac{1}{2}MR^2$.",
+          "Substituting $I$, we get: $$a = \\frac{g \\sin\\theta}{1 + 1/2} = \\frac{2}{3}g \\sin\\theta$$"
+        ],
+        "keyInsight": "Rolling motion combines translational and rotational motion. The friction force acts backwards to produce torque, but does no work since the point of contact is instantaneously at rest."
+      }
+    ]
+  },
+  "progress": {
+    "subtitle": "Your learning trajectory over the last 14 days",
+    "stats": [
+      {
+        "id": "questions_attempted",
+        "label": "Total Questions Attempted",
+        "value": "147",
+        "subtext": "questions across all chapters"
+      },
+      {
+        "id": "overall_accuracy",
+        "label": "Overall Accuracy",
+        "value": "71%",
+        "subtext": "correct on first attempt"
+      },
+      {
+        "id": "most_improved",
+        "label": "Most Improved",
+        "value": "Work-Energy Theorem",
+        "subtext": "most improved this week"
+      }
+    ],
+    "mistakesDistribution": [
+      { "type": "Conceptual", "count": 14, "percentage": 34 },
+      { "type": "Procedural", "count": 12, "percentage": 28 },
+      { "type": "Calculation", "count": 9, "percentage": 22 },
+      { "type": "Misinterpretation", "count": 7, "percentage": 16 }
+    ],
+    "proficiencyOverTime": {
+      "dates": ["Feb 1", "Feb 3", "Feb 5", "Feb 7", "Feb 9", "Feb 11", "Feb 13"],
+      "chapters": [
+        { "name": "Laws of Motion", "data": [60, 62, 65, 68, 70, 71, 72] },
+        { "name": "Work Energy & Power", "data": [45, 50, 58, 62, 69, 74, 78] },
+        { "name": "Rotational Motion", "data": [30, 32, 35, 38, 42, 45, 48] }
+      ]
+    },
+    "conceptBreakdownTable": [
+      { "concept": "Torque", "chapter": "Rotational Motion", "score": 32, "attempts": 18, "accuracy": 33, "lastAttempted": "2h ago", "trend": "down" },
+      { "concept": "Rolling with Slipping", "chapter": "Rotational Motion", "score": 38, "attempts": 11, "accuracy": 36, "lastAttempted": "5h ago", "trend": "up" },
+      { "concept": "Work-Energy Theorem", "chapter": "Work Energy & Power", "score": 78, "attempts": 24, "accuracy": 79, "lastAttempted": "1d ago", "trend": "up" },
+      { "concept": "Newton's 3rd Law", "chapter": "Laws of Motion", "score": 54, "attempts": 16, "accuracy": 56, "lastAttempted": "2d ago", "trend": "flat" }
+    ]
+  }
+}

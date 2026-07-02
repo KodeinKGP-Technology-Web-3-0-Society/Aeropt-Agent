@@ -1,0 +1,33 @@
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+Aeropt-frontend-main/.env.local
+Aeropt-backend-main/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.cursor/
+.vscode/
+
+# Logs & temp
+*.log
+*.tmp
+
+# Cursor-generated assets (not part of the project)
+assets/
