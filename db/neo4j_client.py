@@ -179,6 +179,7 @@ class Neo4jClient:
         WHERE NOT content.content_id IN $seen_ids
           AND (content.difficulty IS NULL OR content.difficulty <= $difficulty_max)
         RETURN content.content_id AS content_id
+        ORDER BY content.difficulty ASC, content.content_type ASC
         LIMIT $limit
         """
         rows = self._run(cypher, {

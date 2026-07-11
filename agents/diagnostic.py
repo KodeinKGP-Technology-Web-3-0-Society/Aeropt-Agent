@@ -34,6 +34,7 @@ import config
 from db.supabase_client import db
 from models.state import TutorState
 from utils.llm import groq_complete
+from utils.presentation import build_mistake_brief, build_remediation_cards
 
 _groq = Groq(api_key=config.GROQ_API_KEY)
 
@@ -256,6 +257,21 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
         if not is_correct:
             prereq_states     = state.get("prereq_concept_states") or []
             secondary_states  = state.get("secondary_concept_states") or []
+            chunk = chunks[0] if chunks else None
+            err = error_type or "conceptual"
+
+            mistake_brief = build_mistake_brief(
+                error_type=err,
+                chunk=chunk,
+                prereq_states=prereq_states,
+                concept_id=primary_id,
+            )
+            remediation = build_remediation_cards(
+                chunk=chunk,
+                error_type=err,
+                prereq_states=prereq_states,
+                concept_id=primary_id,
+            )
 
             # ── Primary concept line ──────────────────────────────────────────
             primary_name = primary_id.replace("_", " ").title()
@@ -293,7 +309,11 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
                         score = round(s.get("proficiency_score", 0.0), 2)
                         lines.append(f"  - **{name}**: {score}")
 
-            result["response"]   = "\n".join(lines)
+            score_summary = "\n".join(lines)
+            result["mistake_brief"] = mistake_brief
+            result["remediation_flashcards"] = remediation
+            result["response"] = mistake_brief
+            result["score_summary"] = score_summary
             result["agent_used"] = "diagnostic"
 
         return result

@@ -25,7 +25,7 @@ Thumbs.db
 .cursor/
 .vscode/
 
-# Logs & temp
+.carry_sessions/
 *.log
 *.tmp
 

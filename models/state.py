@@ -20,6 +20,8 @@ class TutorState(TypedDict, total=False):
     # ── User profile (Orchestrator reads) ─────────────────────────────────────
     target_exam: str        # e.g. "JEE_ADVANCED"
     preferred_depth: str    # "standard" | "deep" | "quick"
+    journey_type: Optional[str]   # fresh_start | mid_journey | revision_dropper
+    focus_chapters: List[str]     # weak chapters from onboarding placement
 
     # ── Session state (Orchestrator reads/writes) ─────────────────────────────
     interaction_count: int
@@ -29,6 +31,11 @@ class TutorState(TypedDict, total=False):
     # ── Orchestrator classification ───────────────────────────────────────────
     # doubt | practice_request | quiz_response | follow_up_response
     intent: str
+
+    # ── Roadmap hint (Phase 2) ────────────────────────────────────────────────
+    roadmap_node_id: Optional[str]     # UUID from Django PathNode
+    roadmap_concept_id: Optional[str]    # concept_id hint when continuing from roadmap
+    study_stage: Optional[str]       # theory | example | practice | pyq — roadmap session hint
 
     # ── Concept Resolver output ───────────────────────────────────────────────
     primary_concept_id: str
@@ -62,6 +69,13 @@ class TutorState(TypedDict, total=False):
 
     # ── Diagnostic output ────────────────────────────────────────────────────
     trigger_quiz: bool   # True when struggle_streak >= STRUGGLE_STREAK_QUIZ_TRIGGER
+    mistake_brief: Optional[str]
+    remediation_flashcards: List[Dict[str, Any]]
+    score_summary: Optional[str]
+
+    # ── Sandbox execute (Phase 3) ─────────────────────────────────────────────
+    sandbox_action: Optional[str]
+    sandbox_card: Optional[Dict[str, Any]]
 
     # ── Follow-Up output ─────────────────────────────────────────────────────
     follow_up_suggestions: List[Dict[str, Any]]  # [{content_id, title, difficulty}, ...]

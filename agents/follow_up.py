@@ -19,6 +19,7 @@ Fires in three distinct situations:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 import config
@@ -28,6 +29,7 @@ from models.state import TutorState
 # Image-URL construction (incl. comma-separated image_filename handling) lives
 # in solver.py so Solver, Follow-Up and Quiz stay in lock-step.
 from agents.solver import _render_math_text, _image_urls
+from utils.presentation import filter_picker_suggestions
 
 # Reuse the same separator / reply prompt that Solver uses
 _SEPARATOR = (
@@ -169,6 +171,11 @@ def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
 
 # ── Helper: handle follow_up_response (student selected a suggestion) ─────────
 
+def _parse_content_id(query: str) -> Optional[str]:
+    match = re.search(r"content_id[=:\s]+([a-zA-Z0-9_-]+)", query or "", flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _parse_selection_index(query: str) -> int:
     """Return 0-based index of the student's suggestion choice (default 0)."""
     q = query.lower()
@@ -206,9 +213,18 @@ def _handle_followup_selection(state: TutorState) -> Dict[str, Any]:
             "error": None,
         }
 
-    idx = _parse_selection_index(query)
-    idx = min(idx, len(suggestions) - 1)
-    selected = suggestions[idx]
+    content_id_hint = _parse_content_id(query)
+    if content_id_hint:
+        selected = next(
+            (item for item in suggestions if item.get("content_id") == content_id_hint),
+            None,
+        )
+        if not selected:
+            selected = suggestions[0] if suggestions else {}
+    else:
+        idx = _parse_selection_index(query)
+        idx = min(idx, len(suggestions) - 1)
+        selected = suggestions[idx]
 
     content_id = selected.get("content_id")
     primary_concept_id = ""
@@ -462,11 +478,16 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
         # 4. Supabase: fetch full metadata for candidates
         candidates = db.read_content_by_ids(candidate_ids[:6])
 
-        # 5. Pick 2-3: prefer practice/pyq content for follow-up
-        TYPE_PRIORITY = {"practice": 0, "pyq": 1, "example": 2, "theory": 3}
+        # 5. Pick 2-3 for card picker: theory + example only (Phase 2.5 Option A)
+        TYPE_PRIORITY = {"example": 0, "theory": 1}
+        candidates = [
+            c
+            for c in candidates
+            if _normalize_ctype(c.get("content_type", "")) in {"theory", "example"}
+        ]
         candidates.sort(
             key=lambda c: (
-                TYPE_PRIORITY.get(c.get("content_type", "theory"), 4),
+                TYPE_PRIORITY.get(_normalize_ctype(c.get("content_type", "theory")), 4),
                 c.get("difficulty") or 3,
             )
         )
@@ -478,6 +499,8 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
             suggestion["content_type"] = _normalize_ctype(c.get("content_type", ""))
             suggestion["preview"]      = (c.get("core_text") or "")[:150]
             suggestions.append(suggestion)
+
+        suggestions = filter_picker_suggestions(suggestions)
 
         # Do NOT add suggestion IDs to seen_follow_up_ids yet — only the item
         # the student actually clicks should be excluded from future rounds.

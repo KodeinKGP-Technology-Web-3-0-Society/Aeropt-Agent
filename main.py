@@ -209,11 +209,21 @@ def _build_initial_state(
     query: str,
     carry: Dict[str, Any],
     graded_overrides: Optional[Dict[str, Any]] = None,
+    roadmap_node_id: Optional[str] = None,
+    roadmap_concept_id: Optional[str] = None,
+    study_stage: Optional[str] = None,
+    journey_type: Optional[str] = None,
+    focus_chapters: Optional[List[str]] = None,
 ) -> TutorState:
     state: TutorState = {
         "user_id": user_id,
         "session_id": session_id,
         "query": query,
+        "roadmap_node_id": roadmap_node_id,
+        "roadmap_concept_id": roadmap_concept_id,
+        "study_stage": study_stage,
+        "journey_type": journey_type,
+        "focus_chapters": focus_chapters or [],
         # Graded defaults (may be overridden below)
         "has_graded_outcome": False,
         "student_answer": None,
@@ -240,6 +250,11 @@ def _build_initial_state(
         "quiz_batch_index": 0,
         "quiz_batch_chunks": [],
         "quiz_batch_size": 5,
+        "mistake_brief": None,
+        "remediation_flashcards": [],
+        "score_summary": None,
+        "sandbox_action": None,
+        "sandbox_card": None,
     }
     # Merge carry-over fields from previous turn
     state.update(carry)  # type: ignore[typeddict-item]

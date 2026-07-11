@@ -161,6 +161,7 @@ You are an expert JEE Physics tutor. Provide a clear, rigorous, personalized ans
 
 ── Student Profile ──────────────────────────────────────────────────────────
 Target exam:          {target_exam}
+Learning journey:     {journey_hint}
 Concept:              {concept_name}
 Proficiency:          {proficiency:.2f} / 1.0   (0 = zero knowledge, 1 = mastered)
 Framing hint:         {framing_hint}
@@ -216,6 +217,30 @@ def _build_framing(cs: Dict[str, Any]) -> str:
     if score > config.CLEAR_WEAK_THRESHOLD:
         return _FRAMING["high"]
     return _FRAMING["normal"]
+
+
+def _journey_hint(state: Dict[str, Any]) -> str:
+    journey = (state.get("journey_type") or "").strip()
+    focus = state.get("focus_chapters") or []
+    focus_text = ", ".join(focus[:3]) if focus else "none flagged"
+    if journey == "fresh_start":
+        return (
+            "Fresh start — student is new to the syllabus. "
+            "Use gentle pacing, more theory, and foundational examples."
+        )
+    if journey == "revision_dropper":
+        return (
+            "Revision / dropper — student has covered the syllabus once. "
+            "Be concise, exam-focused, and prefer PYQ-style practice. "
+            f"Focus chapters: {focus_text}."
+        )
+    if journey == "mid_journey":
+        return (
+            "Mid-journey — student has partial syllabus coverage. "
+            "Bridge gaps quickly and match depth to their chapter confidence. "
+            f"Focus chapters: {focus_text}."
+        )
+    return "Standard pacing."
 
 
 def _summarise_errors(error_dist: Dict[str, int]) -> str:
@@ -467,6 +492,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
 
             prompt = _SOLVER_PROMPT.format(
                 target_exam=state.get("target_exam", "JEE_ADVANCED"),
+                journey_hint=_journey_hint(state),
                 concept_name=concept_name,
                 proficiency=target_state.get("proficiency_score", 0.5),
                 framing_hint=_build_framing(target_state),

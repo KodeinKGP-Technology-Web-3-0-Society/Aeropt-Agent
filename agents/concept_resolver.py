@@ -30,7 +30,7 @@ _groq = Groq(api_key=config.GROQ_API_KEY)
 _RESOLVER_PROMPT = """\
 You are a concept classifier for JEE Physics.
 
-Here are the 33 concepts in this system (concept_id | concept_name):
+Here are the concepts in this system (concept_id | concept_name):
 {concepts_list}
 
 Classify the student's query into:
@@ -92,6 +92,7 @@ def _extract_json(text: str) -> Dict[str, Any]:
 def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
     query = state["query"]
     recent_turns = state.get("recent_turns", [])
+    roadmap_concept_id = state.get("roadmap_concept_id") or ""
 
     try:
         concepts = db.read_concepts()
@@ -100,6 +101,28 @@ def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
 
         # Build concept ID set for validation
         valid_ids = {c["concept_id"] for c in concepts}
+
+        if roadmap_concept_id and roadmap_concept_id in valid_ids:
+            study_stage = state.get("study_stage") or ""
+            valid_stages = {"theory", "example", "practice", "pyq"}
+            if study_stage in valid_stages:
+                content_type = study_stage
+            else:
+                content_type = "theory"
+                lowered = query.lower()
+                if any(word in lowered for word in ("practice", "problem", "question")):
+                    content_type = "practice"
+                elif any(word in lowered for word in ("pyq", "past year", "jee main", "jee advanced")):
+                    content_type = "pyq"
+                elif any(word in lowered for word in ("example", "worked", "solve")):
+                    content_type = "example"
+
+            return {
+                "primary_concept_id": roadmap_concept_id,
+                "secondary_concept_ids": [],
+                "content_type_requested": content_type,
+                "error": None,
+            }
 
         prompt = _RESOLVER_PROMPT.format(
             concepts_list=_format_concepts(concepts),
