@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
-import uuid
-from typing import Any, Dict, List, Optional
+from agents.solver import prepare_student_markdown
 
 _PICKER_TYPES = {"theory", "example"}
 
@@ -48,6 +46,16 @@ def _weakest_prereq(prereq_states: List[Dict[str, Any]]) -> Optional[Dict[str, A
     return ranked[0]
 
 
+def _as_katex_block(text: str) -> str:
+    """Wrap raw LaTeX-ish DB strings in $$ delimiters for KaTeX."""
+    text = (text or "").strip()
+    if not text or "$" in text:
+        return text
+    if "\\" in text or re.search(r"[=^_]", text):
+        return f"$$\n{text}\n$$"
+    return text
+
+
 def build_mistake_brief(
     *,
     error_type: str,
@@ -74,7 +82,7 @@ def build_mistake_brief(
 
     if error_type == "calculation":
         formula = _truncate(formula_solution or formula_core or "Re-check units and algebra.", 180)
-        return f"**Calculation check:** {formula}"
+        return f"**Calculation check:** {_as_katex_block(formula)}"
 
     if error_type == "misread":
         return f"**Read carefully:** Restate what is given vs what you need to find.\n\n{_truncate(core, 240)}"
@@ -102,7 +110,7 @@ def build_remediation_cards(
                 "id": f"remediation-{chunk_id}-formula",
                 "card_type": "formula",
                 "front": "Key relation for this topic",
-                "back": formula,
+                "back": _as_katex_block(formula),
                 "concept_id": concept_id,
                 "content_id": (chunk or {}).get("content_id"),
                 "selectable": False,
@@ -115,7 +123,7 @@ def build_remediation_cards(
                 "id": f"remediation-{chunk_id}-step",
                 "card_type": "micro_step",
                 "front": "Next step to verify",
-                "back": _first_solution_step(solution),
+                "back": prepare_student_markdown(_first_solution_step(solution)),
                 "concept_id": concept_id,
                 "content_id": (chunk or {}).get("content_id"),
                 "selectable": False,
@@ -190,7 +198,9 @@ def build_picker_flashcards(suggestions: List[Dict[str, Any]]) -> List[Dict[str,
                 "id": content_id,
                 "card_type": item.get("content_type", "theory"),
                 "front": preview,
-                "back": _truncate(item.get("solution") or item.get("core_text") or preview, 320),
+                "back": prepare_student_markdown(
+                    _truncate(item.get("solution") or item.get("core_text") or preview, 320)
+                ),
                 "hint": stars or None,
                 "concept_id": item.get("primary_concept_id"),
                 "content_id": content_id,
@@ -212,7 +222,9 @@ def build_quiz_flashcards(
                     "id": chunk.get("content_id") or f"quiz-{idx}",
                     "card_type": "quiz",
                     "front": _truncate(chunk.get("core_text") or chunk.get("question") or f"Question {idx}", 400),
-                    "back": _truncate(chunk.get("solution") or chunk.get("answer") or "", 400),
+                    "back": prepare_student_markdown(
+                        _truncate(chunk.get("solution") or chunk.get("answer") or "", 400)
+                    ),
                     "hint": chunk.get("hint"),
                     "concept_id": chunk.get("primary_concept_id") or chunk.get("concept_id"),
                     "content_id": chunk.get("content_id"),
@@ -227,7 +239,7 @@ def build_quiz_flashcards(
                 "id": f"quiz-step-{step.get('step_num', len(cards) + 1)}",
                 "card_type": "quiz",
                 "front": _truncate(step.get("question") or "", 400),
-                "back": _truncate(step.get("answer") or "", 400),
+                "back": prepare_student_markdown(_truncate(step.get("answer") or "", 400)),
                 "hint": step.get("hint"),
                 "concept_id": step.get("concept_id"),
                 "selectable": False,
@@ -241,7 +253,7 @@ def build_grading_ui(awaiting: bool) -> Optional[Dict[str, Any]]:
         return None
     return {
         "show_correct_incorrect": True,
-        "prompt": "How did you do on this question?",
+        "prompt": "Attempt the question above, then tap Correct or Incorrect.",
     }
 
 

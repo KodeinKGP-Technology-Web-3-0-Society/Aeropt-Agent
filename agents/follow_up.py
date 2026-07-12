@@ -28,7 +28,7 @@ from db.neo4j_client import graph_db
 from models.state import TutorState
 # Image-URL construction (incl. comma-separated image_filename handling) lives
 # in solver.py so Solver, Follow-Up and Quiz stay in lock-step.
-from agents.solver import _render_math_text, _image_urls
+from agents.solver import _render_math_text, _image_urls, prepare_student_markdown
 from utils.presentation import filter_picker_suggestions
 
 # Reuse the same separator / reply prompt that Solver uses
@@ -37,10 +37,7 @@ _SEPARATOR = (
     "─────────────── ATTEMPT THE QUESTION ABOVE BEFORE SCROLLING ───────────────"
     "\n\n"
 )
-_GRADED_REPLY_PROMPT = (
-    "\n\n---\n"
-    "Reply **1** if your answer was correct, **0** if it was incorrect."
-)
+_GRADED_REPLY_PROMPT = ""
 
 # ── Content-type normaliser ────────────────────────────────────────────────────
 # Supabase stores content_type in its raw ingested form ("PYQ", "Practice
@@ -256,7 +253,8 @@ def _handle_followup_selection(state: TutorState) -> Dict[str, Any]:
                 response = _format_practice_item(c)
             else:
                 text = (c.get("core_text") or "").strip()
-                response = f"Here's what we found:\n\n{text}" if text else selected.get("preview", "")
+                body = text if text else (selected.get("preview") or "")
+                response = f"Here's what we found:\n\n{prepare_student_markdown(body)}" if body else "Here's what we found."
                 imgs = _image_urls(c)
                 if imgs["core"]:
                     response += f"\n\n![Diagram]({imgs['core']})"
@@ -361,8 +359,8 @@ def _handle_quiz_advance(state: TutorState) -> Dict[str, Any]:
 
     if next_index < total:
         msg = (
-            f"Recorded. Now reply **1** if your answer to **Question {next_index + 1}** "
-            f"was correct, **0** if it was incorrect."
+            f"Recorded. Use the **Correct** or **Incorrect** buttons for "
+            f"**Question {next_index + 1}**."
         )
         db.insert_chat_turn(
             session_id=state["session_id"],

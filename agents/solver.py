@@ -11,7 +11,7 @@ Personalization axes:
 
 Special behaviour for practice / PYQ content types:
   The question is shown first, then a hard separator, then the solution,
-  then a "Reply 1 / 0" prompt.  No LLM is used — the DB content is
+  then Correct/Incorrect buttons in the UI (no typed 1/0).  No LLM is used — the DB content is
   assembled directly for predictable formatting.
 
 Model: qwen/qwen3-32b (Groq)
@@ -202,10 +202,7 @@ _FRAMING = {
     "high": "Student is proficient; be concise and go deeper if the question allows.",
 }
 
-_GRADED_REPLY_PROMPT = (
-    "\n\n---\n"
-    "Reply **1** if your answer was correct, **0** if it was incorrect."
-)
+_GRADED_REPLY_PROMPT = ""
 
 
 def _build_framing(cs: Dict[str, Any]) -> str:
@@ -331,8 +328,19 @@ def _normalize_latex_output(text: str) -> str:
     Light post-processor for LLM responses: convert stray literal "\\n"
     separators (which the model sometimes copies verbatim from source formulae
     strings) into real newlines, without breaking LaTeX macros like \\nu.
+    Also normalise \\( \\) and \\[ \\] delimiters to $ / $$ for KaTeX.
     """
-    return _STRAY_NEWLINE_RE.sub("\n", text)
+    text = _STRAY_NEWLINE_RE.sub("\n", text)
+    text = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", text, flags=re.DOTALL)
+    text = re.sub(r"\\\((.+?)\\\)", r"$\1$", text)
+    return text
+
+
+def prepare_student_markdown(text: str) -> str:
+    """Normalize agent/DB text for react-markdown + KaTeX rendering."""
+    if not text:
+        return text
+    return _render_math_text(_normalize_latex_output(text))
 
 
 # ── Deterministic math rendering for stored DB text (solution / core_text) ────
@@ -416,7 +424,7 @@ def _format_practice_response(chunks: List[Dict[str, Any]]) -> str:
       Solution: …
       Key Formulae: …      (if any)
       ---
-      Reply 1 / 0 prompt
+      Reply 1 / 0 prompt (removed — frontend shows Correct/Incorrect buttons)
     """
     if not chunks:
         return (
@@ -515,7 +523,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
                 temperature=0.4,
                 max_tokens=2500,
             )
-            response = _normalize_latex_output(_clean_output(raw))
+            response = prepare_student_markdown(_clean_output(raw))
 
             # Append the diagram image, if any, from the best-ranked chunk that
             # actually carries one (not necessarily chunk 0).  For theory/example
@@ -546,7 +554,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
                     temperature=0.4,
                     max_tokens=2500,
                 )
-                response = _normalize_latex_output(_clean_output(raw))
+                response = prepare_student_markdown(_clean_output(raw))
 
         db.insert_chat_turn(
             session_id=state["session_id"],

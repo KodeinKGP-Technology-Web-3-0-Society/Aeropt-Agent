@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 from groq import Groq
 
 import config
+from agents.solver import prepare_student_markdown
 from db.supabase_client import db
 from models.state import TutorState
 from utils.llm import groq_complete
@@ -312,7 +313,7 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             score_summary = "\n".join(lines)
             result["mistake_brief"] = mistake_brief
             result["remediation_flashcards"] = remediation
-            result["response"] = mistake_brief
+            result["response"] = prepare_student_markdown(mistake_brief)
             result["score_summary"] = score_summary
             result["agent_used"] = "diagnostic"
 

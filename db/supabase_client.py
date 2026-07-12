@@ -60,6 +60,36 @@ class SupabaseClient:
         )
         return res.data
 
+    def list_user_sessions(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        res = (
+            self.client.table("sessions")
+            .select("session_id, user_id, interaction_count, session_summary, updated_at")
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
+    def first_user_turn_preview(self, session_id: str, max_len: int = 80) -> Optional[str]:
+        res = (
+            self.client.table("chat_turns")
+            .select("content")
+            .eq("session_id", session_id)
+            .eq("role", "user")
+            .order("turn_index")
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        content = (res.data[0].get("content") or "").strip()
+        if not content:
+            return None
+        if len(content) <= max_len:
+            return content
+        return content[: max_len - 1] + "…"
+
     def create_session(self, user_id: str) -> Dict[str, Any]:
         row = {
             "user_id": user_id,

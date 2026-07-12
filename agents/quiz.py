@@ -66,7 +66,8 @@ def _format_quiz_batch(chunks: List[Dict[str, Any]]) -> str:
         **Answer 1** ... (formulae, image)
         **Answer 2** ...
         ---
-        Reply 1 if your answer to Question 1 was correct, 0 if not.
+        ---
+        (Grading via Correct/Incorrect buttons in the app.)
     """
     n = len(chunks)
     parts: List[str] = [f"Here is your {n}-question quiz. Attempt all of them first, "
@@ -96,11 +97,6 @@ def _format_quiz_batch(chunks: List[Dict[str, Any]]) -> str:
         if block:
             parts.append(f"\n\n_Key formulae:_\n\n{block}")
 
-    parts.append(
-        "\n\n---\n"
-        "Self-check time. Reply **1** if your answer to **Question 1** was correct, "
-        "**0** if it was incorrect. We'll go through them one by one."
-    )
     return "".join(parts)
 
 

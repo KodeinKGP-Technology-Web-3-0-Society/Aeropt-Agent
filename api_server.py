@@ -178,6 +178,31 @@ class EndSessionResponse(BaseModel):
     ok: bool
 
 
+class ChatSessionSummary(BaseModel):
+    session_id: str
+    interaction_count: int = 0
+    updated_at: Optional[str] = None
+    preview: Optional[str] = None
+
+
+class ChatSessionListResponse(BaseModel):
+    sessions: List[ChatSessionSummary]
+
+
+class ChatTurnItem(BaseModel):
+    turn_id: str
+    role: str
+    content: str
+    turn_index: int
+    agent_used: Optional[str] = None
+
+
+class ChatSessionDetailResponse(BaseModel):
+    session_id: str
+    interaction_count: int = 0
+    turns: List[ChatTurnItem]
+
+
 # ── Auth schemas ──────────────────────────────────────────────────────────────
 
 class RegisterRequest(BaseModel):
@@ -586,6 +611,48 @@ def sandbox_execute(req: SandboxExecuteRequest) -> ChatMessageResponse:
     _update_carry(carry, result, was_graded=False)
     save_carry(session_id, carry)
     return _to_chat_response(session_id, result)
+
+
+@app.get("/api/v1/chat/sessions", response_model=ChatSessionListResponse)
+def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse:
+    """List recent study sessions for a user (newest first)."""
+    capped = max(1, min(limit, 50))
+    rows = db.list_user_sessions(user_id, limit=capped)
+    summaries: List[ChatSessionSummary] = []
+    for row in rows:
+        session_id = row["session_id"]
+        summaries.append(
+            ChatSessionSummary(
+                session_id=session_id,
+                interaction_count=row.get("interaction_count") or 0,
+                updated_at=row.get("updated_at"),
+                preview=db.first_user_turn_preview(session_id),
+            )
+        )
+    return ChatSessionListResponse(sessions=summaries)
+
+
+@app.get("/api/v1/chat/sessions/{session_id}", response_model=ChatSessionDetailResponse)
+def get_chat_session(session_id: str, user_id: str) -> ChatSessionDetailResponse:
+    """Return full message history for a session owned by the user."""
+    session = db.read_session(session_id)
+    if not session or session.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    turns = db.read_all_chat_turns(session_id)
+    return ChatSessionDetailResponse(
+        session_id=session_id,
+        interaction_count=session.get("interaction_count") or 0,
+        turns=[
+            ChatTurnItem(
+                turn_id=t.get("turn_id") or str(t.get("turn_index", 0)),
+                role=t.get("role") or "assistant",
+                content=t.get("content") or "",
+                turn_index=t.get("turn_index") or 0,
+                agent_used=t.get("agent_used"),
+            )
+            for t in turns
+        ],
+    )
 
 
 @app.post("/api/v1/chat/end-session", response_model=EndSessionResponse)

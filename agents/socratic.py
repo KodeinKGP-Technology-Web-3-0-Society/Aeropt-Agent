@@ -20,6 +20,8 @@ from typing import Any, Dict, List
 
 from groq import Groq
 
+from agents.solver import prepare_student_markdown
+
 import config
 from db.supabase_client import db
 from models.state import TutorState
@@ -133,7 +135,7 @@ def socratic_node(state: TutorState) -> Dict[str, Any]:
             temperature=0.5,
             max_tokens=400,
         )
-        response = raw.strip()
+        response = prepare_student_markdown(raw.strip())
 
         # Persist the assistant turn tagged as "socratic"
         db.insert_chat_turn(

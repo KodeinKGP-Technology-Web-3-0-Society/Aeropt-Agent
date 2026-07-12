@@ -63,7 +63,7 @@ Reply with ONLY the intent label — no punctuation, no explanation."""
 
 _ANSWER_REMINDER = (
     "There is still an unanswered practice question above.\n\n"
-    "Please type **1** if your answer was correct, or **0** if it was incorrect."
+    "Use the **Correct** or **Incorrect** buttons below to self-grade your attempt."
 )
 
 # Quiz-size parsing for on-demand quizzes ("give me 3 quiz questions on X").
