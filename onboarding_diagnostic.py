@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from db.supabase_client import db
 from agents.diagnostic import diagnostic_node
 from models.state import TutorState
+from agents.solver import _image_urls
 
 
 def _pick_concepts(question_count: int) -> List[Dict[str, Any]]:
@@ -28,7 +29,7 @@ def _practice_for_concept(concept_id: str) -> Optional[Dict[str, Any]]:
     res = (
         db.client.table("content")
         .select(
-            "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id"
+            "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id, image_filename, has_image_core, has_diagram, has_image_solution"
         )
         .eq("primary_concept_id", concept_id)
         .eq("content_type", "practice")
@@ -40,7 +41,7 @@ def _practice_for_concept(concept_id: str) -> Optional[Dict[str, Any]]:
         res = (
             db.client.table("content")
             .select(
-                "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id"
+                "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id, image_filename, has_image_core, has_diagram, has_image_solution"
             )
             .eq("primary_concept_id", concept_id)
             .limit(3)
@@ -78,6 +79,7 @@ def _build_question(
     text = (chunk.get("core_text") or "").strip()
     if not text:
         return None
+    urls = _image_urls(chunk)
     return {
         "question_id": chunk["content_id"],
         "concept_id": concept_id,
@@ -85,6 +87,9 @@ def _build_question(
         "chapter": chapter or concept.get("chapter") or chunk.get("chapter") or "",
         "question_text": text[:1200],
         "content_id": chunk["content_id"],
+        "image_url": urls.get("core"),
+        "solution_text": chunk.get("solution") or "",
+        "solution_image_url": urls.get("solution"),
     }
 
 

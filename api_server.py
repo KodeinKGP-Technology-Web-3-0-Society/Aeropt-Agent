@@ -269,6 +269,9 @@ class DiagnosticQuestion(BaseModel):
     chapter: str
     question_text: str
     content_id: str
+    image_url: Optional[str] = None
+    solution_text: Optional[str] = None
+    solution_image_url: Optional[str] = None
 
 
 class OnboardingDiagnosticStartResponse(BaseModel):
