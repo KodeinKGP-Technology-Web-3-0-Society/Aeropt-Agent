@@ -66,17 +66,21 @@ def _normalize_ctype(raw: str) -> str:
 def _extract_chunk_formulae(c: Dict[str, Any]) -> Optional[str]:
     """
     Return KaTeX-ready block-math string for formulae in a single chunk,
-    or None if the chunk has no formulae.  Each expression is wrapped in
-    $$...$$ so react-markdown + rehype-katex renders it correctly.
+    or None if the chunk has no formulae.
+
+    Uses solver._split_formula_text so separators like literal ``\\n`` do not
+    destroy macros such as ``\\nu`` / ``\\neq``.
     """
+    from agents.solver import _sanitize_latex_expr, _split_formula_text
+
     exprs: List[str] = []
-    import re as _re
     seen: set = set()
     for field in ("latex_formulae_core", "latex_formulae_solution"):
         raw = (c.get(field) or "").strip()
-        # Split on pipe, literal "\n", and real newlines; strip stray bullets.
-        for expr in _re.split(r"\|+|\\n|\n", raw):
-            e = expr.strip().lstrip("•-*").strip()
+        if not raw:
+            continue
+        for piece in _split_formula_text(raw):
+            e = _sanitize_latex_expr(piece)
             if e and e not in seen:
                 seen.add(e)
                 exprs.append(e)

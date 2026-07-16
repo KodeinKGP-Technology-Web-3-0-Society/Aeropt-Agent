@@ -127,12 +127,27 @@ def _select_core_image_chunk(
     GraphRAG returns chunks sorted by similarity (chunk 0 = best).  The best
     *text* chunk often is not the one carrying the diagram, so for image
     selection we walk the list in rank order and return the first chunk whose
-    has_image_core flag (and a usable filename) is set.  Falls back to None.
+    has_image_core / has_diagram flag (and a usable filename) is set.
+    Falls back to None.
     """
     for c in chunks:
-        if c.get("has_image_core") and (c.get("image_filename") or "").strip():
+        filename = (c.get("image_filename") or "").strip()
+        if not filename:
+            continue
+        if c.get("has_image_core") or c.get("has_diagram"):
+            if _image_urls(c).get("core"):
+                return c
+        # Last resort: usable filename with a resolvable storage URL
+        if _image_urls({**c, "has_image_core": True}).get("core"):
             return c
     return None
+
+
+def _extract_md_image_urls(text: str) -> List[str]:
+    """Pull https image URLs from markdown ![alt](url) syntax."""
+    if not text:
+        return []
+    return re.findall(r"!\[[^\]]*\]\((https?://[^)\s]+)(?:\s+\"[^\"]*\")?\)", text)
 
 
 _groq = Groq(api_key=config.GROQ_API_KEY)
@@ -262,12 +277,61 @@ def _weak_prereqs_summary(prereq_states: List[Dict[str, Any]]) -> str:
 
 # Splits a raw formulae string into individual expressions.  Supabase stores
 # these as pipe-separated, literal "\n"-separated, or real-newline-separated
-# strings — all three are handled here.
-_FORMULA_SPLIT_RE = re.compile(r"\|+|\\n|\n")
+# strings — all three are handled via _split_formula_text / _replace_stray_n.
+_N_LATEX_MACROS = (
+    "nu", "nabla", "neq", "ne", "notin", "ni", "nless", "ngtr",
+    "napprox", "ncong", "nmid", "nparallel", "nrightarrow", "nRightarrow",
+    "nleftarrow", "nLeftarrow", "nexists", "nsubseteq", "nsupseteq",
+)
+_N_MACRO_RE = re.compile(
+    r"\\(?:" + "|".join(_N_LATEX_MACROS) + r")(?![a-zA-Z])"
+)
 
-# Strips a stray literal "\n" (backslash-n) used as a separator WITHOUT
-# clobbering legitimate LaTeX macros that begin with \n (\nu, \nabla, \neq …).
-_STRAY_NEWLINE_RE = re.compile(r"\\n(?![a-zA-Z])")
+
+def _replace_stray_n(text: str, replacement: str) -> str:
+    """Replace literal \\n separators; keep \\nu / \\neq / etc. intact."""
+    protected: List[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00N{len(protected) - 1}\x00"
+
+    out = _N_MACRO_RE.sub(_protect, text)
+    out = out.replace("\\\\n", replacement)
+    out = out.replace("\\n", replacement)
+    for i, val in enumerate(protected):
+        out = out.replace(f"\x00N{i}\x00", val)
+    return out
+
+
+def _split_formula_text(raw: str) -> List[str]:
+    """
+    Split packed formula DB strings on | and \\n separators.
+    Protects LaTeX macros like \\nu / \\neq from being treated as separators.
+    """
+    if not raw:
+        return []
+    text = _replace_stray_n(raw, "\n")
+    text = text.replace("|", "\n")
+    pieces: List[str] = []
+    for part in text.split("\n"):
+        piece = part.strip().lstrip("•-*").strip()
+        if piece:
+            pieces.append(piece)
+    return pieces
+
+
+def _sanitize_latex_expr(expr: str) -> str:
+    """One KaTeX-ready expression: no literal \\n separators, no nested $, single line."""
+    expr = (expr or "").strip().lstrip("•-*").strip()
+    if not expr:
+        return ""
+    expr = expr.replace("$$", " ")
+    expr = expr.replace("$", " ")
+    expr = _replace_stray_n(expr, " ")
+    expr = expr.replace("\n", " ")
+    expr = re.sub(r"\s+", " ", expr).strip()
+    return expr
 
 
 def _split_formula_exprs(chunks: List[Dict[str, Any]]) -> List[str]:
@@ -284,8 +348,8 @@ def _split_formula_exprs(chunks: List[Dict[str, Any]]) -> List[str]:
             raw = (c.get(field) or "").strip()
             if not raw:
                 continue
-            for piece in _FORMULA_SPLIT_RE.split(raw):
-                e = piece.strip().lstrip("•-*").strip()
+            for piece in _split_formula_text(raw):
+                e = _sanitize_latex_expr(piece)
                 if e and e not in seen:
                     seen.add(e)
                     exprs.append(e)
@@ -330,14 +394,22 @@ def _normalize_latex_output(text: str) -> str:
     strings) into real newlines, without breaking LaTeX macros like \\nu.
     Also normalise \\( \\) and \\[ \\] delimiters to $ / $$ for KaTeX.
     """
-    text = _STRAY_NEWLINE_RE.sub("\n", text)
+    text = _replace_stray_n(text, "\n")
     text = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", text, flags=re.DOTALL)
     text = re.sub(r"\\\((.+?)\\\)", r"$\1$", text)
     return text
 
 
 def prepare_student_markdown(text: str) -> str:
-    """Normalize agent/DB text for react-markdown + KaTeX rendering."""
+    """Normalize agent/DB text for react-markdown + KaTeX rendering.
+
+    This is the **source of truth** for outbound student-facing text
+    (solver / socratic / quiz / diagnostic / presentation prose).
+
+    Frontend `preprocessMarkdownMath` should only do residual delimiter
+    repair (unpaired `$`, `\\[…\\]`, etc.) — not re-wrap already-good blocks.
+    Formula slides use `_as_katex_block` here; the UI must not triple-wrap.
+    """
     if not text:
         return text
     return _render_math_text(_normalize_latex_output(text))
@@ -354,19 +426,94 @@ def prepare_student_markdown(text: str) -> str:
 # and contains at most a couple of plain-English words (labels like "Using,").
 _LATEX_MACRO_RE = re.compile(r"\\[a-zA-Z]+")
 _MATH_HINT_RE = re.compile(r"\\[a-zA-Z]+|[=^_]|\\frac")
+_UNICODE_MATH_CHARS = re.compile(r"[ωΩαβγΓτθΣπμ²³×·→]")
+_EQUATION_FRAGMENT_RE = re.compile(
+    # Short assignments only — never swallow following English prose.
+    r"(?<![\\$])("
+    r"(?:\\[a-zA-Z]+|[A-Za-z])[\w]*"
+    r"(?:_\{?[A-Za-z0-9]+\}?|\^[{\d]+)?"
+    r"\s*=\s*"
+    r"(?:"
+    r"\\[a-zA-Z]+(?:\{[^{}]{0,40}\})*"
+    r"|-?\d+(?:\.\d+)?"
+    r"(?:\s*(?:kg|g|m|s|N|J|W|Pa|rad|deg|°|/s(?:\^?2)?|m/s(?:\^?2)?))?"
+    r"|[A-Za-z\\][\w\\^_{}]{0,20}"
+    r")"
+    r")"
+)
+
+
+def _unicode_to_latex(text: str) -> str:
+    mapping = {
+        "ω": "\\omega",
+        "Ω": "\\Omega",
+        "α": "\\alpha",
+        "β": "\\beta",
+        "γ": "\\gamma",
+        "Γ": "\\Gamma",
+        "τ": "\\tau",
+        "θ": "\\theta",
+        "Σ": "\\sum",
+        "π": "\\pi",
+        "μ": "\\mu",
+        "²": "^2",
+        "³": "^3",
+        "×": "\\times",
+        "·": "\\cdot",
+        "→": "\\to",
+    }
+    for char, latex in mapping.items():
+        text = text.replace(char, latex)
+    return text
+
+
+def _wrap_equation_fragments(line: str) -> str:
+    """Wrap short inline math like M = 8 or a_r = v^2/r — never wrap prose."""
+    if "$" in line:
+        return line
+    # Long prose lines: do not auto-wrap — too easy to turn English into KaTeX
+    if len(line) > 120:
+        return line
+
+    def repl(match: re.Match[str]) -> str:
+        fragment = match.group(1).strip()
+        if len(fragment) > 48:
+            return match.group(0)
+        if len(fragment.split()) > 4:
+            return match.group(0)
+        rhs = fragment.split("=", 1)[-1]
+        rhs_words = [
+            w
+            for w in re.sub(r"[^A-Za-z\s]", " ", _LATEX_MACRO_RE.sub(" ", rhs)).split()
+            if len(w) >= 3
+        ]
+        if len(rhs_words) > 0:
+            # RHS still has English words (e.g. "is attached") — skip
+            return match.group(0)
+        return f"${_unicode_to_latex(fragment)}$"
+
+    return _EQUATION_FRAGMENT_RE.sub(repl, line)
 
 
 def _looks_like_equation(line: str) -> bool:
     s = line.strip()
     if not s or "$" in s:          # empty or already delimited → leave as-is
         return False
-    if not _MATH_HINT_RE.search(s):
+    if len(s) > 220:
         return False
-    # Count plain-English words once LaTeX macros + non-letters are removed.
-    stripped = _LATEX_MACRO_RE.sub(" ", s)
+    macros = _LATEX_MACRO_RE.findall(s)
+    if not macros and not _UNICODE_MATH_CHARS.search(s) and not re.search(r"[=^_]", s):
+        return False
+    # Ignore words that only appear inside \text{...} / \mathrm{...}
+    without_text = re.sub(r"\\(?:text|mathrm|mathbf|mathit)\{[^{}]*\}", " ", s)
+    stripped = _LATEX_MACRO_RE.sub(" ", without_text)
     stripped = re.sub(r"[^A-Za-z\s]", " ", stripped)
     words = [w for w in stripped.split() if len(w) >= 3]
-    return len(words) <= 2
+    if macros and len(words) <= 4:
+        return True
+    if len(macros) >= 2 and len(words) <= 8:
+        return True
+    return len(words) <= 2 and bool(macros or "=" in s)
 
 
 def _render_math_text(text: str) -> str:
@@ -374,6 +521,7 @@ def _render_math_text(text: str) -> str:
     Make raw DB solution/core text render under react-markdown + KaTeX:
       • normalise stray literal "\\n" separators into real newlines
       • wrap standalone equation lines in $$…$$
+      • wrap inline equation fragments in $…$
       • leave prose and already-delimited math untouched
     Deterministic; safe to no-op on plain prose.
     """
@@ -382,10 +530,15 @@ def _render_math_text(text: str) -> str:
     text = _normalize_latex_output(text)
     out_lines: List[str] = []
     for line in text.split("\n"):
-        if _looks_like_equation(line):
-            out_lines.append(f"$$\n{line.strip()}\n$$")
+        converted = _unicode_to_latex(line)
+        if _looks_like_equation(converted):
+            stripped = _sanitize_latex_expr(converted)
+            if stripped.startswith("$$") or "$" in stripped:
+                out_lines.append(converted if "$" in converted else f"$$\n{stripped}\n$$")
+            else:
+                out_lines.append(f"$$\n{stripped}\n$$")
         else:
-            out_lines.append(line)
+            out_lines.append(_wrap_equation_fragments(converted))
     return "\n".join(out_lines)
 
 

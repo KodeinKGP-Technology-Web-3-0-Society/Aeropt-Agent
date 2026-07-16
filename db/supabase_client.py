@@ -72,15 +72,18 @@ class SupabaseClient:
         return res.data or []
 
     def first_user_turn_preview(self, session_id: str, max_len: int = 80) -> Optional[str]:
-        res = (
-            self.client.table("chat_turns")
-            .select("content")
-            .eq("session_id", session_id)
-            .eq("role", "user")
-            .order("turn_index")
-            .limit(1)
-            .execute()
-        )
+        try:
+            res = (
+                self.client.table("chat_turns")
+                .select("content")
+                .eq("session_id", session_id)
+                .eq("role", "user")
+                .order("turn_index")
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            return None
         if not res.data:
             return None
         content = (res.data[0].get("content") or "").strip()
@@ -89,6 +92,36 @@ class SupabaseClient:
         if len(content) <= max_len:
             return content
         return content[: max_len - 1] + "…"
+
+    def first_user_turn_previews(
+        self, session_ids: List[str], max_len: int = 80
+    ) -> Dict[str, str]:
+        """Batch first-user-turn previews for a session list (avoids N+1)."""
+        if not session_ids:
+            return {}
+        try:
+            res = (
+                self.client.table("chat_turns")
+                .select("session_id, content, turn_index")
+                .in_("session_id", session_ids)
+                .eq("role", "user")
+                .order("turn_index")
+                .execute()
+            )
+        except Exception:
+            return {}
+        previews: Dict[str, str] = {}
+        for row in res.data or []:
+            sid = row.get("session_id")
+            if not sid or sid in previews:
+                continue
+            content = (row.get("content") or "").strip()
+            if not content:
+                continue
+            previews[sid] = (
+                content if len(content) <= max_len else content[: max_len - 1] + "…"
+            )
+        return previews
 
     def create_session(self, user_id: str) -> Dict[str, Any]:
         row = {
@@ -170,7 +203,9 @@ class SupabaseClient:
     def read_all_chat_turns(self, session_id: str) -> List[Dict[str, Any]]:
         res = (
             self.client.table("chat_turns")
-            .select("turn_id, role, content, turn_index, is_summarized, agent_used")
+            .select(
+                "turn_id, role, content, turn_index, is_summarized, agent_used, presentation"
+            )
             .eq("session_id", session_id)
             .order("turn_index")
             .execute()
@@ -196,6 +231,7 @@ class SupabaseClient:
         turn_index: int,
         agent_used: Optional[str] = None,
         concepts_referenced: Optional[List[str]] = None,
+        presentation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         row: Dict[str, Any] = {
             "session_id": session_id,
@@ -208,8 +244,33 @@ class SupabaseClient:
             row["agent_used"] = agent_used
         if concepts_referenced:
             row["concepts_referenced"] = concepts_referenced
+        if presentation is not None:
+            row["presentation"] = presentation
         res = self.client.table("chat_turns").insert(row).execute()
         return res.data[0]
+
+    def update_chat_turn_presentation(
+        self,
+        session_id: str,
+        turn_index: int,
+        presentation: Dict[str, Any],
+    ) -> bool:
+        """
+        Upsert the rich UI blob for an assistant turn (slides, flashcards, etc.).
+
+        Presentation is written after the LangGraph turn completes; assistant
+        `chat_turns` rows are inserted earlier inside agent nodes.
+        Returns True if at least one row was updated.
+        """
+        res = (
+            self.client.table("chat_turns")
+            .update({"presentation": presentation})
+            .eq("session_id", session_id)
+            .eq("turn_index", turn_index)
+            .eq("role", "assistant")
+            .execute()
+        )
+        return bool(res.data)
 
     def mark_turns_summarized(self, turn_ids: List[str]) -> None:
         if not turn_ids:

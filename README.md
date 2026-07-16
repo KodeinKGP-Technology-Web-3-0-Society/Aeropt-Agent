@@ -37,7 +37,7 @@ Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**
               ┌─────────────────┴─────────────────┐
               │                                   │
      Next.js Frontend                    main.py (CLI)
-     (Aeropt-frontend-main)              api_server.py (FastAPI :8001)
+     (../Aeropt-frontend)                api_server.py (FastAPI :8001)
               │                                   │
               └─────────────────┬─────────────────┘
                                 │
@@ -66,14 +66,17 @@ Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**
 | Graph DB | **Neo4j Aura** | Concept prerequisites, content coverage, vector index |
 | HTTP gateway | **FastAPI** | Exposes the agent to the Next.js frontend |
 | Frontend | **Next.js** | Study Session UI, auth, dashboard |
-| Analytics API | **Django REST** (`Aeropt-backend-main`) | Separate analytics backend (port 8000) |
+| Analytics API | **Django REST** (`../Aeropt-backend`) | Auth, roadmap, analytics (port 8000); Django `chatbot/` is legacy |
 
 ---
 
 ## Repository Structure
 
+> **Source of truth (monorepo):** edit repo-root `Aeropt-frontend/`, `Aeropt-backend/`, and this `Aeropt-agent/` tree.
+> Nested `Aeropt-frontend-main/` and `Aeropt-backend-main/` (if present under this folder) are **stale snapshots** — do not use them for product work.
+
 ```
-JEE TUTOR AGENT/
+Aeropt-agent/
 ├── agents/                  # All LangGraph agent node implementations
 │   ├── orchestrator.py      # Intent classification, session bootstrap
 │   ├── concept_resolver.py  # Maps query → concept_id + content_type
@@ -90,16 +93,19 @@ JEE TUTOR AGENT/
 │   └── state.py             # TutorState TypedDict schema
 ├── db/
 │   ├── supabase_client.py   # All Supabase read/write operations
+│   ├── migrations/          # SQL notes (e.g. chat_turns.presentation)
 │   └── neo4j_client.py      # Neo4j graph traversals & vector search
 ├── utils/
-│   └── llm.py               # Groq retry + model fallback wrapper
+│   ├── llm.py               # Groq retry + model fallback wrapper
+│   └── presentation.py      # Slides / cards / HTTP payload builder
 ├── config.py                # Models, thresholds, API keys (from .env)
 ├── main.py                  # CLI entry point + carry-state management
+├── carry_store.py           # File-backed ephemeral carry (.carry_sessions/)
 ├── api_server.py            # FastAPI HTTP gateway (port 8001)
 ├── create_vector_index.py   # One-time Neo4j vector index setup
 ├── requirements.txt         # Python dependencies
-├── Aeropt-frontend-main/    # Next.js frontend
-└── Aeropt-backend-main/     # Django analytics backend (separate app)
+├── Aeropt-frontend-main/    # SNAPSHOT — ignore; use ../Aeropt-frontend/
+└── Aeropt-backend-main/     # SNAPSHOT — ignore; use ../Aeropt-backend/
 ```
 
 ---
@@ -314,16 +320,19 @@ There is **no MCQ A/B/C/D mechanic**. PYQs and practice questions both use 1/0 s
 
 ## Cross-Turn Memory (Carry State)
 
-LangGraph starts with a fresh state on every invocation. `main.py` and `api_server.py` maintain an **in-memory carry dict** keyed by `session_id` so critical fields persist across HTTP requests:
+LangGraph starts with a fresh state on every invocation. `main.py` and `api_server.py` maintain a **file-backed carry dict** (`.carry_sessions/`, 2h idle TTL) keyed by `session_id` so ephemeral fields persist across HTTP requests:
 
 - Always carried: `primary_concept_id`, `content_type_requested`, `prior_session_summary`, `seen_follow_up_ids`
 - Carried only while `awaiting_graded_response=True`: `retrieved_chunks`, `prereq_concept_states`, `target_concept_state`
 - Quiz batch: `quiz_batch_mode`, `quiz_batch_index`, `quiz_batch_chunks`
 - Follow-up: `follow_up_suggestions`, `pending_prereq_concept_id`
+- Live-session cache only: `presentation_by_turn` (fallback; durable copy is on `chat_turns.presentation`)
 
 **Session summary (cross-session):** Context Manager writes `sessions.session_summary` every 5 interactions. Orchestrator loads the most recent prior summary on the first turn of a new session.
 
-**Limitation:** Carry state is in-memory only — lost on server restart. Acceptable for local dev; production should use Redis or Supabase-backed session state.
+**Presentation persistence:** Slides, flashcards, grading UI, and structured lesson blobs are written to `chat_turns.presentation` (jsonb) after each assistant turn. History reload does not depend on carry. Apply `db/migrations/001_chat_turns_presentation.sql` on Supabase before deploy.
+
+**Limitation:** Ephemeral carry is local-disk — lost on multi-host without shared storage. Presentation for history is Supabase-backed and survives carry release / end-session. Introduce Redis (or similar) **only** if quiz cursor / `awaiting_graded_response` must span multiple agent hosts — not for presentation durability.
 
 ---
 
@@ -335,7 +344,7 @@ LangGraph starts with a fresh state on every invocation. `main.py` and `api_serv
 |-------|---------|
 | `users` | Profile: target_exam, preferred_depth, email |
 | `sessions` | interaction_count, session_summary, active_quiz |
-| `chat_turns` | Full conversation log (role, content, agent_used) |
+| `chat_turns` | Full conversation log (role, content, agent_used, **presentation** jsonb) |
 | `concepts` | 33 JEE Physics concepts (closed-set for resolver) |
 | `content` | Questions, theory, PYQs with LaTeX, images, solutions |
 | `user_concept_state` | Per-concept proficiency, struggle_streak, error distribution |
@@ -372,7 +381,10 @@ Diagrams are stored in Supabase Storage bucket `physics-diagrams` (configurable 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/v1/chat/message` | POST | Send one message, get agent response |
+| `/api/v1/chat/sessions` | GET | List sessions for a user |
+| `/api/v1/chat/sessions/{id}` | GET | Session history + presentation blobs |
 | `/api/v1/chat/end-session` | POST | Flush session summary on session end |
+| `/api/v1/concepts/{id}/proficiency` | GET | Durable mastery (`user_concept_state`) for Live proficiency panel |
 | `/api/v1/auth/register` | POST | Create user account |
 | `/api/v1/auth/login` | POST | Email/password login |
 | `/api/v1/auth/user/{user_id}` | GET | Fetch user profile |
@@ -394,15 +406,15 @@ Diagrams are stored in Supabase Storage bucket `physics-diagrams` (configurable 
 }
 ```
 
-### Next.js frontend (`Aeropt-frontend-main`)
+### Next.js frontend (`../Aeropt-frontend` — not nested `*-main`)
 
 - Study Session UI: `src/components/ChatWorkspace.tsx`
 - Auth state: `localStorage` keys (`prepwise_user_id`, `prepwise_auth`, etc.)
 - Env: `NEXT_PUBLIC_CHAT_API_BASE` → FastAPI base URL
 
-### Django analytics backend (`Aeropt-backend-main` — port 8000)
+### Django backend (`../Aeropt-backend` — not nested `*-main`)
 
-Separate REST API for analytics/dashboard metrics. Not part of the agent pipeline.
+Auth, roadmap progress, analytics/dashboard. Django `/api/v1/chat/` (chatbot app) is **legacy** and unused by product Study Session.
 
 ---
 
@@ -438,7 +450,7 @@ python -m uvicorn api_server:app --host 127.0.0.1 --port 8001 --reload
 ### 2. Next.js frontend
 
 ```bash
-cd Aeropt-frontend-main
+cd ../Aeropt-frontend
 npm install
 ```
 
@@ -454,10 +466,10 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-### 3. Django analytics backend (optional)
+### 3. Django backend (auth / roadmap / analytics)
 
 ```bash
-cd Aeropt-backend-main
+cd ../Aeropt-backend
 pip install -r requirements.txt
 python manage.py runserver
 ```

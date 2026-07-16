@@ -89,6 +89,11 @@ _CARRY_KEYS = [
     "seen_follow_up_ids",      # session-scoped dedup for follow-up suggestions
 ]
 
+# File-carry keys that must NEVER be merged into LangGraph TutorState.
+_CARRY_EXCLUDE_FROM_STATE = {
+    "presentation_by_turn",
+}
+
 
 _CTYPE_ALIASES: Dict[str, str] = {
     "pyq": "pyq",
@@ -256,8 +261,28 @@ def _build_initial_state(
         "sandbox_action": None,
         "sandbox_card": None,
     }
-    # Merge carry-over fields from previous turn
-    state.update(carry)  # type: ignore[typeddict-item]
+    # Merge carry-over fields from previous turn (skip UI-only blobs).
+    for key, val in carry.items():
+        if key in _CARRY_EXCLUDE_FROM_STATE:
+            continue
+        state[key] = val  # type: ignore[literal-required]
+
+    # Request fields always win over stale carry (roadmap stage must stick).
+    state["user_id"] = user_id
+    state["session_id"] = session_id
+    state["query"] = query
+    if roadmap_node_id is not None:
+        state["roadmap_node_id"] = roadmap_node_id
+    if roadmap_concept_id is not None:
+        state["roadmap_concept_id"] = roadmap_concept_id
+    if study_stage:
+        state["study_stage"] = study_stage
+        state["content_type_requested"] = _normalize_content_type(study_stage)
+    if journey_type is not None:
+        state["journey_type"] = journey_type
+    if focus_chapters is not None:
+        state["focus_chapters"] = focus_chapters or []
+
     # Apply explicit graded overrides (highest priority)
     if graded_overrides:
         state.update(graded_overrides)  # type: ignore[typeddict-item]

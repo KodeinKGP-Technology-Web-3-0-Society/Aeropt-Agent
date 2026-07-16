@@ -23,20 +23,26 @@ Endpoints
 Run with:
   uvicorn api_server:app --host 0.0.0.0 --port 8001 --reload
 
-Design notes (confirmed with user before building)
----------------------------------------------------
-1. Carry state persists to `.carry_sessions/` JSON files (no DB schema changes).
+Design notes
+------------
+1. Ephemeral carry still lives in `.carry_sessions/` JSON (quiz cursor,
+   awaiting_graded_response, retrieved chunks). Idle files older than 2 hours
+   are pruned on access.
 
-2. Memory eviction: idle carry files older than 2 hours are pruned on access.
+2. Rich turn presentation (slides, flashcards, grading_ui, structured, …) is
+   persisted on `chat_turns.presentation` (jsonb). See
+   `db/migrations/001_chat_turns_presentation.sql`. Carry keeps a copy during
+   the live session as a read fallback only.
 
 3. End-session gap: if the frontend never calls /end-session (tab close,
    crash, etc.), _flush_session_summary never runs.  Sessions with < 5
-   interactions produce no Supabase summary.  This is accepted for this
-   phase; a background sweeper can be added later.
+   interactions produce no Supabase summary.  Presentation still survives in
+   `chat_turns.presentation` after carry release.
 
-Nothing under agents/, graph/, db/, models/, utils/, or Aeropt-backend-main/
-is modified.  main.py is unchanged and continues to work as the CLI entry
-point.
+4. Shared carry (Redis / networked store) is only needed if multiple agent
+   hosts must share quiz cursor / awaiting_graded_response mid-session.
+   Presentation history does not require shared carry.
+
 """
 
 from __future__ import annotations
@@ -136,20 +142,61 @@ class ProactiveCardPayload(BaseModel):
     action: Optional[str] = None
 
 
+class StudySlideItem(BaseModel):
+    id: str
+    type: str
+    title: str
+    body_md: str
+    image_url: Optional[str] = None
+
+
+class SlidesPayload(BaseModel):
+    mode: str
+    slides: List[StudySlideItem]
+    current_index: Optional[int] = None
+
+
+class StructuredLessonPayload(BaseModel):
+    filling_gap: str = ""
+    solution_steps: List[str] = []
+    insight: str = ""
+
+
+class TurnPresentationPayload(BaseModel):
+    slides: Optional[SlidesPayload] = None
+    flashcards: Optional[FlashcardsPayload] = None
+    grading_ui: Optional[GradingUIPayload] = None
+    quiz_assessment: Optional[QuizAssessmentPayload] = None
+    card: Optional[ProactiveCardPayload] = None
+    mistake_brief: Optional[str] = None
+    score_summary: Optional[str] = None
+    structured: Optional[StructuredLessonPayload] = None
+    proficiency_pct: Optional[int] = None
+    awaiting_graded_response: bool = False
+    follow_up_suggestions: Optional[List[Any]] = None
+    quiz_steps: Optional[List[Any]] = None
+    primary_concept_id: Optional[str] = None
+    content_type_requested: Optional[str] = None
+
+
 class ChatMessageResponse(BaseModel):
     session_id: str
     response: Optional[str] = None
     score_summary: Optional[str] = None
     mistake_brief: Optional[str] = None
     agent_used: Optional[str] = None
-    follow_up_suggestions: Optional[List[Dict[str, Any]]] = None
-    quiz_steps: Optional[List[Dict[str, Any]]] = None
+    follow_up_suggestions: Optional[List[Any]] = None
+    quiz_steps: Optional[List[Any]] = None
     awaiting_graded_response: bool = False
     flashcards: Optional[FlashcardsPayload] = None
     grading_ui: Optional[GradingUIPayload] = None
     quiz_assessment: Optional[QuizAssessmentPayload] = None
     card: Optional[ProactiveCardPayload] = None
+    slides: Optional[SlidesPayload] = None
+    structured: Optional[StructuredLessonPayload] = None
     proficiency_pct: Optional[int] = None
+    primary_concept_id: Optional[str] = None
+    content_type_requested: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -195,12 +242,20 @@ class ChatTurnItem(BaseModel):
     content: str
     turn_index: int
     agent_used: Optional[str] = None
+    presentation: Optional[TurnPresentationPayload] = None
 
 
 class ChatSessionDetailResponse(BaseModel):
     session_id: str
     interaction_count: int = 0
     turns: List[ChatTurnItem]
+
+
+class ConceptProficiencyResponse(BaseModel):
+    concept_id: str
+    proficiency_pct: Optional[int] = None
+    proficiency_score: Optional[float] = None
+    flagged_weak: Optional[bool] = None
 
 
 # ── Auth schemas ──────────────────────────────────────────────────────────────
@@ -283,11 +338,79 @@ class OnboardingDiagnosticGradeResponse(BaseModel):
     overall: float
 
 
-def _resolve_session(user_id: str, session_id: Optional[str]) -> str:
+def _resolve_session(
+    user_id: str,
+    session_id: Optional[str],
+    *,
+    create_reason: str = "free",
+    roadmap_node_id: Optional[str] = None,
+) -> str:
     if session_id:
+        session = db.read_session(session_id)
+        if not session or session.get("user_id") != user_id:
+            raise HTTPException(status_code=404, detail="Session not found.")
         return session_id
     session = db.create_session(user_id)
+    logging.warning(
+        "session-create reason=%s user=%s session=%s roadmap_node=%s",
+        create_reason,
+        user_id,
+        session["session_id"],
+        roadmap_node_id or "-",
+    )
     return session["session_id"]
+
+
+def _presentation_blob(response: ChatMessageResponse) -> Dict[str, Any]:
+    return {
+        "slides": response.slides.model_dump() if response.slides else None,
+        "flashcards": response.flashcards.model_dump() if response.flashcards else None,
+        "grading_ui": response.grading_ui.model_dump() if response.grading_ui else None,
+        "quiz_assessment": (
+            response.quiz_assessment.model_dump() if response.quiz_assessment else None
+        ),
+        "card": response.card.model_dump() if response.card else None,
+        "mistake_brief": response.mistake_brief,
+        "score_summary": response.score_summary,
+        "structured": response.structured.model_dump() if response.structured else None,
+        "proficiency_pct": response.proficiency_pct,
+        "awaiting_graded_response": response.awaiting_graded_response,
+        "follow_up_suggestions": response.follow_up_suggestions,
+        "quiz_steps": response.quiz_steps,
+        "primary_concept_id": response.primary_concept_id,
+        "content_type_requested": response.content_type_requested,
+    }
+
+
+def _store_turn_presentation(
+    session_id: str,
+    carry: Dict[str, Any],
+    result: TutorState,
+    response: ChatMessageResponse,
+) -> None:
+    interaction = result.get("interaction_count")
+    if not interaction:
+        return
+    turn_index = int(interaction) * 2
+    blob = _presentation_blob(response)
+    by_turn = carry.setdefault("presentation_by_turn", {})
+    by_turn[str(turn_index)] = blob
+    try:
+        updated = db.update_chat_turn_presentation(session_id, turn_index, blob)
+        if not updated:
+            logging.warning(
+                "No assistant chat_turn to attach presentation "
+                "(session=%s turn_index=%s)",
+                session_id,
+                turn_index,
+            )
+    except Exception:
+        logging.exception(
+            "Failed to persist presentation to Supabase "
+            "(session=%s turn_index=%s)",
+            session_id,
+            turn_index,
+        )
 
 
 def _parse_graded_input_request(
@@ -300,17 +423,22 @@ def _parse_graded_input_request(
     was_graded = False
 
     outcome = (graded_outcome or "").lower().strip()
-    if outcome in {"correct", "incorrect"} and carry.get("awaiting_graded_response"):
-        graded_overrides = {
-            "has_graded_outcome": True,
-            "student_answer": "1" if outcome == "correct" else "0",
-            "is_correct": outcome == "correct",
-            "error_type": None,
-            "time_taken_sec": None,
-        }
-        query = graded_overrides["student_answer"]
-        was_graded = True
-        return query, graded_overrides, was_graded
+    # Explicit Correct/Incorrect from the UI is authoritative. Prefer it over the
+    # raw query so clients never depend on sending "1"/"0" in `query`.
+    if outcome in {"correct", "incorrect"}:
+        awaiting = bool(carry.get("awaiting_graded_response"))
+        ctype = (carry.get("content_type_requested") or "").lower()
+        if awaiting or ctype in {"practice", "pyq"} or not raw_input.strip():
+            graded_overrides = {
+                "has_graded_outcome": True,
+                "student_answer": "1" if outcome == "correct" else "0",
+                "is_correct": outcome == "correct",
+                "error_type": None,
+                "time_taken_sec": None,
+            }
+            query = graded_overrides["student_answer"]
+            was_graded = True
+            return query, graded_overrides, was_graded
 
     if (
         raw_input in {"1", "0"}
@@ -372,6 +500,8 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
     grading_ui = payload.get("grading_ui")
     quiz_assessment = payload.get("quiz_assessment")
     card = payload.get("card")
+    slides = payload.get("slides")
+    structured = payload.get("structured")
     return ChatMessageResponse(
         session_id=session_id,
         response=payload.get("response"),
@@ -385,9 +515,16 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
         grading_ui=GradingUIPayload(**grading_ui) if grading_ui else None,
         quiz_assessment=QuizAssessmentPayload(**quiz_assessment) if quiz_assessment else None,
         card=ProactiveCardPayload(**card) if card else None,
+        slides=SlidesPayload(**slides) if slides else None,
+        structured=StructuredLessonPayload(**structured) if structured else None,
         proficiency_pct=payload.get("proficiency_pct"),
+        primary_concept_id=payload.get("primary_concept_id"),
+        content_type_requested=payload.get("content_type_requested"),
         error=payload.get("error"),
     )
+
+
+
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -531,7 +668,13 @@ def chat_message(req: ChatMessageRequest) -> ChatMessageResponse:
     """Process one student message through the LangGraph pipeline."""
     user_id = req.user_id
     raw_input = req.query.strip()
-    session_id = _resolve_session(user_id, req.session_id)
+    create_reason = "roadmap" if req.roadmap_node_id else "free"
+    session_id = _resolve_session(
+        user_id,
+        req.session_id,
+        create_reason=create_reason,
+        roadmap_node_id=req.roadmap_node_id,
+    )
     carry = get_carry(session_id)
 
     query, graded_overrides, was_graded = _parse_graded_input_request(
@@ -559,19 +702,27 @@ def chat_message(req: ChatMessageRequest) -> ChatMessageResponse:
             journey_type=req.journey_type,
             focus_chapters=req.focus_chapters,
         )
+        session_id = result.get("session_id") or session_id
     except Exception as exc:
         logging.exception("tutor_graph.invoke failed for session %s", session_id)
         return ChatMessageResponse(session_id=session_id, error=str(exc))
 
     _update_carry(carry, result, was_graded=was_graded)
+    chat_response = _to_chat_response(session_id, result)
+    _store_turn_presentation(session_id, carry, result, chat_response)
     save_carry(session_id, carry)
-    return _to_chat_response(session_id, result)
+    return chat_response
 
 
 @app.post("/api/v1/sandbox/execute", response_model=ChatMessageResponse)
 def sandbox_execute(req: SandboxExecuteRequest) -> ChatMessageResponse:
     """Run a structured sandbox action without a free-form student query."""
-    session_id = _resolve_session(req.user_id, req.session_id)
+    session_id = _resolve_session(
+        req.user_id,
+        req.session_id,
+        create_reason="sandbox",
+        roadmap_node_id=req.roadmap_node_id,
+    )
     carry = get_carry(session_id)
 
     from sandbox_execute import build_sandbox_card
@@ -607,20 +758,58 @@ def sandbox_execute(req: SandboxExecuteRequest) -> ChatMessageResponse:
             focus_chapters=req.focus_chapters,
         )
         result["sandbox_card"] = card_meta
+        session_id = result.get("session_id") or session_id
     except Exception as exc:
         logging.exception("sandbox_execute failed for session %s", session_id)
         return ChatMessageResponse(session_id=session_id, error=str(exc))
 
     _update_carry(carry, result, was_graded=False)
+    chat_response = _to_chat_response(session_id, result)
+    _store_turn_presentation(session_id, carry, result, chat_response)
     save_carry(session_id, carry)
-    return _to_chat_response(session_id, result)
+    return chat_response
+
+
+@app.get(
+    "/api/v1/concepts/{concept_id}/proficiency",
+    response_model=ConceptProficiencyResponse,
+)
+def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiencyResponse:
+    """Durable mastery for the Live proficiency panel (Supabase user_concept_state)."""
+    try:
+        row = db.read_user_concept_state(user_id, concept_id)
+    except Exception:
+        logging.warning(
+            "concept-proficiency-miss user=%s concept=%s",
+            user_id,
+            concept_id,
+        )
+        return ConceptProficiencyResponse(concept_id=concept_id)
+
+    if not row:
+        return ConceptProficiencyResponse(concept_id=concept_id)
+
+    score = float(row.get("proficiency_score") or 0.5)
+    return ConceptProficiencyResponse(
+        concept_id=concept_id,
+        proficiency_pct=int(round(score * 100)),
+        proficiency_score=score,
+        flagged_weak=bool(row.get("flagged_weak")),
+    )
 
 
 @app.get("/api/v1/chat/sessions", response_model=ChatSessionListResponse)
 def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse:
     """List recent study sessions for a user (newest first)."""
     capped = max(1, min(limit, 50))
-    rows = db.list_user_sessions(user_id, limit=capped)
+    try:
+        rows = db.list_user_sessions(user_id, limit=capped)
+    except Exception as exc:
+        logging.exception("list_user_sessions failed for user %s", user_id)
+        raise HTTPException(status_code=502, detail=f"Could not list sessions: {exc}") from exc
+
+    session_ids = [row["session_id"] for row in rows if row.get("session_id")]
+    previews = db.first_user_turn_previews(session_ids)
     summaries: List[ChatSessionSummary] = []
     for row in rows:
         session_id = row["session_id"]
@@ -629,7 +818,7 @@ def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse
                 session_id=session_id,
                 interaction_count=row.get("interaction_count") or 0,
                 updated_at=row.get("updated_at"),
-                preview=db.first_user_turn_preview(session_id),
+                preview=previews.get(session_id),
             )
         )
     return ChatSessionListResponse(sessions=summaries)
@@ -642,19 +831,45 @@ def get_chat_session(session_id: str, user_id: str) -> ChatSessionDetailResponse
     if not session or session.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Session not found.")
     turns = db.read_all_chat_turns(session_id)
+    carry = get_carry(session_id)
+    presentation_by_turn = carry.get("presentation_by_turn") or {}
+    turn_items: List[ChatTurnItem] = []
+    for t in turns:
+        turn_index = t.get("turn_index") or 0
+        presentation = None
+        if (t.get("role") or "") == "assistant":
+            # Prefer durable Supabase presentation; fall back to live carry.
+            raw_pres = t.get("presentation")
+            if not raw_pres:
+                raw_pres = presentation_by_turn.get(str(turn_index))
+                if raw_pres:
+                    logging.warning(
+                        "presentation-miss-db session=%s turn_index=%s; using carry",
+                        session_id,
+                        turn_index,
+                    )
+                else:
+                    logging.warning(
+                        "presentation-miss session=%s turn_index=%s",
+                        session_id,
+                        turn_index,
+                    )
+            if raw_pres:
+                presentation = TurnPresentationPayload(**raw_pres)
+        turn_items.append(
+            ChatTurnItem(
+                turn_id=t.get("turn_id") or str(turn_index),
+                role=t.get("role") or "assistant",
+                content=t.get("content") or "",
+                turn_index=turn_index,
+                agent_used=t.get("agent_used"),
+                presentation=presentation,
+            )
+        )
     return ChatSessionDetailResponse(
         session_id=session_id,
         interaction_count=session.get("interaction_count") or 0,
-        turns=[
-            ChatTurnItem(
-                turn_id=t.get("turn_id") or str(t.get("turn_index", 0)),
-                role=t.get("role") or "assistant",
-                content=t.get("content") or "",
-                turn_index=t.get("turn_index") or 0,
-                agent_used=t.get("agent_used"),
-            )
-            for t in turns
-        ],
+        turns=turn_items,
     )
 
 

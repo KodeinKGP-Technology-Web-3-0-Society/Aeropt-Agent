@@ -165,6 +165,7 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
         session = db.read_session(session_id)
         if not session:
             session = db.create_session(user_id)
+            session_id = session["session_id"]
         interaction_count = (session.get("interaction_count") or 0) + 1
         active_quiz = session.get("active_quiz", False)
 
@@ -240,6 +241,7 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
             )
 
         result: Dict[str, Any] = {
+            "session_id": session_id,
             "target_exam": target_exam,
             "preferred_depth": preferred_depth,
             "interaction_count": interaction_count,
