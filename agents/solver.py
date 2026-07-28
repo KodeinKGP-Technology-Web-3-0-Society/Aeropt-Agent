@@ -14,7 +14,7 @@ Special behaviour for practice / PYQ content types:
   then Correct/Incorrect buttons in the UI (no typed 1/0).  No LLM is used — the DB content is
   assembled directly for predictable formatting.
 
-Model: qwen/qwen3-32b (Groq)
+Model: qwen/qwen3.6-27b (Groq)
 """
 
 from __future__ import annotations
@@ -177,6 +177,7 @@ You are an expert JEE Physics tutor. Provide a clear, rigorous, personalized ans
 ── Student Profile ──────────────────────────────────────────────────────────
 Target exam:          {target_exam}
 Learning journey:     {journey_hint}
+Preferred depth:      {depth_hint}
 Concept:              {concept_name}
 Proficiency:          {proficiency:.2f} / 1.0   (0 = zero knowledge, 1 = mastered)
 Framing hint:         {framing_hint}
@@ -195,7 +196,7 @@ Prior session notes:  {prior_session_summary}
 
 ── Instructions ──────────────────────────────────────────────────────────────
 • Answer fully and accurately using the chunks above.
-• Adapt explanation depth to the proficiency level and framing hint.
+• Adapt explanation depth to the proficiency level, framing hint, and preferred depth.
 • If the student has recurring errors, gently address that pattern.
 • If there are weak prerequisites listed, briefly acknowledge them.
 • Use LaTeX for all mathematical expressions (e.g. $F = ma$).
@@ -217,6 +218,21 @@ _FRAMING = {
     "high": "Student is proficient; be concise and go deeper if the question allows.",
 }
 
+_DEPTH_HINTS = {
+    "quick": (
+        "QUICK — keep it short. Fewer asides, one core idea, one formula, "
+        "minimal worked detail. Prefer brevity over completeness."
+    ),
+    "standard": (
+        "STANDARD — balanced teaching. Clear foundation, one worked path, "
+        "key formulae, brief summary."
+    ),
+    "deep": (
+        "DEEP — richer intuition. Add one extra worked angle or physical insight "
+        "when the content allows; still stay structured and exam-useful."
+    ),
+}
+
 _GRADED_REPLY_PROMPT = ""
 
 
@@ -229,6 +245,11 @@ def _build_framing(cs: Dict[str, Any]) -> str:
     if score > config.CLEAR_WEAK_THRESHOLD:
         return _FRAMING["high"]
     return _FRAMING["normal"]
+
+
+def _depth_hint(state: Dict[str, Any]) -> str:
+    depth = (state.get("preferred_depth") or "standard").strip().lower()
+    return _DEPTH_HINTS.get(depth, _DEPTH_HINTS["standard"])
 
 
 def _journey_hint(state: Dict[str, Any]) -> str:
@@ -495,6 +516,49 @@ def _wrap_equation_fragments(line: str) -> str:
     return _EQUATION_FRAGMENT_RE.sub(repl, line)
 
 
+def _is_diagram_layout_fragment(line: str) -> bool:
+    """Short OCR/diagram token lines (COM, L, 2, m) — not standalone sentences."""
+    s = line.strip()
+    if not s or len(s) > 36:
+        return False
+    if re.match(r"^\(\d+\)\s+\S", s) and len(s) > 18:
+        return False
+    if re.search(r"[.!?]", s):
+        return False
+    if _looks_like_equation(s):
+        return False
+    stripped = _LATEX_MACRO_RE.sub(" ", s)
+    stripped = re.sub(r"[^A-Za-z\s]", " ", stripped)
+    words = [w for w in stripped.split() if len(w) >= 3]
+    return len(words) <= 3
+
+
+def _collapse_diagram_lines(text: str) -> str:
+    """Join consecutive diagram-label lines so each token is not its own paragraph."""
+    lines = text.split("\n")
+    out: List[str] = []
+    buffer: List[str] = []
+
+    def flush() -> None:
+        if not buffer:
+            return
+        out.append(buffer[0] if len(buffer) == 1 else " ".join(buffer))
+        buffer.clear()
+
+    for line in lines:
+        if not line.strip():
+            flush()
+            out.append("")
+            continue
+        if _is_diagram_layout_fragment(line):
+            buffer.append(line.strip())
+        else:
+            flush()
+            out.append(line)
+    flush()
+    return "\n".join(out)
+
+
 def _looks_like_equation(line: str) -> bool:
     s = line.strip()
     if not s or "$" in s:          # empty or already delimited → leave as-is
@@ -509,9 +573,10 @@ def _looks_like_equation(line: str) -> bool:
     stripped = _LATEX_MACRO_RE.sub(" ", without_text)
     stripped = re.sub(r"[^A-Za-z\s]", " ", stripped)
     words = [w for w in stripped.split() if len(w) >= 3]
-    if macros and len(words) <= 4:
+    # One macro + several English words → mixed prose/equation; fragment-wrap only.
+    if macros and len(words) <= 2:
         return True
-    if len(macros) >= 2 and len(words) <= 8:
+    if len(macros) >= 2 and len(words) <= 4:
         return True
     return len(words) <= 2 and bool(macros or "=" in s)
 
@@ -528,6 +593,7 @@ def _render_math_text(text: str) -> str:
     if not text:
         return text
     text = _normalize_latex_output(text)
+    text = _collapse_diagram_lines(text)
     out_lines: List[str] = []
     for line in text.split("\n"):
         converted = _unicode_to_latex(line)
@@ -654,6 +720,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
             prompt = _SOLVER_PROMPT.format(
                 target_exam=state.get("target_exam", "JEE_ADVANCED"),
                 journey_hint=_journey_hint(state),
+                depth_hint=_depth_hint(state),
                 concept_name=concept_name,
                 proficiency=target_state.get("proficiency_score", 0.5),
                 framing_hint=_build_framing(target_state),

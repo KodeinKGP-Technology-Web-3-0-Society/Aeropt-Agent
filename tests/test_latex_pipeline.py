@@ -56,6 +56,25 @@ class TestLatexPipeline(unittest.TestCase):
         self.assertNotIn("$$", out)
         self.assertIn("Torque is the turning effect", out)
 
+    def test_prepare_student_markdown_mixed_prose_equation(self) -> None:
+        raw = (
+            "Analyzing system from Non Inertial frame of reference of block M_1\n"
+            r"The acceleration of block M_1, a_1 = \frac{F}{M_1+M_2+M_3}"
+        )
+        out = prepare_student_markdown(raw)
+        self.assertIn("Analyzing system", out)
+        self.assertIn(r"$a_1 = \frac{F}{M_1+M_2+M_3}$", out)
+        self.assertNotIn("$$\nThe acceleration", out)
+
+    def test_prepare_student_markdown_collapses_diagram_labels(self) -> None:
+        raw = (
+            r"mv_0 = Mv ...(i)\n(2) Net torque on the system about COM of rod is zero.\n"
+            r"COM\nL\n2\nBefore collision\nm\nv_0\n\omega"
+        )
+        out = prepare_student_markdown(raw)
+        self.assertIn("COM L 2 Before collision m v_0", out)
+        self.assertNotIn("COM\nL\n2\nBefore", out)
+
     def test_sanitize_strips_nested_dollars(self) -> None:
         cleaned = _sanitize_latex_expr(r"$$\omega=240\pi$$")
         self.assertNotIn("$", cleaned)

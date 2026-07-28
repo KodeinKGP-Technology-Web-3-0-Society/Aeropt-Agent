@@ -56,8 +56,14 @@ def _is_capacity_error(exc: Exception) -> bool:
     )
 
 
-def _is_decommissioned(exc: Exception) -> bool:
-    return "decommissioned" in str(exc).lower()
+def _is_model_unavailable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "decommissioned" in msg
+        or "model_not_found" in msg
+        or "does not exist" in msg
+        or "do not have access" in msg
+    )
 
 
 def groq_complete(
@@ -120,8 +126,8 @@ def groq_complete(
             except Exception as exc:
                 last_exc = exc
 
-                if _is_decommissioned(exc):
-                    logger.warning("[LLM] %s is decommissioned, skipping.", current_model)
+                if _is_model_unavailable(exc):
+                    logger.warning("[LLM] %s unavailable, skipping.", current_model)
                     break  # skip retries, go to next model
 
                 is_transient = isinstance(exc, _TRANSIENT) or _is_capacity_error(exc)

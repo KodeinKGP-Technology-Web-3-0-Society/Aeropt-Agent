@@ -37,30 +37,29 @@ DIAGNOSTIC_MODEL = "llama-3.1-8b-instant"
 CONTEXT_MANAGER_MODEL = "llama-3.1-8b-instant"
 
 # Generation agents → larger reasoning models
-SOLVER_MODEL = "qwen/qwen3-32b"
+# qwen/qwen3-32b was removed from Groq (Jul 2026); qwen3.6-27b is the replacement.
+SOLVER_MODEL = "qwen/qwen3.6-27b"
 SOCRATIC_MODEL = "llama-3.3-70b-versatile"
-QUIZ_MODEL = "qwen/qwen3-32b"
+QUIZ_MODEL = "qwen/qwen3.6-27b"
 
 # ── Fallback chains (used when primary model is over capacity / unavailable) ──
 # Listed in preference order — first available wins.
 SOLVER_FALLBACK_MODELS = [
-    "qwen/qwen3.6-27b",
     "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
 ]
 QUIZ_FALLBACK_MODELS = [
-    "qwen/qwen3.6-27b",
     "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
 ]
 SOCRATIC_FALLBACK_MODELS = [
-    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
     "llama-3.1-8b-instant",
 ]
 # Lightweight agents share a simpler fallback
 SMALL_MODEL_FALLBACK = [
     "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
 ]
 
 # Embedding (GraphRAG Retriever only) — no chat LLM
@@ -76,7 +75,8 @@ NEO4J_CONTENT_CORPUS_SIZE = 700
 
 # ── Diagnostic thresholds ─────────────────────────────────────────────────────
 WEAK_THRESHOLD = 0.4
-CLEAR_WEAK_THRESHOLD = 0.65
+CLEAR_WEAK_THRESHOLD = 0.65  # clears flagged_weak; also lower bound for "almost mastered" UI band
+MASTERY_THRESHOLD = 0.8      # meeting Jul 17 — concept mastery / roadmap skip gate (was 0.75 in roadmap)
 PROFICIENCY_WMA_ALPHA = 0.7       # weight on old score in weighted moving average
 TIME_DAMPEN_MULTIPLIER = 2.0      # if time_taken > X * avg_time, dampen proficiency gain
 TIME_DAMPEN_FACTOR = 0.7          # multiply the outcome contribution by this

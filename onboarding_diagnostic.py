@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from db.supabase_client import db
 from agents.diagnostic import diagnostic_node
 from models.state import TutorState
-from agents.solver import _image_urls
+from agents.solver import _image_urls, prepare_student_markdown
 
 
 def _pick_concepts(question_count: int) -> List[Dict[str, Any]]:
@@ -88,7 +88,7 @@ def _build_question(
         "question_text": text[:1200],
         "content_id": chunk["content_id"],
         "image_url": urls.get("core"),
-        "solution_text": chunk.get("solution") or "",
+        "solution_text": prepare_student_markdown((chunk.get("solution") or "").strip()),
         "solution_image_url": urls.get("solution"),
     }
 

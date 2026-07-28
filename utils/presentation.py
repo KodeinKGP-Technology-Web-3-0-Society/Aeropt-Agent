@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,11 @@ from agents.solver import (
     _extract_md_image_urls,
     _split_formula_text,
 )
+
+logger = logging.getLogger("jee_tutor.presentation")
+
+SUMMARIZER_CORE_LEN_TRIGGER = 1200
+SUMMARIZER_DETERMINISTIC_SLIDE_TRIGGER = 4
 
 _PICKER_TYPES = {"theory", "example"}
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.:;])\s+")
@@ -660,47 +666,273 @@ def _extract_takeaway(
     return f"Focus on the definition and main relation for **{concept_label}**."
 
 
+def _estimate_deterministic_core_slide_count(
+    core: str,
+    *,
+    para_cap: int,
+    bite_cap: int,
+) -> int:
+    """How many core-text slides the deterministic chunker would emit (pre formula/diagram/summary)."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", core) if p.strip()]
+    if not paragraphs:
+        paragraphs = [core]
+
+    bite_chunks: List[str] = []
+    for para in paragraphs[:para_cap]:
+        bite_chunks.extend(_split_into_bite_sized_chunks(para, max_len=300))
+
+    count = 0
+    for piece in bite_chunks[:bite_cap]:
+        if _is_equation_chunk(piece):
+            count += len(_split_formula_text(piece) or [piece])
+        else:
+            count += 1
+    return count
+
+
+def _should_use_content_summarizer(
+    core: str,
+    *,
+    para_cap: int,
+    bite_cap: int,
+) -> bool:
+    if len(core) > SUMMARIZER_CORE_LEN_TRIGGER:
+        return True
+    return (
+        _estimate_deterministic_core_slide_count(core, para_cap=para_cap, bite_cap=bite_cap)
+        > SUMMARIZER_DETERMINISTIC_SLIDE_TRIGGER
+    )
+
+
+def _map_summarizer_cards_to_slides(
+    cards: List[Dict[str, Any]],
+    concept_id: str,
+) -> List[Dict[str, Any]]:
+    slides: List[Dict[str, Any]] = []
+    for idx, card in enumerate(cards):
+        card_type = (card.get("card_type") or "concept").strip().lower()
+        title = (card.get("title") or "Concept").strip()
+        body = (card.get("body") or "").strip()
+        formula = (card.get("formula") or "").strip()
+
+        if card_type == "takeaway":
+            slide_type = "summary"
+        elif card_type == "formula":
+            slide_type = "formula"
+        elif card_type == "example":
+            slide_type = "concept"
+        else:
+            slide_type = "hook" if idx == 0 else "concept"
+
+        parts: List[str] = []
+        if body:
+            parts.append(prepare_student_markdown(body))
+        if formula:
+            formula_block = _as_katex_block(formula)
+            if formula_block and formula_block not in "\n\n".join(parts):
+                parts.append(formula_block)
+        body_md = "\n\n".join(parts) if parts else prepare_student_markdown(title)
+
+        slides.append(
+            {
+                "id": f"{concept_id}-summary-card-{idx}",
+                "type": slide_type,
+                "title": title,
+                "body_md": body_md,
+                "image_url": None,
+            }
+        )
+    return slides
+
+
+def _append_diagram_slide_if_present(
+    slides: List[Dict[str, Any]],
+    *,
+    concept_id: str,
+    concept_label: str,
+    chunk: Dict[str, Any],
+    chunks: List[Dict[str, Any]],
+    response: str,
+) -> None:
+    img_chunk = _select_core_image_chunk(chunks) if chunks else None
+    core_url = _image_urls(img_chunk).get("core") if img_chunk else None
+    if not core_url:
+        md_urls = _extract_md_image_urls(response)
+        core_url = md_urls[0] if md_urls else None
+    if not core_url and chunk:
+        core_url = _image_urls({**chunk, "has_image_core": True}).get("core")
+
+    diagram_desc = ""
+    if img_chunk:
+        diagram_desc = (img_chunk.get("diagram_description_core") or "").strip()
+    if not diagram_desc and chunk:
+        diagram_desc = (chunk.get("diagram_description_core") or "").strip()
+
+    if not core_url and not diagram_desc:
+        return
+
+    fallback_body = (
+        diagram_desc
+        or f"Visual model for **{concept_label}**. If the image fails to load, "
+        f"sketch the setup from the description above."
+    )
+    slides.append(
+        {
+            "id": f"{concept_id}-diagram",
+            "type": "diagram",
+            "title": "Visual model",
+            "body_md": prepare_student_markdown(fallback_body),
+            "image_url": core_url,
+        }
+    )
+
+
+def _build_theory_core_slides_deterministic(
+    *,
+    core: str,
+    concept_id: str,
+    concept_label: str,
+    para_cap: int,
+    bite_cap: int,
+) -> List[Dict[str, Any]]:
+    slides: List[Dict[str, Any]] = []
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", core) if p.strip()]
+    if not paragraphs:
+        paragraphs = [core]
+
+    bite_chunks: List[str] = []
+    for para in paragraphs[:para_cap]:
+        bite_chunks.extend(_split_into_bite_sized_chunks(para, max_len=300))
+
+    for idx, piece in enumerate(bite_chunks[:bite_cap]):
+        if _is_equation_chunk(piece):
+            for j, expr in enumerate(_split_formula_text(piece) or [piece]):
+                slides.append(
+                    {
+                        "id": f"{concept_id}-concept-{idx}-{j}",
+                        "type": "formula",
+                        "title": "Key relation",
+                        "body_md": _as_katex_block(expr),
+                        "image_url": None,
+                    }
+                )
+        else:
+            slide_type = "hook" if idx == 0 else "concept"
+            title = f"Why {concept_label} matters" if idx == 0 else concept_label
+            slides.append(
+                {
+                    "id": f"{concept_id}-concept-{idx}",
+                    "type": slide_type,
+                    "title": title,
+                    "body_md": prepare_student_markdown(piece),
+                    "image_url": None,
+                }
+            )
+    return slides
+
+
+def _try_build_theory_slides_via_summarizer(
+    result: Dict[str, Any],
+    *,
+    chunk: Dict[str, Any],
+    core: str,
+    concept_id: str,
+    concept_label: str,
+    chunks: List[Dict[str, Any]],
+    slide_cap: int,
+    est_deterministic: int,
+) -> Optional[List[Dict[str, Any]]]:
+    from agents.content_summarizer import summarize_to_slide_cards
+
+    latex_formulae = (chunk.get("latex_formulae_core") or "").strip()
+    target_exam = (result.get("target_exam") or "JEE").replace("_", " ")
+
+    logger.info(
+        "[TheorySlides] Summarizer path for %s (core_len=%d, est_deterministic=%d)",
+        concept_id,
+        len(core),
+        est_deterministic,
+    )
+
+    cards = summarize_to_slide_cards(
+        core_text=core,
+        latex_formulae_core=latex_formulae,
+        concept_label=concept_label,
+        target_exam=target_exam,
+    )
+    slides = _map_summarizer_cards_to_slides(cards, concept_id)
+    _append_diagram_slide_if_present(
+        slides,
+        concept_id=concept_id,
+        concept_label=concept_label,
+        chunk=chunk,
+        chunks=chunks,
+        response=(result.get("response") or "").strip(),
+    )
+    logger.info(
+        "[TheorySlides] Summarizer produced %d slide(s) for %s",
+        len(slides),
+        concept_id,
+    )
+    return slides[:slide_cap]
+
+
 def build_theory_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     chunks = result.get("retrieved_chunks") or []
     chunk = chunks[0] if chunks else {}
     concept_id = result.get("primary_concept_id") or "concept"
     concept_label = concept_id.replace("_", " ").title()
     slides: List[Dict[str, Any]] = []
+    depth = (result.get("preferred_depth") or "standard").strip().lower()
+    slide_cap = {"quick": 4, "standard": 8, "deep": 8}.get(depth, 8)
+    para_cap = 2 if depth == "quick" else 4
+    bite_cap = 3 if depth == "quick" else 6
 
     core = (chunk.get("core_text") or "").strip()
+    response = (result.get("response") or "").strip()
+
     if core:
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", core) if p.strip()]
-        if not paragraphs:
-            paragraphs = [core]
-
-        bite_chunks: List[str] = []
-        for para in paragraphs[:4]:
-            bite_chunks.extend(_split_into_bite_sized_chunks(para, max_len=300))
-
-        for idx, piece in enumerate(bite_chunks[:6]):
-            if _is_equation_chunk(piece):
-                for j, expr in enumerate(_split_formula_text(piece) or [piece]):
-                    slides.append(
-                        {
-                            "id": f"{concept_id}-concept-{idx}-{j}",
-                            "type": "formula",
-                            "title": "Key relation",
-                            "body_md": _as_katex_block(expr),
-                            "image_url": None,
-                        }
-                    )
-            else:
-                slide_type = "hook" if idx == 0 else "concept"
-                title = f"Why {concept_label} matters" if idx == 0 else concept_label
-                slides.append(
-                    {
-                        "id": f"{concept_id}-concept-{idx}",
-                        "type": slide_type,
-                        "title": title,
-                        "body_md": prepare_student_markdown(piece),
-                        "image_url": None,
-                    }
+        est_deterministic = _estimate_deterministic_core_slide_count(
+            core, para_cap=para_cap, bite_cap=bite_cap
+        )
+        if _should_use_content_summarizer(core, para_cap=para_cap, bite_cap=bite_cap):
+            try:
+                summarized = _try_build_theory_slides_via_summarizer(
+                    result,
+                    chunk=chunk,
+                    core=core,
+                    concept_id=concept_id,
+                    concept_label=concept_label,
+                    chunks=chunks,
+                    slide_cap=slide_cap,
+                    est_deterministic=est_deterministic,
                 )
+                if summarized:
+                    return summarized
+            except Exception as exc:
+                logger.warning(
+                    "[TheorySlides] Summarizer failed for %s, falling back to deterministic builder: %s",
+                    concept_id,
+                    exc,
+                )
+                logger.info("[TheorySlides] Deterministic fallback for %s", concept_id)
+        else:
+            logger.info(
+                "[TheorySlides] Deterministic path for %s (core_len=%d, est_deterministic=%d)",
+                concept_id,
+                len(core),
+                est_deterministic,
+            )
+
+        slides.extend(
+            _build_theory_core_slides_deterministic(
+                core=core,
+                concept_id=concept_id,
+                concept_label=concept_label,
+                para_cap=para_cap,
+                bite_cap=bite_cap,
+            )
+        )
 
     formula_exprs = _split_formula_exprs([chunk]) if chunk else []
     existing_bodies = {s.get("body_md", "") for s in slides}
@@ -718,7 +950,7 @@ def build_theory_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
 
-    response = (result.get("response") or "").strip()
+    response = response or (result.get("response") or "").strip()
     img_chunk = _select_core_image_chunk(chunks) if chunks else None
     core_url = _image_urls(img_chunk).get("core") if img_chunk else None
     if not core_url:
@@ -767,7 +999,7 @@ def build_theory_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
     # Pad thin decks from response headings so theory usually has 4–8 slides
-    if len(slides) < 4 and response:
+    if len(slides) < 4 and response and depth != "quick":
         for idx, (title, body) in enumerate(_split_markdown_sections(response)):
             cleaned = _strip_md_images(body)
             if not cleaned:
@@ -787,7 +1019,9 @@ def build_theory_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 break
 
     if not slides and response:
-        for idx, (title, body) in enumerate(_split_markdown_sections(response)[:5]):
+        for idx, (title, body) in enumerate(
+            _split_markdown_sections(response)[: max(2, slide_cap // 2)]
+        ):
             slides.append(
                 {
                     "id": f"{concept_id}-section-{idx}",
@@ -798,7 +1032,7 @@ def build_theory_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             )
 
-    return slides[:8]
+    return slides[:slide_cap]
 
 
 def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -806,6 +1040,9 @@ def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     chunk = chunks[0] if chunks else {}
     concept_id = result.get("primary_concept_id") or "example"
     slides: List[Dict[str, Any]] = []
+    depth = (result.get("preferred_depth") or "standard").strip().lower()
+    step_cap = 2 if depth == "quick" else 4
+    slide_cap = 4 if depth == "quick" else 6
 
     problem = (chunk.get("core_text") or "").strip()
     if problem:
@@ -821,7 +1058,7 @@ def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     solution = (chunk.get("solution") or "").strip()
     steps = _split_solution_steps(solution)
-    for idx, step in enumerate(steps):
+    for idx, step in enumerate(steps[:step_cap]):
         slides.append(
             {
                 "id": f"{concept_id}-step-{idx}",
@@ -835,7 +1072,8 @@ def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     formula_exprs = _split_formula_text(
         (chunk.get("latex_formulae_solution") or chunk.get("latex_formulae_core") or "").strip()
     )
-    for idx, expr in enumerate(formula_exprs[:2]):
+    formula_limit = 1 if depth == "quick" else 2
+    for idx, expr in enumerate(formula_exprs[:formula_limit]):
         slides.append(
             {
                 "id": f"{concept_id}-formula-{idx}",
@@ -869,7 +1107,7 @@ def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     if not slides:
         response = (result.get("response") or "").strip()
-        for idx, (title, body) in enumerate(_split_markdown_sections(response)[:5]):
+        for idx, (title, body) in enumerate(_split_markdown_sections(response)[: max(2, slide_cap // 2)]):
             slides.append(
                 {
                     "id": f"{concept_id}-section-{idx}",
@@ -880,7 +1118,7 @@ def build_example_slides(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             )
 
-    return slides[:6]
+    return slides[:slide_cap]
 
 
 def build_slides_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:

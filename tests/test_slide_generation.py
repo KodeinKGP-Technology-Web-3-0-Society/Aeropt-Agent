@@ -1,18 +1,49 @@
-"""Phase 5 — slide generation / truncation helpers.
+"""Phase 5/6 — slide generation / truncation helpers.
 
 Run:  python -m unittest tests.test_slide_generation -v
 """
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from utils.presentation import (
     _extract_takeaway,
+    _should_use_content_summarizer,
     _split_into_bite_sized_chunks,
     _truncate,
     build_example_slides,
     build_theory_slides,
 )
+
+MOCK_SUMMARIZER_CARDS = [
+    {
+        "title": "Core idea",
+        "body": "Torque causes angular acceleration about a pivot.",
+        "card_type": "concept",
+    },
+    {
+        "title": "Key relation",
+        "body": "Magnitude form for perpendicular force.",
+        "card_type": "formula",
+        "formula": r"$\tau = rF\sin\theta$",
+    },
+    {
+        "title": "Application",
+        "body": "Draw the lever arm before substituting values.",
+        "card_type": "example",
+    },
+    {
+        "title": "Takeaway",
+        "body": "Check axis of rotation on every rotation problem.",
+        "card_type": "takeaway",
+    },
+]
+
+LONG_THEORY_CORE = (
+    "Torque is the rotational analogue of force and depends on lever arm. "
+    * 50
+).strip()
 
 
 class TestSlideGeneration(unittest.TestCase):
@@ -64,6 +95,25 @@ class TestSlideGeneration(unittest.TestCase):
         self.assertGreaterEqual(len(slides), 4)
         self.assertTrue(any(s["type"] == "summary" for s in slides))
 
+    def test_quick_depth_caps_theory_slides_tighter(self) -> None:
+        long_core = "\n\n".join(
+            [f"Paragraph {i}. This explains concept detail number {i}." for i in range(12)]
+        )
+        slides = build_theory_slides(
+            {
+                "primary_concept_id": "torque",
+                "preferred_depth": "quick",
+                "retrieved_chunks": [
+                    {
+                        "core_text": long_core,
+                        "latex_formulae_core": r"\tau=rF\sin\theta\n\tau=I\alpha",
+                    }
+                ],
+                "response": "## Takeaway\nTorque equals force times lever arm.",
+            }
+        )
+        self.assertLessEqual(len(slides), 4)
+
     def test_example_deck_caps_at_6_with_diagram_fallback(self) -> None:
         slides = build_example_slides(
             {
@@ -82,6 +132,51 @@ class TestSlideGeneration(unittest.TestCase):
         self.assertLessEqual(len(slides), 6)
         diagram = next(s for s in slides if s["type"] == "diagram")
         self.assertIn("Rod pivoted", diagram["body_md"])
+
+    def test_long_core_triggers_summarizer_gate(self) -> None:
+        self.assertTrue(_should_use_content_summarizer(LONG_THEORY_CORE, para_cap=4, bite_cap=6))
+
+    @patch("agents.content_summarizer.summarize_to_slide_cards", return_value=MOCK_SUMMARIZER_CARDS)
+    def test_theory_slides_use_summarizer_for_long_input(self, mock_summarize) -> None:
+        slides = build_theory_slides(
+            {
+                "primary_concept_id": "torque",
+                "target_exam": "JEE",
+                "retrieved_chunks": [
+                    {
+                        "core_text": LONG_THEORY_CORE,
+                        "latex_formulae_core": r"\tau=rF\sin\theta",
+                    }
+                ],
+                "response": "",
+            }
+        )
+        mock_summarize.assert_called_once()
+        self.assertLessEqual(len(slides), 4)
+        self.assertTrue(any(s["id"].startswith("torque-summary-card-") for s in slides))
+        self.assertTrue(any(s["type"] == "summary" for s in slides))
+
+    @patch(
+        "agents.content_summarizer.summarize_to_slide_cards",
+        side_effect=RuntimeError("LLM unavailable"),
+    )
+    def test_theory_slides_fallback_when_summarizer_fails(self, mock_summarize) -> None:
+        slides = build_theory_slides(
+            {
+                "primary_concept_id": "torque",
+                "retrieved_chunks": [
+                    {
+                        "core_text": LONG_THEORY_CORE,
+                        "latex_formulae_core": r"\tau=rF\sin\theta",
+                    }
+                ],
+                "response": "## Takeaway\nTorque equals force times lever arm.",
+            }
+        )
+        mock_summarize.assert_called_once()
+        self.assertGreater(len(slides), 4)
+        self.assertTrue(any(s["id"].startswith("torque-concept-") for s in slides))
+        self.assertFalse(any(s["id"].startswith("torque-summary-card-") for s in slides))
 
 
 if __name__ == "__main__":

@@ -61,9 +61,9 @@ def _classify_error_type(
     question: str, student_answer: str, correct_answer: str
 ) -> str:
     prompt = _ERROR_CLASSIFY_PROMPT.format(
-        question=question[:500],
-        correct_answer=correct_answer[:200],
-        student_answer=student_answer[:200],
+        question=(question or "")[:500],
+        correct_answer=(correct_answer or "")[:200],
+        student_answer=(student_answer or "")[:200],
     )
     try:
         raw, _ = groq_complete(
@@ -137,14 +137,15 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
 
     # Content_id from the retrieved chunk that was being answered
     chunks = state.get("retrieved_chunks", [])
-    content_id: Optional[str] = chunks[0]["content_id"] if chunks else None
+    content_id: Optional[str] = chunks[0].get("content_id") if chunks else None
 
     try:
         # ── 1. Classify error if not already provided ─────────────────────────
+        # Use `or ""` (not `.get(key, "")`) so DB null values become "" instead of None.
         if not is_correct and not error_type:
-            correct_answer = chunks[0].get("solution", "") if chunks else ""
+            correct_answer = (chunks[0].get("solution") or "") if chunks else ""
             error_type = _classify_error_type(
-                question=state["query"],
+                question=state.get("query") or "",
                 student_answer=student_answer or "",
                 correct_answer=correct_answer,
             )
