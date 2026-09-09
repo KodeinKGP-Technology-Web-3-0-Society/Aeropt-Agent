@@ -1,15 +1,13 @@
 """
 Socratic Agent
 
-Fires INSTEAD of Solver when the routing condition from Section 8 is met:
-  prereq_score > 0.7 AND target_score < 0.4 AND NOT cold_start
-  AND socratic_turn_count < SOCRATIC_MAX_TURNS
+Fires INSTEAD of Solver when the routing condition from Planner is met:
+  teaching_mode == "socratic"
 
 Generates a guiding question to draw out the student's existing knowledge
 rather than giving a direct answer.
 
-Auto-escalation: if socratic_turn_count >= SOCRATIC_MAX_TURNS → Solver takes over
-(handled in graph/workflow.py routing; this node only fires when allowed).
+Auto-escalation: Evaluates lack of progress (proficiency delta) to decide when to yield to direct explanation, replacing the old fixed 3-turn limit.
 
 Model: llama-3.3-70b-versatile (Groq) — best conversational reasoning on Groq
 """
@@ -25,6 +23,7 @@ from agents.solver import prepare_student_markdown
 import config
 from db.supabase_client import db
 from models.state import TutorState
+from utils.latex_guidelines import LATEX_OUTPUT_RULES
 from utils.llm import groq_complete
 
 _groq = Groq(api_key=config.GROQ_API_KEY)
@@ -36,7 +35,7 @@ the answer through targeted questions, NOT to give the answer directly.
 ── Context ──────────────────────────────────────────────────────────────────
 Concept being studied: {concept_name}
 Student proficiency:   {proficiency:.2f} / 1.0  (they know the prerequisites well)
-Socratic turn:         {turn_num} of {max_turns}
+Pedagogical framing:   {framing}
 
 ── Retrieved content (use only to frame your question, do NOT quote it) ─────
 {chunks_summary}
@@ -56,9 +55,8 @@ Socratic turn:         {turn_num} of {max_turns}
 • The question should connect to something the student already knows
   (they have strong prerequisites).
 • Keep it short (1-3 sentences).
-• If this is turn {max_turns} (final allowed Socratic turn), end your question
-  with: "If you're unsure, tell me and I'll explain directly."
-• Use LaTeX for any mathematical expression."""
+• ESCALATION RULE: If the student is showing a lack of progress (e.g., their proficiency score is dropping in recent diagnostic turns, or they are clearly frustrated), you MUST escalate. End your question with: "If you're unsure, tell me and I'll explain directly."
+"""
 
 
 def _get_previous_socratic_questions(
@@ -79,7 +77,10 @@ def _get_previous_socratic_questions(
 
 def _chunks_summary(chunks: List[Dict[str, Any]]) -> str:
     if not chunks:
-        return "(no specific content retrieved)"
+        return (
+            "(no knowledge-graph chunks — frame the question from the concept, "
+            "proficiency, and conversation. Retrieved content is optional.)"
+        )
     lines = []
     for c in chunks[:3]:  # summarise top 3 only
         text = (c.get("core_text") or "")[:200]
@@ -116,24 +117,31 @@ def socratic_node(state: TutorState) -> Dict[str, Any]:
             else "  (none yet)"
         )
 
-        prompt = _SOCRATIC_PROMPT.format(
-            concept_name=concept_name,
-            proficiency=target_state.get("proficiency_score", 0.5),
-            turn_num=turn_num,
-            max_turns=config.SOCRATIC_MAX_TURNS,
-            chunks_summary=_chunks_summary(chunks),
-            recent_turns=_format_recent_turns(recent_turns),
-            previous_socratic_questions=prior_q_text,
-            query=state["query"],
-        )
+        from utils.skills import load_skill
+        skill = load_skill("physics_socratic") or {}
+
+        framing = state.get("framing", "deepen")
+        framing_desc = skill.get("framing_hints", {}).get(framing, "Guide the student through the concept.")
+
+        prompt = skill["system_prompt"]
+        prompt = prompt.replace("{{concept_name}}", str(concept_name))
+        prompt = prompt.replace("{{proficiency}}", f"{target_state.get('proficiency_score', 0.5):.2f}")
+        prompt = prompt.replace("{{framing_desc}}", str(framing_desc))
+        prompt = prompt.replace("{{chunks_summary}}", str(_chunks_summary(chunks)))
+        prompt = prompt.replace("{{recent_turns}}", str(_format_recent_turns(recent_turns)))
+        prompt = prompt.replace("{{previous_socratic_questions}}", str(prior_q_text))
+        prompt = prompt.replace("{{query}}", str(state["query"]))
+        
+        prompt = f"{prompt}\n\n{LATEX_OUTPUT_RULES}"
 
         raw, model_used = groq_complete(
             client=_groq,
-            model=config.SOCRATIC_MODEL,
+            model=skill.get("model", config.SOCRATIC_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SOCRATIC_FALLBACK_MODELS,
-            temperature=0.5,
+            temperature=skill.get("temperature", 0.5),
             max_tokens=400,
+            stream=True,
         )
         response = prepare_student_markdown(raw.strip())
 

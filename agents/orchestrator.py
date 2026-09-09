@@ -3,17 +3,17 @@ Orchestrator Agent
 
 Responsibilities:
   - Load user profile (target_exam, preferred_depth) from Supabase
-  - Load / create session, increment interaction_count
-  - Load last 1-2 chat turns for downstream context
-  - Classify intent:
-      doubt | practice_request | quiz_response | follow_up_response |
-      prereq_confirmation | graded_response
-  - For graded_response already flagged by main.py: fast-path, skip LLM
-  - For graded_response classified by LLM but has_graded_outcome=False:
-      a practice/PYQ question is still awaiting — insert a reminder and
-      route to END (workflow checks has_graded_outcome before Diagnostic)
-  - For prereq_confirmation: inject pending prereq concept as primary_concept_id
-  - On first turn of a new session: load the prior session summary
+    - Load / create session, increment interaction_count
+    - Load last 1-2 chat turns for downstream context
+    - Classify intent:
+        doubt | practice_request | quiz_response | follow_up_response |
+        prereq_confirmation | graded_response
+    - For graded_response already flagged by main.py: fast-path, skip LLM
+    - For graded_response classified by LLM but has_graded_outcome=False:
+        a practice/PYQ question is still awaiting — insert a reminder and
+        route to END (workflow checks has_graded_outcome before Diagnostic)
+    - For prereq_confirmation: inject pending prereq concept as primary_concept_id
+    - On first turn of a new session: load the prior session summary
   - Flag run_context_manager every CONTEXT_MANAGER_EVERY_N interactions
   - Insert the user's chat turn into chat_turns
 
@@ -82,6 +82,78 @@ _QUIZ_COUNT_RE = re.compile(
 _QUIZ_DEFAULT_SIZE = 5
 _QUIZ_MAX_SIZE = 5
 
+_GREETING_RE = re.compile(
+    r"^(?:"
+    r"hi|hello|hey|hiya|howdy|yo|sup|"
+    r"good\s+(?:morning|afternoon|evening)|"
+    r"thanks|thank\s+you|thx|"
+    r"ok(?:ay)?|cool|great"
+    r")[!.?\s]*$",
+    re.IGNORECASE,
+)
+
+_WELCOME_MESSAGE = (
+    "Hi! I'm your JEE Physics tutor. Ask me to explain a concept, walk through an "
+    "example, or give you a practice question — for example, "
+    "*\"Explain Newton's second law\"* or *\"Give me a PYQ on rotational motion.\"*"
+)
+
+
+_BRIEFING_RE = re.compile(
+    r"\b(end session|end my session|session summary|mentor briefing|brief my mentor)\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_active_agent(
+    state: TutorState,
+    intent: str,
+    *,
+    focus_chapters: list,
+    interaction_count: int,
+) -> str:
+    """Map intent + session context → product agent."""
+    query = state.get("query") or ""
+    if _BRIEFING_RE.search(query):
+        return "mentor_briefing"
+
+    sandbox = (state.get("sandbox_action") or "").upper()
+    if sandbox in {"PRACTICE", "PYQ", "QUIZ"}:
+        return "practice_coach"
+    if sandbox in {"LEARN", "REVISE"}:
+        return "tutor"
+
+    study_stage = (state.get("study_stage") or "").lower()
+    roadmap_ctx = bool(state.get("roadmap_node_id") or state.get("roadmap_concept_id"))
+    if roadmap_ctx and interaction_count == 1 and study_stage in ("theory", "example", ""):
+        from mcp_tools.get_syllabus_status import GetSyllabusStatusArgs, get_syllabus_status
+
+        status = get_syllabus_status(
+            GetSyllabusStatusArgs(
+                user_id=state["user_id"],
+                focus_chapters=focus_chapters,
+                roadmap_concept_id=state.get("roadmap_concept_id"),
+            )
+        )
+        if status.get("coverage_gap") or status.get("unfinished_lessons", 0) >= 3:
+            return "syllabus"
+
+    if intent == "practice_request":
+        return "practice_generator"
+    if intent == "practice_submission":
+        return "practice_analyzer"
+    if intent == "quiz_request":
+        return "practice_coach"
+    if intent == "prereq_confirmation":
+        return "tutor"
+    if intent == "doubt":
+        return "doubt_resolver"
+    return "doubt_resolver"
+
+
+def _is_greeting(query: str) -> bool:
+    return bool(_GREETING_RE.match((query or "").strip()))
+
 
 def _parse_quiz_count(query: str) -> int:
     """
@@ -110,20 +182,23 @@ def _classify_intent(
         context_lines.append(f"  [{role}]: {content}")
     context = "\n".join(context_lines) if context_lines else "  (none)"
 
-    prompt = _INTENT_PROMPT.format(
-        active_quiz=active_quiz,
-        pending_prereq=pending_prereq or "(none)",
-        practice_question_pending=practice_question_pending,
-        context=context,
-        query=query,
-    )
+    from utils.skills import load_skill
+    skill = load_skill("orchestrator") or {}
+
+    prompt = skill["system_prompt"]
+    prompt = prompt.replace("{{active_quiz}}", str(active_quiz))
+    prompt = prompt.replace("{{pending_prereq}}", str(pending_prereq or "(none)"))
+    prompt = prompt.replace("{{practice_question_pending}}", str(practice_question_pending))
+    prompt = prompt.replace("{{context}}", str(context))
+    prompt = prompt.replace("{{query}}", str(query))
+
     raw, _ = groq_complete(
         client=_groq,
-        model=config.ORCHESTRATOR_MODEL,
+        model=skill.get("model", config.ORCHESTRATOR_MODEL),
         messages=[{"role": "user", "content": prompt}],
         fallback_models=config.SMALL_MODEL_FALLBACK,
-        temperature=0.0,
-        max_tokens=10,
+        temperature=skill.get("temperature", 0.0),
+        max_tokens=15,
     )
     raw = raw.strip().lower()
 
@@ -160,6 +235,13 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
             return {"error": f"User {user_id} not found. Please register first."}
         target_exam = user.get("target_exam", "JEE_ADVANCED")
         preferred_depth = user.get("preferred_depth", "standard")
+        grade_level = user.get("grade_level")
+        daily_goal_minutes = user.get("daily_goal_minutes")
+        focus_chapters = list(state.get("focus_chapters") or [])
+        if not focus_chapters:
+            profile = db.read_user_learning_profile(user_id)
+            if profile:
+                focus_chapters = list(profile.get("weak_chapters") or [])
 
         # 2. Load session
         session = db.read_session(session_id)
@@ -172,6 +254,43 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
         # 3. Load last 2 chat turns for context
         recent_turns = db.read_recent_chat_turns(session_id, n=2)
 
+        # 3b. Greetings / small-talk — fast path (skip LLM intent + full pipeline)
+        if _is_greeting(query):
+            db.update_session_interaction_count(session_id, interaction_count)
+            db.insert_chat_turn(
+                session_id=session_id,
+                role="user",
+                content=query,
+                turn_index=interaction_count * 2 - 1,
+                agent_used="orchestrator",
+            )
+            db.insert_chat_turn(
+                session_id=session_id,
+                role="assistant",
+                content=_WELCOME_MESSAGE,
+                turn_index=interaction_count * 2,
+                agent_used="orchestrator",
+            )
+            return {
+                "session_id": session_id,
+                "target_exam": target_exam,
+                "preferred_depth": preferred_depth,
+                "grade_level": grade_level,
+                "daily_goal_minutes": daily_goal_minutes,
+                "focus_chapters": focus_chapters,
+                "interaction_count": interaction_count,
+                "active_quiz": active_quiz,
+                "recent_turns": recent_turns,
+                "intent": "doubt",
+                "active_agent": "orchestrator",
+                "response": _WELCOME_MESSAGE,
+                "agent_used": "orchestrator",
+                "run_context_manager": False,
+                "prior_session_summary": state.get("prior_session_summary"),
+                "prior_structured_memory": state.get("prior_structured_memory"),
+                "error": None,
+            }
+
         # 4. Intent classification ────────────────────────────────────────────
         pending_prereq = state.get("pending_prereq_concept_id", "") or ""
         practice_question_pending = bool(state.get("awaiting_graded_response"))
@@ -179,10 +298,20 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
         if state.get("has_graded_outcome") and state.get("is_correct") is not None:
             # "1" / "0" detected deterministically in main.py — skip LLM
             intent = "graded_response"
+        elif query.startswith("SUBMISSION::"):
+            intent = "practice_submission"
         else:
             intent = _classify_intent(
                 query, active_quiz, recent_turns, pending_prereq, practice_question_pending
             )
+
+        # ── Guard: follow_up_response with no outstanding suggestions ────────────
+        # Models like groq/compound-mini over-classify greetings ("hi", "okay",
+        # "thanks") as follow_up_response.  Carry is already merged into state by
+        # _build_initial_state, so state["follow_up_suggestions"] is authoritative.
+        if intent == "follow_up_response":
+            if not state.get("follow_up_suggestions") or _is_greeting(query):
+                intent = "doubt"
 
         # 5. Handle special intents ───────────────────────────────────────────
         extra_updates: Dict[str, Any] = {}
@@ -233,23 +362,46 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
             interaction_count % config.CONTEXT_MANAGER_EVERY_N == 0
         )
 
-        # 9. Cross-session memory: load prior summary on the very first turn only
+        # 9. Cross-session memory: load prior structured memory + text summary
+        #    on the very first turn of a new session only.
         prior_session_summary = state.get("prior_session_summary")
-        if interaction_count == 1 and prior_session_summary is None:
-            prior_session_summary = db.read_prior_session_summary(
+        prior_structured_memory = state.get("prior_structured_memory")
+        if interaction_count == 1 and prior_structured_memory is None:
+            # Try structured memory first (new format)
+            prior_structured_memory = db.read_prior_structured_memory(
                 user_id, exclude_session_id=session_id
             )
+            # Fall back to text summary for backward compatibility
+            if prior_session_summary is None:
+                if prior_structured_memory and prior_structured_memory.get("text_summary"):
+                    prior_session_summary = prior_structured_memory["text_summary"]
+                else:
+                    prior_session_summary = db.read_prior_session_summary(
+                        user_id, exclude_session_id=session_id
+                    )
+
+        active_agent = _resolve_active_agent(
+            {**state, **extra_updates, "intent": intent},
+            intent,
+            focus_chapters=focus_chapters,
+            interaction_count=interaction_count,
+        )
 
         result: Dict[str, Any] = {
             "session_id": session_id,
             "target_exam": target_exam,
             "preferred_depth": preferred_depth,
+            "grade_level": grade_level,
+            "daily_goal_minutes": daily_goal_minutes,
+            "focus_chapters": focus_chapters,
             "interaction_count": interaction_count,
             "active_quiz": active_quiz,
             "recent_turns": recent_turns,
             "intent": intent,
+            "active_agent": active_agent,
             "run_context_manager": run_context_manager,
             "prior_session_summary": prior_session_summary,
+            "prior_structured_memory": prior_structured_memory,
             "error": None,
         }
         result.update(extra_updates)

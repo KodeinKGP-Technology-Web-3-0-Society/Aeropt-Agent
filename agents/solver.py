@@ -1,7 +1,9 @@
 """
 Solver Agent
 
-Generates a personalized, direct answer using retrieved content chunks.
+Generates a personalized, direct answer. Retrieved chunks are optional
+grounding — when they are empty, the model composes from first principles
+and the student's proficiency profile.
 
 Personalization axes:
   • cold_start=True  → "build from the ground up" framing
@@ -19,6 +21,7 @@ Model: qwen/qwen3.6-27b (Groq)
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +31,7 @@ from groq import Groq
 import config
 from db.supabase_client import db
 from models.state import TutorState
+from utils.latex_guidelines import LATEX_OUTPUT_RULES
 from utils.llm import groq_complete
 
 # ── Supabase storage URL builder ───────────────────────────────────────────────
@@ -199,7 +203,6 @@ Prior session notes:  {prior_session_summary}
 • Adapt explanation depth to the proficiency level, framing hint, and preferred depth.
 • If the student has recurring errors, gently address that pattern.
 • If there are weak prerequisites listed, briefly acknowledge them.
-• Use LaTeX for all mathematical expressions (e.g. $F = ma$).
 • Structure your answer as: conceptual foundation → worked logic → key formulae → summary.
 • Never stop mid-sentence or mid-section. Always complete the summary. If space \
 is tight, shorten earlier sections rather than truncating the end.
@@ -256,24 +259,29 @@ def _journey_hint(state: Dict[str, Any]) -> str:
     journey = (state.get("journey_type") or "").strip()
     focus = state.get("focus_chapters") or []
     focus_text = ", ".join(focus[:3]) if focus else "none flagged"
+    grade = (state.get("grade_level") or "").strip()
+    grade_bit = f" Grade: {grade}." if grade else ""
     if journey == "fresh_start":
         return (
             "Fresh start — student is new to the syllabus. "
             "Use gentle pacing, more theory, and foundational examples."
+            f"{grade_bit}"
         )
     if journey == "revision_dropper":
         return (
             "Revision / dropper — student has covered the syllabus once. "
             "Be concise, exam-focused, and prefer PYQ-style practice. "
-            f"Focus chapters: {focus_text}."
+            f"Focus chapters: {focus_text}.{grade_bit}"
         )
     if journey == "mid_journey":
         return (
             "Mid-journey — student has partial syllabus coverage. "
             "Bridge gaps quickly and match depth to their chapter confidence. "
-            f"Focus chapters: {focus_text}."
+            f"Focus chapters: {focus_text}.{grade_bit}"
         )
-    return "Standard pacing."
+    if focus:
+        return f"Focus chapters from placement: {focus_text}.{grade_bit}"
+    return f"Standard pacing.{grade_bit}"
 
 
 def _summarise_errors(error_dist: Dict[str, int]) -> str:
@@ -610,7 +618,11 @@ def _render_math_text(text: str) -> str:
 
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
     if not chunks:
-        return "(no content retrieved)"
+        return (
+            "(no knowledge-graph chunks — compose from physics knowledge, "
+            "student proficiency, and the query. Chunks are optional grounding, "
+            "not a requirement.)"
+        )
     parts = []
     for i, c in enumerate(chunks, 1):
         text = (c.get("core_text") or "").strip()
@@ -694,6 +706,33 @@ def _format_practice_response(chunks: List[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def extract_practice_payload(raw: str) -> Optional[Dict[str, Any]]:
+    """Pull a practice MCQ/numerical object out of a model dump."""
+    raw_clean = _clean_output(raw)
+    start = raw_clean.find("{")
+    end = raw_clean.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    json_str = raw_clean[start : end + 1]
+    json_str = re.sub(r'(?<!\\)\\(?![/"\\bfnrtu])', r"\\\\", json_str)
+    try:
+        parsed = json.loads(json_str, strict=False)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("type") not in {"mcq", "numerical"}:
+        return None
+    question = parsed.get("question_text")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    return parsed
+
+
+def _fence_practice(payload: Dict[str, Any]) -> str:
+    return f"```interactive-practice\n{json.dumps(payload)}\n```"
+
+
 def solver_node(state: TutorState) -> Dict[str, Any]:
     try:
         target_state = state.get("target_concept_state") or {}
@@ -708,93 +747,124 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         if chunks:
             concept_name = chunks[0].get("primary_concept_id", primary_id)
 
-        # ── Branch: practice / PYQ — direct format, no LLM ───────────────────
+        from utils.skills import load_skill
+
+        # Load the advanced skill prompt
+        skill_name = "practice_coach" if content_type in {"practice", "pyq"} else "physics_solver"
+        skill = load_skill(skill_name) or {}
+            
+        prior_summary = state.get("prior_session_summary") or "(none)"
+        
+        prompt = skill["system_prompt"]
+        prompt = prompt.replace("{{target_exam}}", str(state.get("target_exam", "JEE_ADVANCED")))
+        prompt = prompt.replace("{{journey_hint}}", str(_journey_hint(state)))
+        prompt = prompt.replace("{{depth_hint}}", str(_depth_hint(state)))
+        prompt = prompt.replace("{{concept_name}}", str(concept_name))
+        prompt = prompt.replace("{{proficiency}}", f"{target_state.get('proficiency_score', 0.5):.2f}")
+        prompt = prompt.replace("{{framing_hint}}", str(_build_framing(target_state)))
+        prompt = prompt.replace("{{error_summary}}", str(_summarise_errors(target_state.get("error_type_dist") or {})))
+        prompt = prompt.replace("{{weak_prereqs}}", str(_weak_prereqs_summary(prereq_states)))
+        prompt = prompt.replace("{{prior_session_summary}}", str(prior_summary))
+        prompt = prompt.replace("{{formulae_section}}", str(_extract_formulae(chunks)))
+        prompt = prompt.replace("{{chunks}}", str(_format_chunks(chunks)))
+        
+        query = state["query"]
         if content_type in {"practice", "pyq"}:
-            response = _format_practice_response(chunks)
-            model_used = "direct"
+            query = f"[PRACTICE REQUEST] Generate an interactive JSON practice question. User's query: {query}"
+        prompt = prompt.replace("{{query}}", query)
 
-        # ── Branch: theory / example — LLM generation ────────────────────────
+        prompt = f"{prompt}\n\n{LATEX_OUTPUT_RULES}"
+
+        is_practice = content_type in {"practice", "pyq"}
+        # NOTE: We intentionally do NOT use response_format=json_object here.
+        # Groq's JSON mode can raise 400 json_validate_failed when the model produces
+        # slightly malformed LaTeX backslashes, breaking the entire fallback chain.
+        # Instead, we extract and repair the JSON ourselves via regex + strict=False.
+        
+        raw, model_used = groq_complete(
+            client=_groq,
+            model=skill.get("model", config.SOLVER_MODEL),
+            messages=[{"role": "user", "content": prompt}],
+            fallback_models=config.SOLVER_FALLBACK_MODELS,
+            min_chars=MIN_RESPONSE_CHARS,
+            temperature=skill.get("temperature", 0.4),
+            max_tokens=3000,
+            stream=not is_practice,
+        )
+        practice_payload: Optional[Dict[str, Any]] = None
+        if is_practice:
+            practice_payload = extract_practice_payload(raw)
+            if practice_payload:
+                response = _fence_practice(practice_payload)
+            else:
+                raw_clean = _clean_output(raw)
+                logger.error("JSON validation failed. Raw: %s", raw_clean[:800])
+                response = f"```json\n{raw_clean}\n```"
         else:
-            prior_summary = state.get("prior_session_summary") or "(none)"
-
-            prompt = _SOLVER_PROMPT.format(
-                target_exam=state.get("target_exam", "JEE_ADVANCED"),
-                journey_hint=_journey_hint(state),
-                depth_hint=_depth_hint(state),
-                concept_name=concept_name,
-                proficiency=target_state.get("proficiency_score", 0.5),
-                framing_hint=_build_framing(target_state),
-                error_summary=_summarise_errors(target_state.get("error_type_dist") or {}),
-                weak_prereqs=_weak_prereqs_summary(prereq_states),
-                prior_session_summary=prior_summary,
-                formulae_section=_extract_formulae(chunks),
-                chunks=_format_chunks(chunks),
-                query=state["query"],
-            )
-
-            # min_chars catches think-only responses (qwen3 returns 200 OK but
-            # all content is inside <think>…</think>) before _clean_output strips them.
-            raw, model_used = groq_complete(
-                client=_groq,
-                model=config.SOLVER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                fallback_models=config.SOLVER_FALLBACK_MODELS,
-                min_chars=MIN_RESPONSE_CHARS,
-                temperature=0.4,
-                max_tokens=2500,
-            )
             response = prepare_student_markdown(_clean_output(raw))
 
-            # Append the diagram image, if any, from the best-ranked chunk that
-            # actually carries one (not necessarily chunk 0).  For theory/example
-            # answers we only show the CORE diagram — the solution image belongs
-            # to the practice/PYQ path and would render as a broken/irrelevant
-            # graphic here.
-            img_chunk = _select_core_image_chunk(chunks)
+        img_chunk = _select_core_image_chunk(chunks)
+        if img_chunk:
+            core_url = _image_urls(img_chunk)["core"]
+            if core_url:
+                response += f"\n\n![Diagram]({core_url})"
+
+        if len(response.strip()) < MIN_RESPONSE_CHARS:
+            logger.warning(
+                "[Solver] Response empty after think-block removal "
+                "(model=%s, len=%d). Forcing explicit fallback.",
+                model_used,
+                len(response.strip()),
+            )
+            raw, model_used = groq_complete(
+                client=_groq,
+                model=config.SOLVER_FALLBACK_MODELS[0],
+                messages=[{"role": "user", "content": prompt}],
+                fallback_models=config.SOLVER_FALLBACK_MODELS[1:],
+                min_chars=MIN_RESPONSE_CHARS,
+                temperature=0.4,
+                max_tokens=3000,
+                stream=not is_practice,
+            )
+            if is_practice:
+                practice_payload = extract_practice_payload(raw)
+                if practice_payload:
+                    response = _fence_practice(practice_payload)
+                else:
+                    raw_clean = _clean_output(raw)
+                    logger.error("Fallback JSON validation failed. Raw: %s", raw_clean[:800])
+                    response = f"```json\n{raw_clean}\n```"
+            else:
+                response = prepare_student_markdown(_clean_output(raw))
             if img_chunk:
                 core_url = _image_urls(img_chunk)["core"]
                 if core_url:
                     response += f"\n\n![Diagram]({core_url})"
 
-            # Second safety net: if _clean_output itself strips the response to nothing
-            # (think block was at the very end with no answer), force fallback.
-            if len(response.strip()) < MIN_RESPONSE_CHARS:
-                logger.warning(
-                    "[Solver] Response empty after think-block removal "
-                    "(model=%s, len=%d). Forcing explicit fallback.",
-                    model_used,
-                    len(response.strip()),
-                )
-                raw, model_used = groq_complete(
-                    client=_groq,
-                    model=config.SOLVER_FALLBACK_MODELS[0],
-                    messages=[{"role": "user", "content": prompt}],
-                    fallback_models=config.SOLVER_FALLBACK_MODELS[1:],
-                    min_chars=MIN_RESPONSE_CHARS,
-                    temperature=0.4,
-                    max_tokens=2500,
-                )
-                response = prepare_student_markdown(_clean_output(raw))
-
+        agent_for_db = state.get("agent_used", "solver")
+        valid_agents = {"tutor", "solver", "socratic", "quiz", "syllabus", "diagnostic"}
+        if agent_for_db not in valid_agents:
+            agent_for_db = "solver"
+            
         db.insert_chat_turn(
             session_id=state["session_id"],
             role="assistant",
             content=response,
             turn_index=state.get("interaction_count", 1) * 2,
-            agent_used="solver",
+            agent_used=agent_for_db,
             concepts_referenced=[primary_id] if primary_id else None,
         )
 
-        # Signal whether the student now has an unanswered practice/PYQ question.
-        # main.py carries this flag so the Orchestrator can detect ambiguous
-        # follow-up messages and show a reminder instead of the full pipeline.
-        return {
+        result: Dict[str, Any] = {
             "response": response,
             "agent_used": "solver",
             "model_used": model_used,
             "awaiting_graded_response": content_type in {"practice", "pyq"},
             "error": None,
         }
+        if practice_payload:
+            result["practice_question"] = practice_payload
+        return result
 
     except Exception as exc:
         return {"error": f"Solver failed: {exc}"}
