@@ -33,50 +33,6 @@ def _embed_query(text: str) -> List[float]:
     return result.embeddings[0].values
 
 
-def _compute_prereq_score(prereq_states: List[Dict[str, Any]]) -> float:
-    """
-    Weighted average prereq proficiency — direct prereqs (hop=1) count more.
-    Falls back to 0.5 (neutral) when no prereq data exists.
-    """
-    if not prereq_states:
-        return 0.5
-    total_weight = 0.0
-    weighted_sum = 0.0
-    for s in prereq_states:
-        hop = s.get("hop_count", 1)
-        weight = 1.0 / hop          # hop-1 prereqs count twice as much as hop-2
-        weighted_sum += s.get("proficiency_score", 0.5) * weight
-        total_weight += weight
-    return weighted_sum / total_weight if total_weight > 0 else 0.5
-
-
-def _should_use_socratic(
-    target_state: Optional[Dict[str, Any]],
-    prereq_states: List[Dict[str, Any]],
-    socratic_turn_count: int,
-) -> bool:
-    """
-    Section 8 refined routing:
-      IF target.is_cold_start == True          → Solver (nothing to draw out yet)
-      ELIF prereq_avg > 0.7 AND target < 0.4   → Socratic
-      ELIF socratic_turns >= MAX               → force Solver (auto-escalate)
-      ELSE                                     → Solver
-    """
-    if target_state is None:
-        return False
-    if target_state.get("is_cold_start", True):
-        return False
-
-    target_score = target_state.get("proficiency_score", 0.5)
-    prereq_score = _compute_prereq_score(prereq_states)
-
-    if prereq_score > config.SOCRATIC_PREREQ_MIN and target_score < config.SOCRATIC_TARGET_MAX:
-        if socratic_turn_count >= config.SOCRATIC_MAX_TURNS:
-            return False   # auto-escalate
-        return True
-
-    return False
-
 
 def _build_prereq_states(
     prereq_graph: List[Dict[str, Any]],
@@ -221,19 +177,33 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
         order_map = {cid: i for i, cid in enumerate(top_content_ids)}
         retrieved_chunks.sort(key=lambda c: order_map.get(c["content_id"], 999))
 
-        # ── 9. Socratic routing decision ──────────────────────────────────────
+        # ── 9. Strategy decision ─────────────────────────────────────────────
         socratic_turn_count = db.count_socratic_turns_for_concept(
             session_id, primary_concept_id
         )
-        use_socratic = _should_use_socratic(target_state, prereq_states, socratic_turn_count)
+        
+        from agents.planner import compute_personalization_strategy
+        learning_profile = db.read_user_learning_profile(user_id)
+        
+        strategy = compute_personalization_strategy(
+            target_state=target_state or {},
+            prereq_states=prereq_states,
+            learning_profile=learning_profile,
+            content_type=content_type,
+            query=query,
+            socratic_turn_count=socratic_turn_count
+        )
 
         return {
             "target_concept_state":    target_state,
             "prereq_concept_states":   prereq_states,
             "secondary_concept_states": secondary_states,
             "retrieved_chunks":        retrieved_chunks,
-            "use_socratic":            use_socratic,
+            "use_socratic":            strategy.get("use_socratic", False),
             "socratic_turn_count":     socratic_turn_count,
+            "teaching_mode":           strategy.get("teaching_mode"),
+            "difficulty_target":       strategy.get("difficulty_target"),
+            "framing":                 strategy.get("framing"),
             "error": None,
         }
 

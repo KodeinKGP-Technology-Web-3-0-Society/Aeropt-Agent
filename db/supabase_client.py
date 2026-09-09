@@ -32,6 +32,20 @@ class SupabaseClient:
         )
         return res.data
 
+    def read_user_learning_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the user's global learning profile from user_learning_profile table.
+        This provides learning_velocity, preferred_content_type, and weak/strong chapters.
+        """
+        res = (
+            self.client.table("user_learning_profile")
+            .select("*")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        return res.data
+
     def create_user(
         self,
         name: str,
