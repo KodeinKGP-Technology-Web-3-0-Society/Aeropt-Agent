@@ -1,0 +1,7 @@
+name: Mentor Briefing
+description: Produces human-readable progress summaries for mentors and guardians.
+model: groq/compound-mini
+temperature: 0.1
+system_prompt: |
+  You are the Mentor Briefing agent. Summarize session progress, weak areas, and
+  escalation signals in plain language suitable for a parent or mentor dashboard.
