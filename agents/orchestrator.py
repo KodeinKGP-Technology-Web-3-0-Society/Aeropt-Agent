@@ -362,23 +362,13 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
             interaction_count % config.CONTEXT_MANAGER_EVERY_N == 0
         )
 
-        # 9. Cross-session memory: load prior structured memory + text summary
+        # 9. Cross-session memory: load prior text summary
         #    on the very first turn of a new session only.
         prior_session_summary = state.get("prior_session_summary")
-        prior_structured_memory = state.get("prior_structured_memory")
-        if interaction_count == 1 and prior_structured_memory is None:
-            # Try structured memory first (new format)
-            prior_structured_memory = db.read_prior_structured_memory(
+        if interaction_count == 1 and prior_session_summary is None:
+            prior_session_summary = db.read_prior_session_summary(
                 user_id, exclude_session_id=session_id
             )
-            # Fall back to text summary for backward compatibility
-            if prior_session_summary is None:
-                if prior_structured_memory and prior_structured_memory.get("text_summary"):
-                    prior_session_summary = prior_structured_memory["text_summary"]
-                else:
-                    prior_session_summary = db.read_prior_session_summary(
-                        user_id, exclude_session_id=session_id
-                    )
 
         active_agent = _resolve_active_agent(
             {**state, **extra_updates, "intent": intent},
@@ -401,7 +391,6 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
             "active_agent": active_agent,
             "run_context_manager": run_context_manager,
             "prior_session_summary": prior_session_summary,
-            "prior_structured_memory": prior_structured_memory,
             "error": None,
         }
         result.update(extra_updates)
