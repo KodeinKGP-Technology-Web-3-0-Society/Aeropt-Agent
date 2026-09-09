@@ -27,6 +27,7 @@ Thumbs.db
 
 .carry_sessions/
 *.log
+api.log
 *.tmp
 
 # Cursor-generated assets (not part of the project)
