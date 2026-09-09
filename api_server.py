@@ -53,12 +53,15 @@ warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarnin
 
 import logging
 from typing import Any, Dict, List, Optional
+import asyncio
+import json
 
 # ── config must be imported first — calls load_dotenv() and sets SSL cert ─────
 import config  # noqa: F401
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -67,14 +70,15 @@ from db.supabase_client import db
 from graph.workflow import tutor_graph
 from models.state import TutorState
 
-# ── Session-management helpers — imported directly from main.py ───────────────
-# These are module-level pure functions / objects.  Importing them does NOT
-# invoke main() because that is guarded by `if __name__ == "__main__"`.
-from main import (
-    _build_initial_state,
-    _flush_session_summary,
-    _parse_graded_input,
-    _update_carry,
+# ── Session-management helpers — imported from services.turn_service ───────────
+from services.turn_service import (
+    build_initial_state as _build_initial_state,
+    clear_stale_practice_carry,
+    flush_session_summary as _flush_session_summary,
+    parse_legacy_answer as _parse_graded_input,
+    parse_turn_input as _parse_graded_input_request,
+    resolve_session as _turn_resolve_session,
+    update_carry as _update_carry,
 )
 from carry_store import get_carry, release_carry, save_carry
 from onboarding_diagnostic import grade_placement_answer, start_placement_diagnostic
@@ -103,6 +107,8 @@ app.add_middleware(
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class ChatMessageRequest(BaseModel):
+    # Django is the auth authority. This is the Supabase UUID from Django login
+    # (`supabase_user_id`), not a separately registered agent account.
     user_id: str
     session_id: Optional[str] = None  # null → server creates a new Supabase session
     query: str
@@ -177,6 +183,9 @@ class TurnPresentationPayload(BaseModel):
     quiz_steps: Optional[List[Any]] = None
     primary_concept_id: Optional[str] = None
     content_type_requested: Optional[str] = None
+    practice_question: Optional[Dict[str, Any]] = None
+    practice_batch: Optional[List[Dict[str, Any]]] = None
+    active_agent: Optional[str] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -197,7 +206,25 @@ class ChatMessageResponse(BaseModel):
     proficiency_pct: Optional[int] = None
     primary_concept_id: Optional[str] = None
     content_type_requested: Optional[str] = None
+    practice_question: Optional[Dict[str, Any]] = None
+    practice_batch: Optional[List[Dict[str, Any]]] = None
+    active_agent: Optional[str] = None
+    agent_signals: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+class AgentCardPayload(BaseModel):
+    id: str
+    name: str
+    description: str
+    status: str
+    signal: str
+    signal_type: str
+
+
+class AgentStatusResponse(BaseModel):
+    agents: List[AgentCardPayload]
+    active_agent: Optional[str] = None
 
 
 class SandboxExecuteRequest(BaseModel):
@@ -236,6 +263,14 @@ class ChatSessionListResponse(BaseModel):
     sessions: List[ChatSessionSummary]
 
 
+class CreateSessionRequest(BaseModel):
+    user_id: str
+
+
+class CreateSessionResponse(BaseModel):
+    session_id: str
+
+
 class ChatTurnItem(BaseModel):
     turn_id: str
     role: str
@@ -256,48 +291,6 @@ class ConceptProficiencyResponse(BaseModel):
     proficiency_pct: Optional[int] = None
     proficiency_score: Optional[float] = None
     flagged_weak: Optional[bool] = None
-
-
-# ── Auth schemas ──────────────────────────────────────────────────────────────
-
-class RegisterRequest(BaseModel):
-    name: str
-    email: str
-    password: str
-    target_exam: str = "JEE_ADVANCED"   # "JEE_ADVANCED" | "JEE_MAINS"
-
-
-class RegisterResponse(BaseModel):
-    user_id: str
-    name: str
-    email: str
-    target_exam: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    user_id: str
-    name: str
-    target_exam: str
-
-
-class UserResponse(BaseModel):
-    user_id: str
-    target_exam: str
-    preferred_depth: str
-
-
-class UpdateUserRequest(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-
-
-class UpdateUserResponse(BaseModel):
-    ok: bool
 
 
 class ProbeSpec(BaseModel):
@@ -345,20 +338,15 @@ def _resolve_session(
     create_reason: str = "free",
     roadmap_node_id: Optional[str] = None,
 ) -> str:
-    if session_id:
-        session = db.read_session(session_id)
-        if not session or session.get("user_id") != user_id:
-            raise HTTPException(status_code=404, detail="Session not found.")
-        return session_id
-    session = db.create_session(user_id)
-    logging.warning(
-        "session-create reason=%s user=%s session=%s roadmap_node=%s",
-        create_reason,
-        user_id,
-        session["session_id"],
-        roadmap_node_id or "-",
-    )
-    return session["session_id"]
+    try:
+        return _turn_resolve_session(
+            user_id=user_id,
+            session_id=session_id,
+            create_reason=create_reason,
+            roadmap_node_id=roadmap_node_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found.")
 
 
 def _presentation_blob(response: ChatMessageResponse) -> Dict[str, Any]:
@@ -379,6 +367,9 @@ def _presentation_blob(response: ChatMessageResponse) -> Dict[str, Any]:
         "quiz_steps": response.quiz_steps,
         "primary_concept_id": response.primary_concept_id,
         "content_type_requested": response.content_type_requested,
+        "practice_question": response.practice_question,
+        "practice_batch": response.practice_batch,
+        "active_agent": response.active_agent,
     }
 
 
@@ -398,11 +389,18 @@ def _store_turn_presentation(
     try:
         updated = db.update_chat_turn_presentation(session_id, turn_index, blob)
         if not updated:
-            logging.warning(
-                "No assistant chat_turn to attach presentation "
-                "(session=%s turn_index=%s)",
-                session_id,
-                turn_index,
+            agent_for_db = result.get("agent_used") or "diagnostic"
+            valid_agents = {"tutor", "solver", "socratic", "quiz", "syllabus", "diagnostic"}
+            if agent_for_db not in valid_agents:
+                agent_for_db = "tutor"
+                
+            db.insert_chat_turn(
+                session_id=session_id,
+                role="assistant",
+                content=result.get("response") or "",
+                turn_index=turn_index,
+                agent_used=agent_for_db,
+                presentation=blob,
             )
     except Exception:
         logging.exception(
@@ -413,54 +411,6 @@ def _store_turn_presentation(
         )
 
 
-def _parse_graded_input_request(
-    raw_input: str,
-    carry: Dict[str, Any],
-    graded_outcome: Optional[str],
-) -> tuple[str, Optional[Dict[str, Any]], bool]:
-    graded_overrides: Optional[Dict[str, Any]] = None
-    query = raw_input
-    was_graded = False
-
-    outcome = (graded_outcome or "").lower().strip()
-    # Explicit Correct/Incorrect from the UI is authoritative. Prefer it over the
-    # raw query so clients never depend on sending "1"/"0" in `query`.
-    if outcome in {"correct", "incorrect"}:
-        awaiting = bool(carry.get("awaiting_graded_response"))
-        ctype = (carry.get("content_type_requested") or "").lower()
-        if awaiting or ctype in {"practice", "pyq"} or not raw_input.strip():
-            graded_overrides = {
-                "has_graded_outcome": True,
-                "student_answer": "1" if outcome == "correct" else "0",
-                "is_correct": outcome == "correct",
-                "error_type": None,
-                "time_taken_sec": None,
-            }
-            query = graded_overrides["student_answer"]
-            was_graded = True
-            return query, graded_overrides, was_graded
-
-    if (
-        raw_input in {"1", "0"}
-        and carry.get("content_type_requested") in {"practice", "pyq"}
-        and carry.get("awaiting_graded_response")
-    ):
-        graded_overrides = {
-            "has_graded_outcome": True,
-            "student_answer": raw_input,
-            "is_correct": raw_input == "1",
-            "error_type": None,
-            "time_taken_sec": None,
-        }
-        was_graded = True
-        return query, graded_overrides, was_graded
-
-    if raw_input.upper().startswith("ANSWER::"):
-        graded_overrides = _parse_graded_input(raw_input)
-        query = graded_overrides.get("student_answer", raw_input)
-        was_graded = True
-
-    return query, graded_overrides, was_graded
 
 
 def _invoke_tutor(
@@ -494,6 +444,86 @@ def _invoke_tutor(
     return tutor_graph.invoke(initial_state)
 
 
+def _persist_turn_side_effects(
+    *,
+    session_id: str,
+    carry: Dict[str, Any],
+    result: TutorState,
+    was_graded: bool,
+    chat_response: ChatMessageResponse,
+) -> None:
+    """Carry + presentation persistence after the graph (including Diagnostic/Follow-Up)."""
+    _update_carry(carry, result, was_graded=was_graded)
+    _store_turn_presentation(session_id, carry, result, chat_response)
+    save_carry(session_id, carry)
+
+
+def _prefetch_next_query(session_id: str, result: TutorState) -> None:
+    """Warm GraphRAG for the first follow-up suggestion when Redis is available."""
+    follow_ups = result.get("follow_up_suggestions")
+    if not follow_ups or not isinstance(follow_ups, list) or not db.redis:
+        return
+    next_query = follow_ups[0]
+    if isinstance(next_query, dict):
+        next_query = next_query.get("text", "")
+    next_query = (next_query or "").strip()
+    if not next_query:
+        return
+    try:
+        from agents.concept_resolver import concept_resolver_node
+        from agents.planner import planner_node
+        from agents.graphrag_retriever import graphrag_retriever_node
+
+        p_state = dict(result)
+        p_state["query"] = next_query
+        p_state["intent"] = "doubt"
+        p_state["content_type_requested"] = "theory"
+        p_state.update(concept_resolver_node(p_state))
+        p_state.update(planner_node(p_state))
+        p_state.update(graphrag_retriever_node(p_state))
+        cache_key = f"prefetch:{session_id}:{next_query}"
+        cache_val = {
+            "retrieved_chunks": p_state.get("retrieved_chunks", []),
+            "primary_concept_id": p_state.get("primary_concept_id"),
+            "secondary_concept_ids": p_state.get("secondary_concept_ids", []),
+            "target_concept_state": p_state.get("target_concept_state"),
+            "prereq_concept_states": p_state.get("prereq_concept_states"),
+            "secondary_concept_states": p_state.get("secondary_concept_states"),
+            "difficulty_target": p_state.get("difficulty_target"),
+            "difficulty_min": p_state.get("difficulty_min"),
+            "difficulty_max": p_state.get("difficulty_max"),
+            "retrieval_mode": p_state.get("retrieval_mode"),
+        }
+        db.redis.setex(cache_key, 120, json.dumps(cache_val))
+        logging.info("Prefetched for next query: %s", next_query)
+    except Exception:
+        logging.exception("Prefetch failed for session %s", session_id)
+
+
+def _attach_agent_signals(result: TutorState, user_id: str, focus_chapters: Optional[List[str]] = None) -> TutorState:
+    """Lightweight agent roster snapshot for the frontend panel."""
+    if result.get("agent_signals"):
+        return result
+    try:
+        from mcp_tools.get_agent_signals import GetAgentSignalsArgs, get_agent_signals
+
+        snapshot = get_agent_signals(
+            GetAgentSignalsArgs(
+                user_id=user_id,
+                session_id=result.get("session_id"),
+                focus_chapters=focus_chapters or [],
+                roadmap_concept_id=result.get("roadmap_concept_id"),
+                active_agent=result.get("active_agent"),
+                primary_concept_id=result.get("primary_concept_id"),
+            )
+        )
+        result = dict(result)
+        result["agent_signals"] = snapshot
+    except Exception:
+        pass
+    return result
+
+
 def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageResponse:
     payload = build_chat_payload(result)
     flashcards = payload.get("flashcards")
@@ -502,6 +532,12 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
     card = payload.get("card")
     slides = payload.get("slides")
     structured = payload.get("structured")
+    practice_batch = payload.get("practice_batch")
+    if not isinstance(practice_batch, list):
+        practice_batch = None
+    practice_question = payload.get("practice_question")
+    if not practice_question and practice_batch and len(practice_batch) == 1:
+        practice_question = practice_batch[0]
     return ChatMessageResponse(
         session_id=session_id,
         response=payload.get("response"),
@@ -511,15 +547,19 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
         follow_up_suggestions=payload.get("follow_up_suggestions"),
         quiz_steps=payload.get("quiz_steps"),
         awaiting_graded_response=bool(payload.get("awaiting_graded_response")),
-        flashcards=FlashcardsPayload(**flashcards) if flashcards else None,
+        flashcards=FlashcardsPayload(**flashcards) if flashcards and flashcards.get("mode") else None,
         grading_ui=GradingUIPayload(**grading_ui) if grading_ui else None,
         quiz_assessment=QuizAssessmentPayload(**quiz_assessment) if quiz_assessment else None,
-        card=ProactiveCardPayload(**card) if card else None,
-        slides=SlidesPayload(**slides) if slides else None,
+        card=ProactiveCardPayload(**card) if card and card.get("card_type") else None,
+        slides=SlidesPayload(**slides) if slides and slides.get("mode") else None,
         structured=StructuredLessonPayload(**structured) if structured else None,
         proficiency_pct=payload.get("proficiency_pct"),
         primary_concept_id=payload.get("primary_concept_id"),
         content_type_requested=payload.get("content_type_requested"),
+        practice_question=practice_question,
+        practice_batch=practice_batch,
+        active_agent=result.get("active_agent") or payload.get("active_agent"),
+        agent_signals=result.get("agent_signals") or payload.get("agent_signals"),
         error=payload.get("error"),
     )
 
@@ -528,105 +568,8 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@app.post("/api/v1/auth/register", response_model=RegisterResponse)
-def register_user(req: RegisterRequest) -> RegisterResponse:
-    """Create a new student account — stores email + password as-is in Supabase."""
-    if len(req.password) < 6:
-        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
-
-    existing = db.client.table("users").select("user_id").eq("email", req.email.strip()).execute()
-    if existing.data:
-        raise HTTPException(status_code=409, detail="An account with this email already exists. Please sign in instead.")
-
-    try:
-        user = db.register_user(
-            name=req.name.strip(),
-            target_exam=req.target_exam.upper(),
-            preferred_depth="standard",
-        )
-        db.client.table("users").update({
-            "email": req.email.strip(),
-            "password_hash": req.password,
-        }).eq("user_id", user["user_id"]).execute()
-
-        return RegisterResponse(
-            user_id=user["user_id"],
-            name=user.get("name", req.name),
-            email=req.email.strip(),
-            target_exam=user.get("target_exam", req.target_exam),
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logging.exception("register_user failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.post("/api/v1/auth/login", response_model=LoginResponse)
-def login_user(req: LoginRequest) -> LoginResponse:
-    """Sign in — match email + password directly against the users table."""
-    res = (
-        db.client.table("users")
-        .select("user_id, name, target_exam")
-        .eq("email", req.email.strip())
-        .eq("password_hash", req.password)
-        .execute()
-    )
-    if not res.data:
-        raise HTTPException(status_code=401, detail="Incorrect email or password.")
-
-    user = res.data[0]
-    return LoginResponse(
-        user_id=user["user_id"],
-        name=user.get("name", ""),
-        target_exam=user.get("target_exam", "JEE_ADVANCED"),
-    )
-
-
-@app.put("/api/v1/auth/user/{user_id}", response_model=UpdateUserResponse)
-def update_user(user_id: str, req: UpdateUserRequest) -> UpdateUserResponse:
-    """Update a user's name and/or email in Supabase."""
-    updates: dict = {}
-    if req.name is not None:
-        updates["name"] = req.name.strip()
-    if req.email is not None:
-        # Check the new email isn't already taken by a different account
-        if req.email.strip():
-            existing = (
-                db.client.table("users")
-                .select("user_id")
-                .eq("email", req.email.strip())
-                .neq("user_id", user_id)
-                .execute()
-            )
-            if existing.data:
-                raise HTTPException(status_code=409, detail="That email is already in use by another account.")
-        updates["email"] = req.email.strip()
-
-    if not updates:
-        return UpdateUserResponse(ok=True)
-
-    try:
-        db.client.table("users").update(updates).eq("user_id", user_id).execute()
-        return UpdateUserResponse(ok=True)
-    except Exception as exc:
-        logging.exception("update_user failed for %s", user_id)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.get("/api/v1/auth/user/{user_id}", response_model=UserResponse)
-def get_user(user_id: str) -> UserResponse:
-    """Validate a user_id — used as a fallback check."""
-    user = db.read_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    return UserResponse(
-        user_id=user_id,
-        target_exam=user.get("target_exam", "JEE_ADVANCED"),
-        preferred_depth=user.get("preferred_depth", "standard"),
-    )
-
+# Auth lives on Django (:8000 /api/v1/auth/). The agent does not register or
+# log in students; tutoring payloads carry user_id (Django-linked Supabase UUID).
 
 @app.post("/api/v1/onboarding/diagnostic")
 def onboarding_diagnostic(req: OnboardingDiagnosticRequest):
@@ -663,55 +606,153 @@ def onboarding_diagnostic(req: OnboardingDiagnosticRequest):
     raise HTTPException(status_code=422, detail="action must be 'start' or 'grade'.")
 
 
-@app.post("/api/v1/chat/message", response_model=ChatMessageResponse)
-def chat_message(req: ChatMessageRequest) -> ChatMessageResponse:
-    """Process one student message through the LangGraph pipeline."""
+@app.get("/api/v1/agents/status", response_model=AgentStatusResponse)
+def agents_status(
+    user_id: str,
+    session_id: Optional[str] = None,
+    roadmap_concept_id: Optional[str] = None,
+    active_agent: Optional[str] = None,
+    primary_concept_id: Optional[str] = None,
+    focus_chapters: Optional[str] = None,
+) -> AgentStatusResponse:
+    """Return the five product-agent cards with live status signals."""
+    from mcp_tools.get_agent_signals import GetAgentSignalsArgs, get_agent_signals
+
+    chapters = [c.strip() for c in (focus_chapters or "").split(",") if c.strip()]
+    payload = get_agent_signals(
+        GetAgentSignalsArgs(
+            user_id=user_id,
+            session_id=session_id,
+            focus_chapters=chapters,
+            roadmap_concept_id=roadmap_concept_id,
+            active_agent=active_agent,
+            primary_concept_id=primary_concept_id,
+        )
+    )
+    agents = [AgentCardPayload(**a) for a in payload.get("agents", [])]
+    return AgentStatusResponse(agents=agents, active_agent=payload.get("active_agent"))
+
+
+@app.post("/api/v1/chat/message")
+async def chat_message(req: ChatMessageRequest):
+    """Process one student message through the LangGraph pipeline with SSE streaming."""
     user_id = req.user_id
     raw_input = req.query.strip()
     create_reason = "roadmap" if req.roadmap_node_id else "free"
-    session_id = _resolve_session(
-        user_id,
-        req.session_id,
-        create_reason=create_reason,
-        roadmap_node_id=req.roadmap_node_id,
-    )
-    carry = get_carry(session_id)
-
-    query, graded_overrides, was_graded = _parse_graded_input_request(
-        raw_input, carry, req.graded_outcome
-    )
-
+    # _resolve_session and get_carry are DB calls but short, running in main thread for simplicity before stream starts
     try:
-        stage_overrides: Dict[str, Any] = {}
-        if req.study_stage in {"theory", "example", "practice", "pyq"}:
-            stage_overrides = {
-                "study_stage": req.study_stage,
-                "intent": "doubt",
-                "content_type_requested": req.study_stage,
-            }
-        result = _invoke_tutor(
-            user_id=user_id,
-            session_id=session_id,
-            query=query,
-            carry=carry,
-            graded_overrides=graded_overrides,
+        session_id = _resolve_session(
+            user_id,
+            req.session_id,
+            create_reason=create_reason,
             roadmap_node_id=req.roadmap_node_id,
-            roadmap_concept_id=req.roadmap_concept_id,
-            study_stage=req.study_stage,
-            state_overrides=stage_overrides or None,
-            journey_type=req.journey_type,
-            focus_chapters=req.focus_chapters,
         )
-        session_id = result.get("session_id") or session_id
+        carry = get_carry(session_id)
+        query, graded_overrides, was_graded = _parse_graded_input_request(
+            raw_input, carry, req.graded_outcome
+        )
+        if not was_graded:
+            clear_stale_practice_carry(carry)
+            save_carry(session_id, carry)
     except Exception as exc:
-        logging.exception("tutor_graph.invoke failed for session %s", session_id)
-        return ChatMessageResponse(session_id=session_id, error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
 
-    _update_carry(carry, result, was_graded=was_graded)
-    chat_response = _to_chat_response(session_id, result)
-    _store_turn_presentation(session_id, carry, result, chat_response)
-    save_carry(session_id, carry)
-    return chat_response
+    queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    streamed_parts: List[str] = []
+
+    def sync_cb(token: str):
+        streamed_parts.append(token)
+        loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "data": token})
+
+    def sync_worker():
+        from utils.stream import stream_callback_var
+        stream_callback_var.set(sync_cb)
+        try:
+            stage_overrides: Dict[str, Any] = {}
+            
+            # Check prefetch cache for next_query fast-forward
+            import json
+            from db.supabase_client import db
+            if db.redis:
+                try:
+                    cache_key = f"prefetch:{session_id}:{query.strip()}"
+                    cached_str = db.redis.get(cache_key)
+                    if cached_str:
+                        cached_data = json.loads(cached_str)
+                        stage_overrides.update(cached_data)
+                        stage_overrides["_prefetch_fast_forward"] = True
+                        logging.info("Used prefetch cache for query: %s", query.strip())
+                except Exception:
+                    pass
+                    
+            if req.study_stage in {"theory", "example", "practice", "pyq"}:
+                stage_overrides.update({
+                    "study_stage": req.study_stage,
+                    "intent": "doubt",
+                    "content_type_requested": req.study_stage,
+                })
+            result = _invoke_tutor(
+                user_id=user_id,
+                session_id=session_id,
+                query=query,
+                carry=carry,
+                graded_overrides=graded_overrides,
+                roadmap_node_id=req.roadmap_node_id,
+                roadmap_concept_id=req.roadmap_concept_id,
+                study_stage=req.study_stage,
+                state_overrides=stage_overrides or None,
+                journey_type=req.journey_type,
+                focus_chapters=req.focus_chapters,
+            )
+            final_session_id = result.get("session_id") or session_id
+
+            result = _attach_agent_signals(result, user_id, req.focus_chapters)
+
+            # If the solver streamed tokens but the state response is None,
+            # inject the accumulated stream so the frontend always gets real text.
+            if not result.get("response") and streamed_parts:
+                result["response"] = "".join(streamed_parts)
+
+            chat_response = _to_chat_response(final_session_id, result)
+            _persist_turn_side_effects(
+                session_id=final_session_id,
+                carry=carry,
+                result=result,
+                was_graded=was_graded,
+                chat_response=chat_response,
+            )
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {"type": "result", "data": chat_response.model_dump_json()},
+            )
+
+            def prefetch_bg():
+                from utils.stream import stream_callback_var
+                stream_callback_var.set(None)
+                try:
+                    _prefetch_next_query(final_session_id, result)
+                except Exception:
+                    logging.exception("Prefetch failed for session %s", final_session_id)
+
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(asyncio.to_thread(prefetch_bg)))
+        except Exception as exc:
+            logging.exception("tutor_graph.invoke failed for session %s", session_id)
+            err = ChatMessageResponse(session_id=session_id, error=str(exc))
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "result", "data": err.model_dump_json()})
+
+    asyncio.create_task(asyncio.to_thread(sync_worker))
+
+    async def sse_generator():
+        while True:
+            msg = await queue.get()
+            if msg["type"] == "token":
+                yield f"event: token\ndata: {json.dumps(msg['data'])}\n\n"
+            elif msg["type"] == "result":
+                yield f"event: result\ndata: {msg['data']}\n\n"
+                break
+                
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/v1/sandbox/execute", response_model=ChatMessageResponse)
@@ -796,6 +837,21 @@ def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiency
         proficiency_score=score,
         flagged_weak=bool(row.get("flagged_weak")),
     )
+
+
+@app.post("/api/v1/chat/sessions", response_model=CreateSessionResponse)
+def create_chat_session(req: CreateSessionRequest) -> CreateSessionResponse:
+    """Create an empty study session so the client can land on /chat/<id> before the first message."""
+    try:
+        session = db.create_session(req.user_id)
+    except Exception as exc:
+        logging.exception("create_session failed for user %s", req.user_id)
+        raise HTTPException(status_code=502, detail=f"Could not create session: {exc}") from exc
+    session_id = session.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=502, detail="Session created without an id.")
+    logging.warning("session-create reason=explicit_api user=%s session=%s", req.user_id, session_id)
+    return CreateSessionResponse(session_id=session_id)
 
 
 @app.get("/api/v1/chat/sessions", response_model=ChatSessionListResponse)
