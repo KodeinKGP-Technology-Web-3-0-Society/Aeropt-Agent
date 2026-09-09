@@ -117,6 +117,10 @@ def _build_prereq_states(
 
 
 def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
+    from agents.retrieval_gate import should_skip_retrieval
+    if should_skip_retrieval(state):
+        return {}
+
     user_id = state["user_id"]
     session_id = state["session_id"]
     primary_concept_id = state.get("primary_concept_id", "")
