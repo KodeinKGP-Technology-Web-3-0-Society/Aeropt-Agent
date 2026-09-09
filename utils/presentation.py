@@ -212,6 +212,7 @@ def build_mistake_brief(
     chunk: Optional[Dict[str, Any]],
     prereq_states: List[Dict[str, Any]],
     concept_id: str,
+    recurring_gap_note: Optional[str] = None,
 ) -> str:
     concept_label = concept_id.replace("_", " ").title()
     core = (chunk or {}).get("core_text") or ""
@@ -221,23 +222,25 @@ def build_mistake_brief(
     weak = _weakest_prereq(prereq_states)
     weak_name = (weak or {}).get("concept_name") or (weak or {}).get("concept_id", "")
 
+    recurring_extra = f"\n\n{recurring_gap_note}" if recurring_gap_note else ""
+
     if error_type == "conceptual":
         idea = _truncate(core.split("\n")[0] if core else f"Core idea for {concept_label}", 220)
         extra = f" Review **{weak_name}** first if that foundation feels shaky." if weak_name else ""
-        return f"**Concept check:** {idea}{extra}"
+        return f"**Concept check:** {idea}{extra}{recurring_extra}"
 
     if error_type == "procedural":
         step = _first_solution_step(solution)
-        return f"**Method check:** Verify your step order. Start here: {step}"
+        return f"**Method check:** Verify your step order. Start here: {step}{recurring_extra}"
 
     if error_type == "calculation":
         formula = _truncate(formula_solution or formula_core or "Re-check units and algebra.", 180)
-        return f"**Calculation check:** {_as_katex_block(formula)}"
+        return f"**Calculation check:** {_as_katex_block(formula)}{recurring_extra}"
 
     if error_type == "misread":
-        return f"**Read carefully:** Restate what is given vs what you need to find.\n\n{_truncate(core, 240)}"
+        return f"**Read carefully:** Restate what is given vs what you need to find.\n\n{_truncate(core, 240)}{recurring_extra}"
 
-    return f"**Review {concept_label}:** Compare your approach with the worked solution and note where it diverged."
+    return f"**Review {concept_label}:** Compare your approach with the worked solution and note where it diverged.{recurring_extra}"
 
 
 def build_remediation_cards(

@@ -214,7 +214,14 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             },
         )
 
-        # ── 5. Insert user_attempt row ────────────────────────────────────────
+        # ── 5. Compute root cause & Insert user_attempt row ────────────────────────
+        root_cause_concept_id = None
+        if not is_correct:
+            from agents.prereq_gap import find_weak_direct_prereq
+            weak_prereq = find_weak_direct_prereq(state.get("prereq_concept_states") or [])
+            if weak_prereq:
+                root_cause_concept_id = weak_prereq.get("concept_id")
+
         db.insert_user_attempt(
             user_id=user_id,
             session_id=session_id,
@@ -224,6 +231,7 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             error_type=error_type if not is_correct else None,
             time_taken_sec=time_taken,
             student_answer=student_answer,
+            root_cause_concept_id=root_cause_concept_id,
         )
 
         # ── 6. Write outcome summary to chat_turns ────────────────────────────
@@ -262,11 +270,26 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             chunk = chunks[0] if chunks else None
             err = error_type or "conceptual"
 
+            recurring_gap_note = None
+            if root_cause_concept_id:
+                recent_root = db.read_recent_attempts_by_root_cause(
+                    user_id=user_id,
+                    root_cause_concept_id=root_cause_concept_id,
+                    exclude_concept_id=primary_id,
+                )
+                if recent_root:
+                    past_concept_name = recent_root.get("concept", {}).get("name") or "another topic"
+                    recurring_gap_note = (
+                        f"Notice a pattern? You recently missed a question on **{past_concept_name}** "
+                        f"for the exact same reason. Reviewing this foundation will help you across the board."
+                    )
+
             mistake_brief = build_mistake_brief(
                 error_type=err,
                 chunk=chunk,
                 prereq_states=prereq_states,
                 concept_id=primary_id,
+                recurring_gap_note=recurring_gap_note,
             )
             remediation = build_remediation_cards(
                 chunk=chunk,

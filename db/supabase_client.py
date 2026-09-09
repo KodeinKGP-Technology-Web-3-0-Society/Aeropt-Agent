@@ -480,6 +480,25 @@ class SupabaseClient:
         res = q.execute()
         return [r["content_id"] for r in (res.data or []) if r.get("content_id")]
 
+    def read_recent_attempts_by_root_cause(
+        self, user_id: str, root_cause_concept_id: str, exclude_concept_id: str, limit: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        """Find recent incorrect attempts that share this root cause but occurred on a different concept."""
+        res = (
+            self.client.table("user_attempts")
+            .select("*, concept:concepts!user_attempts_concept_id_fkey(name)")
+            .eq("user_id", user_id)
+            .eq("root_cause_concept_id", root_cause_concept_id)
+            .neq("concept_id", exclude_concept_id)
+            .eq("is_correct", False)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+        return None
+
     def read_recent_user_attempts(
         self, user_id: str, concept_id: str, n: int = 5
     ) -> List[Dict[str, Any]]:

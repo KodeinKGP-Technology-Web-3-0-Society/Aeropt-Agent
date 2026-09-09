@@ -121,26 +121,14 @@ def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
     After an incorrect graded attempt, find the weakest prerequisite concept
     and surface it to the student.
 
-    Priority:
-      1. hop_count ASC   (direct prereqs first)
-      2. proficiency_score ASC  (lower score = more in need)
-
     Returns a state-update dict or None if no weak prereq found.
     """
     prereqs: List[Dict[str, Any]] = state.get("prereq_concept_states") or []
-    if not prereqs:
+    
+    from agents.prereq_gap import find_weak_direct_prereq
+    top = find_weak_direct_prereq(prereqs)
+    if not top:
         return None
-
-    weak = [
-        p for p in prereqs
-        if p.get("flagged_weak") or p.get("proficiency_score", 0.5) < config.WEAK_THRESHOLD
-    ]
-    if not weak:
-        return None
-
-    # Sort: hop_count ASC, proficiency_score ASC
-    weak.sort(key=lambda p: (p.get("hop_count", 1), p.get("proficiency_score", 0.5)))
-    top = weak[0]
 
     concept_name = top.get("concept_name") or top.get("concept_id", "that concept")
     concept_id = top.get("concept_id", "")
