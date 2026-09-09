@@ -605,6 +605,24 @@ def _render_math_text(text: str) -> str:
     return "\n".join(out_lines)
 
 
+def _parse_steps(markdown: str) -> List[Dict[str, Any]]:
+    """Parse solver markdown into an array of numbered steps."""
+    steps = []
+    # Split on typical markdown headers or list numbers
+    # (e.g. "##", "**Step 1**:", "1.") at start of line
+    parts = re.split(r"\n(?=(?:## |\*\*[^*]+\*\*:?|\d+\. |Step \d+[:*-]?))", markdown.strip())
+    
+    for i, part in enumerate(parts):
+        part = part.strip()
+        if part:
+            steps.append({
+                "step_id": f"s{i+1}",
+                "text": part,
+                "order": i + 1
+            })
+    return steps
+
+
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
     if not chunks:
         return (
@@ -835,6 +853,10 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         if agent_for_db not in valid_agents:
             agent_for_db = "solver"
             
+        presentation = None
+        if content_type in {"theory", "example"} and not is_practice:
+            presentation = {"steps": _parse_steps(response)}
+
         db.insert_chat_turn(
             session_id=state["session_id"],
             role="assistant",
@@ -842,6 +864,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
             turn_index=state.get("interaction_count", 1) * 2,
             agent_used=agent_for_db,
             concepts_referenced=[primary_id] if primary_id else None,
+            presentation=presentation,
         )
 
         result: Dict[str, Any] = {
@@ -853,6 +876,8 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         }
         if practice_payload:
             result["practice_question"] = practice_payload
+        if presentation:
+            result["presentation"] = presentation
         return result
 
     except Exception as exc:

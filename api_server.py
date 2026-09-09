@@ -118,6 +118,7 @@ class ChatMessageRequest(BaseModel):
     graded_outcome: Optional[str] = None  # "correct" | "incorrect"
     journey_type: Optional[str] = None
     focus_chapters: Optional[List[str]] = None
+    flagged_step_id: Optional[str] = None
 
 
 class FlashcardsPayload(BaseModel):
@@ -186,6 +187,7 @@ class TurnPresentationPayload(BaseModel):
     practice_question: Optional[Dict[str, Any]] = None
     practice_batch: Optional[List[Dict[str, Any]]] = None
     active_agent: Optional[str] = None
+    steps: Optional[List[Dict[str, Any]]] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -210,6 +212,7 @@ class ChatMessageResponse(BaseModel):
     practice_batch: Optional[List[Dict[str, Any]]] = None
     active_agent: Optional[str] = None
     agent_signals: Optional[Dict[str, Any]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
 
 
@@ -370,6 +373,7 @@ def _presentation_blob(response: ChatMessageResponse) -> Dict[str, Any]:
         "practice_question": response.practice_question,
         "practice_batch": response.practice_batch,
         "active_agent": response.active_agent,
+        "steps": response.steps,
     }
 
 
@@ -538,6 +542,9 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
     practice_question = payload.get("practice_question")
     if not practice_question and practice_batch and len(practice_batch) == 1:
         practice_question = practice_batch[0]
+        
+    steps = payload.get("steps")
+
     return ChatMessageResponse(
         session_id=session_id,
         response=payload.get("response"),
@@ -560,6 +567,7 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
         practice_batch=practice_batch,
         active_agent=result.get("active_agent") or payload.get("active_agent"),
         agent_signals=result.get("agent_signals") or payload.get("agent_signals"),
+        steps=steps,
         error=payload.get("error"),
     )
 
@@ -651,6 +659,18 @@ async def chat_message(req: ChatMessageRequest):
         query, graded_overrides, was_graded = _parse_graded_input_request(
             raw_input, carry, req.graded_outcome
         )
+        if req.flagged_step_id:
+            step_text = "(Step text unavailable)"
+            by_turn = carry.get("presentation_by_turn", {})
+            if by_turn:
+                latest_turn = max(by_turn.keys(), key=int)
+                steps = by_turn[latest_turn].get("steps", [])
+                for s in steps:
+                    if s.get("step_id") == req.flagged_step_id:
+                        step_text = s.get("text", "")
+                        break
+            query = f"I didn't understand this step of the previous explanation: '{step_text}' — explain just this step differently, in more detail."
+
         if not was_graded:
             clear_stale_practice_carry(carry)
             save_carry(session_id, carry)
