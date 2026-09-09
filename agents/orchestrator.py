@@ -168,13 +168,15 @@ def _parse_quiz_count(query: str) -> int:
     return max(1, min(_QUIZ_MAX_SIZE, n))
 
 
+from typing import Tuple
+
 def _classify_intent(
     query: str,
     active_quiz: bool,
     recent_turns: list,
     pending_prereq: str,
     practice_question_pending: bool,
-) -> str:
+) -> Tuple[str, list[str], float]:
     context_lines = []
     for t in recent_turns:
         role = t.get("role", "")
@@ -198,29 +200,42 @@ def _classify_intent(
         messages=[{"role": "user", "content": prompt}],
         fallback_models=config.SMALL_MODEL_FALLBACK,
         temperature=skill.get("temperature", 0.0),
-        max_tokens=15,
+        max_tokens=60,
     )
-    raw = raw.strip().lower()
+    raw = raw.strip()
+    
+    # Strip potential markdown code block
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        if len(lines) > 1 and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
 
-    valid = {
-        "doubt",
-        "practice_request",
-        "quiz_request",
-        "quiz_response",
-        "follow_up_response",
-        "prereq_confirmation",
-        "graded_response",
-    }
-    # Check longer/more-specific labels first so "quiz_request" is not shadowed
-    # by a substring match on "quiz_response" and vice-versa.
-    for v in ("quiz_request", "quiz_response", "follow_up_response",
-              "prereq_confirmation", "graded_response", "practice_request", "doubt"):
-        if v in raw:
-            return v
-    for v in valid:
-        if v in raw:
-            return v
-    return "doubt"  # safe default
+    primary_intent = "doubt"
+    secondary_intents = []
+    confidence = 0.0
+
+    import json
+    try:
+        parsed = json.loads(raw)
+        primary_intent = parsed.get("primary_intent", "doubt").lower()
+        secondary_intents = parsed.get("secondary_intents", [])
+        confidence = float(parsed.get("confidence", 0.0))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        raw_lower = raw.lower()
+        valid = {
+            "doubt", "practice_request", "quiz_request", "quiz_response",
+            "follow_up_response", "prereq_confirmation", "graded_response"
+        }
+        for v in ("quiz_request", "quiz_response", "follow_up_response",
+                  "prereq_confirmation", "graded_response", "practice_request", "doubt"):
+            if v in raw_lower:
+                primary_intent = v
+                break
+
+    return primary_intent, secondary_intents, confidence
 
 
 def orchestrator_node(state: TutorState) -> Dict[str, Any]:
@@ -294,16 +309,31 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
         # 4. Intent classification ────────────────────────────────────────────
         pending_prereq = state.get("pending_prereq_concept_id", "") or ""
         practice_question_pending = bool(state.get("awaiting_graded_response"))
+        extra_updates: Dict[str, Any] = {}
 
         if state.get("has_graded_outcome") and state.get("is_correct") is not None:
             # "1" / "0" detected deterministically in main.py — skip LLM
             intent = "graded_response"
+            extra_updates["secondary_intents"] = []
+            extra_updates["confidence"] = 1.0
         elif query.startswith("SUBMISSION::"):
             intent = "practice_submission"
+            extra_updates["secondary_intents"] = []
+            extra_updates["confidence"] = 1.0
         else:
-            intent = _classify_intent(
+            intent, secondary_intents, confidence = _classify_intent(
                 query, active_quiz, recent_turns, pending_prereq, practice_question_pending
             )
+            extra_updates["secondary_intents"] = secondary_intents
+            extra_updates["confidence"] = confidence
+
+            # Phase 2, Task 2.2: Log compound/ambiguous intents
+            if confidence < 0.6 or secondary_intents:
+                import logging
+                logging.getLogger("orchestrator").warning(
+                    f"COMPOUND_INTENT_GAP | Query: {query} | Primary: {intent} | "
+                    f"Secondary: {secondary_intents} | Confidence: {confidence}"
+                )
 
         # ── Guard: follow_up_response with no outstanding suggestions ────────────
         # Models like groq/compound-mini over-classify greetings ("hi", "okay",
@@ -314,8 +344,7 @@ def orchestrator_node(state: TutorState) -> Dict[str, Any]:
                 intent = "doubt"
 
         # 5. Handle special intents ───────────────────────────────────────────
-        extra_updates: Dict[str, Any] = {}
-
+        
         # quiz_request: flag on-demand quiz batch mode.  Concept Resolver and
         # GraphRAG Retriever then run as usual; the Quiz agent builds the batch.
         if intent == "quiz_request":

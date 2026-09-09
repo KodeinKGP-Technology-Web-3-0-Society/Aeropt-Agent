@@ -199,8 +199,30 @@ class SupabaseClient:
             return rows[0].get("session_summary")
         return None
 
-    # ─────────────────────────── chat_turns ───────────────────────────────────
+    # ── Content Gap Events (Phase 2, Task 1.4) ───────────────────────────────
+    def insert_content_gap_event(
+        self,
+        user_id: str,
+        session_id: str,
+        concept_id: str,
+        query_text: str,
+        top_score: float,
+    ) -> None:
+        try:
+            self.client.table("content_gap_events").insert(
+                {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "concept_id": concept_id,
+                    "query_text": query_text,
+                    "top_score": top_score,
+                }
+            ).execute()
+        except Exception:
+            # Fire-and-forget: do not fail the chat turn if logging fails
+            pass
 
+    # ─────────────────────────── chat_turns ───────────────────────────────────
     def read_recent_chat_turns(
         self, session_id: str, n: int = 2
     ) -> List[Dict[str, Any]]:
@@ -422,6 +444,7 @@ class SupabaseClient:
         error_type: Optional[str],
         time_taken_sec: Optional[int],
         student_answer: Optional[str],
+        root_cause_concept_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         row: Dict[str, Any] = {
             "user_id": user_id,
@@ -429,6 +452,8 @@ class SupabaseClient:
             "concept_id": concept_id,
             "is_correct": is_correct,
         }
+        if root_cause_concept_id:
+            row["root_cause_concept_id"] = root_cause_concept_id
         if content_id:
             row["content_id"] = content_id
         if error_type:

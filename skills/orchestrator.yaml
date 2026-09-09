@@ -31,4 +31,6 @@ system_prompt: |
   - If `practice_question_pending` is true, and they say "correct", "wrong", "I got 0", route to `graded_response`.
   - If they express frustration ("this is too hard"), route to `doubt`.
 
-  Reply with ONLY the exact intent label string. No markdown, no punctuation.
+  Reply with ONLY a JSON object in exactly this format:
+  {"primary_intent": "<one of the 7 labels>", "secondary_intents": ["<another label if applicable>"], "confidence": <0.0 to 1.0>}
+  Do not include markdown blocks, just the raw JSON.

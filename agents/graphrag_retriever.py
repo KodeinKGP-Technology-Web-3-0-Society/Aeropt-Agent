@@ -161,21 +161,43 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
         seen: set = set()
         candidate_ids = [x for x in candidate_ids if not (x in seen or seen.add(x))]  # type: ignore[func-returns-value]
 
-        # ── 6. Gemini: embed the query ────────────────────────────────────────
-        query_vector = _embed_query(query)
+        # ── 6/7. Gemini + Neo4j with Timeout (Task 1.3) ────────────────────────
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+        
+        def run_search():
+            q_vec = _embed_query(query)
+            return graph_db.vector_search(
+                query_vector=q_vec,
+                top_k=config.NEO4J_VECTOR_TOP_K,
+                candidate_ids=candidate_ids if candidate_ids else None,
+            )
 
-        # ── 7. Neo4j: vector search scoped to graph-filtered candidates ───────
-        vector_results = graph_db.vector_search(
-            query_vector=query_vector,
-            top_k=config.NEO4J_VECTOR_TOP_K,
-            candidate_ids=candidate_ids if candidate_ids else None,
-        )
-        top_content_ids = [r["content_id"] for r in vector_results]
-
-        # ── 8. Supabase: fetch full text for top-k hits ───────────────────────
-        retrieved_chunks = db.read_content_by_ids(top_content_ids)
-        order_map = {cid: i for i, cid in enumerate(top_content_ids)}
-        retrieved_chunks.sort(key=lambda c: order_map.get(c["content_id"], 999))
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_search)
+                vector_results = future.result(timeout=config.RETRIEVAL_TIMEOUT_MS / 1000.0)
+        except TimeoutError:
+            vector_results = []
+        
+        # Filter by confidence threshold (Task 1.2)
+        strong_results = [r for r in vector_results if r["score"] >= config.RETRIEVAL_CONFIDENCE_THRESHOLD]
+        if len(strong_results) < config.RETRIEVAL_CONFIDENCE_MIN_HITS:
+            top_content_ids = []
+            retrieved_chunks = []
+            top_score = vector_results[0]["score"] if vector_results else 0.0
+            db.insert_content_gap_event(
+                user_id=user_id,
+                session_id=session_id,
+                concept_id=primary_concept_id,
+                query_text=query,
+                top_score=top_score
+            )
+        else:
+            top_content_ids = [r["content_id"] for r in strong_results]
+            # ── 8. Supabase: fetch full text for top-k hits ───────────────────────
+            retrieved_chunks = db.read_content_by_ids(top_content_ids)
+            order_map = {cid: i for i, cid in enumerate(top_content_ids)}
+            retrieved_chunks.sort(key=lambda c: order_map.get(c["content_id"], 999))
 
         # ── 9. Strategy decision ─────────────────────────────────────────────
         socratic_turn_count = db.count_socratic_turns_for_concept(
@@ -193,12 +215,15 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
             query=query,
             socratic_turn_count=socratic_turn_count
         )
+        
+        retrieval_confidence = "low" if not retrieved_chunks else "ok"
 
         return {
             "target_concept_state":    target_state,
             "prereq_concept_states":   prereq_states,
             "secondary_concept_states": secondary_states,
             "retrieved_chunks":        retrieved_chunks,
+            "retrieval_confidence":    retrieval_confidence,
             "use_socratic":            strategy.get("use_socratic", False),
             "socratic_turn_count":     socratic_turn_count,
             "teaching_mode":           strategy.get("teaching_mode"),

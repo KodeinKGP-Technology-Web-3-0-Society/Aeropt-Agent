@@ -73,6 +73,12 @@ NEO4J_PREREQ_DEPTH = 3
 # candidate_ids filtering is active so no candidate is missed.
 NEO4J_CONTENT_CORPUS_SIZE = 700
 
+# ── Retrieval Confidence ──────────────────────────────────────────────────────
+# well-matched queries scored 0.7+, off-syllabus queries scored below 0.45 in calibration on 2026-09-09
+RETRIEVAL_CONFIDENCE_THRESHOLD = 0.55
+RETRIEVAL_CONFIDENCE_MIN_HITS = 1
+RETRIEVAL_TIMEOUT_MS = 600
+
 # ── Diagnostic thresholds ─────────────────────────────────────────────────────
 WEAK_THRESHOLD = 0.4
 CLEAR_WEAK_THRESHOLD = 0.65  # clears flagged_weak; also lower bound for "almost mastered" UI band

@@ -31,6 +31,8 @@ class TutorState(TypedDict, total=False):
     # ── Orchestrator classification ───────────────────────────────────────────
     # doubt | practice_request | quiz_response | follow_up_response
     intent: str
+    secondary_intents: List[str]
+    confidence: float
 
     # ── Roadmap hint (Phase 2) ────────────────────────────────────────────────
     roadmap_node_id: Optional[str]     # UUID from Django PathNode
@@ -45,6 +47,7 @@ class TutorState(TypedDict, total=False):
 
     # ── GraphRAG Retriever output ─────────────────────────────────────────────
     retrieved_chunks: List[Dict[str, Any]]          # [{content_id, core_text, difficulty, ...}]
+    retrieval_confidence: str                       # "ok" | "low"
     prereq_concept_states: List[Dict[str, Any]]     # [{concept_id, proficiency_score, hop_count ...}]
     secondary_concept_states: List[Dict[str, Any]]  # [{concept_id, concept_name, proficiency_score, ...}]
     target_concept_state: Optional[Dict[str, Any]]  # user_concept_state row for primary concept
