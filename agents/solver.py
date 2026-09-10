@@ -566,6 +566,23 @@ def _collapse_diagram_lines(text: str) -> str:
     return "\n".join(out)
 
 
+_CONSECUTIVE_WORDS_RE = re.compile(r"[A-Za-z]{3,}\s+[A-Za-z]{3,}")
+
+
+def _has_consecutive_english_words(text: str) -> bool:
+    """
+    Two or more real English words in a row (after stripping macros) reads as
+    a sentence, not a formula — even with 2+ macros present (e.g. "Angular
+    speed \\omega = 2\\pi f in SHM." has 2 macros and only 3 counted words,
+    but "Angular speed" / "in SHM" are plain prose). Bug found 2026-09-11:
+    without this veto, _looks_like_equation wrongly wrapped whole sentences
+    like that as one $$ block, gluing every word edge-to-edge under KaTeX —
+    mirrored (and independently fixed) in Aeropt-frontend's markdownMath.ts.
+    """
+    stripped = _LATEX_MACRO_RE.sub(" ", text)
+    return bool(_CONSECUTIVE_WORDS_RE.search(stripped))
+
+
 def _looks_like_equation(line: str) -> bool:
     s = line.strip()
     if not s or "$" in s:          # empty or already delimited → leave as-is
@@ -574,6 +591,8 @@ def _looks_like_equation(line: str) -> bool:
         return False
     macros = _LATEX_MACRO_RE.findall(s)
     if not macros and not _UNICODE_MATH_CHARS.search(s) and not re.search(r"[=^_]", s):
+        return False
+    if _has_consecutive_english_words(s):
         return False
     # Ignore words that only appear inside \text{...} / \mathrm{...}
     without_text = re.sub(r"\\(?:text|mathrm|mathbf|mathit)\{[^{}]*\}", " ", s)

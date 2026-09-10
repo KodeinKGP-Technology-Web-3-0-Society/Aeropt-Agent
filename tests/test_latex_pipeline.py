@@ -75,6 +75,19 @@ class TestLatexPipeline(unittest.TestCase):
         self.assertIn("COM L 2 Before collision m v_0", out)
         self.assertNotIn("COM\nL\n2\nBefore", out)
 
+    def test_prepare_student_markdown_does_not_glue_sentence_as_math(self) -> None:
+        """
+        Bug found 2026-09-11: a sentence with 2+ macros and few counted words
+        ("Angular speed \\omega = 2\\pi f in SHM.") was wrongly treated as
+        display math and wrapped whole — KaTeX then renders every word
+        glued edge-to-edge with no spaces. Mirrored (and independently
+        fixed) in Aeropt-frontend's markdownMath.ts.
+        """
+        raw = "Angular speed \\omega = 2\\pi f in SHM."
+        out = prepare_student_markdown(raw)
+        self.assertIn("Angular speed", out)
+        self.assertNotIn("$$\nAngular speed", out)
+
     def test_sanitize_strips_nested_dollars(self) -> None:
         cleaned = _sanitize_latex_expr(r"$$\omega=240\pi$$")
         self.assertNotIn("$", cleaned)
