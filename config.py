@@ -29,6 +29,15 @@ SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "physics-diagrams
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
+# All Groq keys (GROQ_API_KEYS comma-list, or GROQ_API_KEY + GROQ_API_KEY_2..7).
+# Consumed by utils/groq_pool.get_pool() so groq_complete() can rotate off a
+# rate-limited key instead of only falling back to a weaker model. Previously
+# this constant didn't exist at all — get_pool() referenced it but nothing ever
+# called get_pool(), so the whole pool module was dead code (see utils/llm.py).
+from utils.groq_pool import load_groq_api_keys as _load_groq_api_keys  # noqa: E402
+
+GROQ_API_KEYS = _load_groq_api_keys()
+
 # ── Model assignments per agent ───────────────────────────────────────────────
 # Verified against this account's live Groq catalog on 2026-09-11
 # (`client.models.list()`): llama-3.1-8b-instant and llama-3.3-70b-versatile —

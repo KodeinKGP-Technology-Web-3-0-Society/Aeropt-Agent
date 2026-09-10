@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +44,7 @@ _TRANSIENT = (RateLimitError, APITimeoutError, APIConnectionError, InternalServe
 
 MAX_RETRIES = 2          # attempts on the same model before moving to fallback
 BACKOFF_BASE = 1.5       # seconds — wait = BACKOFF_BASE ** attempt  (1.5s, 2.25s)
+MIN_CLAMPED_MAX_TOKENS = 512   # never clamp a request down below this
 
 
 def _is_capacity_error(exc: Exception) -> bool:
@@ -66,6 +68,31 @@ def _is_model_unavailable(exc: Exception) -> bool:
     )
 
 
+_TPM_LIMIT_RE = re.compile(r"tokens per minute.{0,40}?limit\s+(\d+)", re.IGNORECASE)
+
+
+def _tpm_limit_from_error(exc: Exception) -> Optional[int]:
+    """
+    Parse a Groq 413 "Request too large ... on tokens per minute (TPM):
+    Limit 8000[, Requested 8505]" error into the numeric TPM limit, or None if
+    this isn't that error at all (a different 413, or no limit mentioned).
+    """
+    msg = str(exc)
+    if "413" not in msg or "tokens per minute" not in msg.lower():
+        return None
+    m = _TPM_LIMIT_RE.search(msg)
+    return int(m.group(1)) if m else None
+
+
+def _pick_client(pool, override_client: Groq, model: str) -> Tuple[Optional[int], Groq]:
+    """Return (key_index_or_None, client) for one attempt against `model`."""
+    if pool is None:
+        return None, override_client
+    for idx, client in pool.iter_clients(override=override_client, model=model):
+        return idx, client
+    return None, override_client
+
+
 def groq_complete(
     client: Groq,
     model: str,
@@ -79,9 +106,26 @@ def groq_complete(
 
     Returns:
         (response_text, model_that_succeeded)
+
+    Key rotation: if utils/groq_pool has a multi-key pool configured
+    (GROQ_API_KEYS / GROQ_API_KEY_2..7), each attempt is made against a client
+    picked from that pool (round-robin, skipping cooled-down/RPM-hot keys) —
+    `client` is only used directly when no multi-key pool is configured, so
+    every existing call site keeps working unchanged. A 429 marks that key
+    cooled-down and moves to the next one immediately, without the model
+    fallback chain being touched — same-account keys share one quota, but
+    different-org keys don't, so this is the actual fix for a 429 rather than
+    just retrying the same (still-limited) key or downgrading model quality.
     """
     chain = [model] + (fallback_models or [])
     last_exc: Exception = RuntimeError("No attempts made")
+
+    try:
+        from utils.groq_pool import get_pool
+
+        pool = get_pool()
+    except Exception:
+        pool = None
 
     for model_idx, current_model in enumerate(chain):
         is_fallback = model_idx > 0
@@ -92,12 +136,18 @@ def groq_complete(
                 chain[model_idx - 1],
             )
 
+        call_kwargs = dict(kwargs)
+
         for attempt in range(MAX_RETRIES + 1):
+            key_idx, active_client = _pick_client(pool, client, current_model)
+            if pool is not None and key_idx is not None:
+                pool.note_attempt(key_idx, current_model)
+
             try:
-                completion = client.chat.completions.create(
+                completion = active_client.chat.completions.create(
                     model=current_model,
                     messages=messages,
-                    **kwargs,
+                    **call_kwargs,
                 )
                 text = completion.choices[0].message.content or ""
                 if min_chars and len(text.strip()) < min_chars:
@@ -130,22 +180,60 @@ def groq_complete(
                     logger.warning("[LLM] %s unavailable, skipping.", current_model)
                     break  # skip retries, go to next model
 
+                tpm_limit = _tpm_limit_from_error(exc)
+                if tpm_limit is not None:
+                    # Same-org keys share one TPM budget — rotating keys can't help
+                    # a request that's simply too large. Try shrinking max_tokens to
+                    # fit under the limit on the SAME model/key first; only fall
+                    # through to the next model if we're already at/under a size
+                    # that still doesn't fit (nothing left to shrink).
+                    requested = call_kwargs.get("max_tokens")
+                    candidate = max(MIN_CLAMPED_MAX_TOKENS, tpm_limit // 2)
+                    if requested is not None and candidate < requested:
+                        logger.warning(
+                            "[LLM] %s hit TPM limit (%d); clamping max_tokens %d -> %d and retrying.",
+                            current_model, tpm_limit, requested, candidate,
+                        )
+                        call_kwargs["max_tokens"] = candidate
+                        continue
+                    logger.warning(
+                        "[LLM] %s TPM limit (%d) still exceeded after clamping; moving to next model.",
+                        current_model, tpm_limit,
+                    )
+                    break  # move to next model in chain
+
                 is_transient = isinstance(exc, _TRANSIENT) or _is_capacity_error(exc)
                 if not is_transient:
                     # Non-recoverable (bad request, auth, etc.) — re-raise immediately
                     raise
 
+                if isinstance(exc, RateLimitError) and pool is not None and key_idx is not None:
+                    pool.mark_limited(key_idx)
+
                 if attempt < MAX_RETRIES:
-                    wait = BACKOFF_BASE ** (attempt + 1)
-                    logger.warning(
-                        "[LLM] %s transient error (attempt %d/%d): %s — retrying in %.1fs",
-                        current_model,
-                        attempt + 1,
-                        MAX_RETRIES + 1,
-                        str(exc)[:120],
-                        wait,
+                    # A rate limit on a multi-key pool rotates to a different key on
+                    # the next attempt automatically (see _pick_client) — no need to
+                    # sit out a backoff for that case. Single-key pools (or every
+                    # other transient error) still back off as before.
+                    skip_backoff = (
+                        isinstance(exc, RateLimitError) and pool is not None and pool.size > 1
                     )
-                    time.sleep(wait)
+                    if skip_backoff:
+                        logger.warning(
+                            "[LLM] %s key #%s rate-limited (attempt %d/%d) — rotating key, no wait.",
+                            current_model, key_idx, attempt + 1, MAX_RETRIES + 1,
+                        )
+                    else:
+                        wait = BACKOFF_BASE ** (attempt + 1)
+                        logger.warning(
+                            "[LLM] %s transient error (attempt %d/%d): %s — retrying in %.1fs",
+                            current_model,
+                            attempt + 1,
+                            MAX_RETRIES + 1,
+                            str(exc)[:120],
+                            wait,
+                        )
+                        time.sleep(wait)
                 else:
                     logger.warning(
                         "[LLM] %s exhausted %d retries: %s",
