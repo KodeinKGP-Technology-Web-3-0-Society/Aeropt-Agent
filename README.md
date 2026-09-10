@@ -23,6 +23,15 @@ Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**
 13. [Local Development & Verification](#local-development--verification)
 
 > **Sept 2026 update:** retrieval is now conditionally skippable (§7, new — was previously dead code), and teaching-mode/framing/difficulty personalization is computed by one canonical function, `agents/planner.py::compute_personalization_strategy` (§8, replaces three previously-drifted, independent heuristics that used to live in `planner.py`, `graphrag_retriever.py`, and `solver.py` separately). The `agent_memory` table and `sessions.structured_memory` column referenced in earlier drafts of this doc were retired (`db/migrations/003_retire_structured_memory.sql`) — they had zero read/write call sites in the running system; cross-session continuity is carried entirely by `sessions.session_summary` (plain text) via `prior_session_summary`.
+>
+> **Sept 11 2026 hardening pass** (audit + fixes; full detail in `docs/agent_qa_audit_2026-09-11.md` in the top-level `aeropt/` workspace this repo sits under — not tracked in this repo itself): five issues traced back to hallucinated/ungrounded answers, all fixed and regression-tested —
+> 1. **Concept Resolver** (§Agent Roster) now delegates to `mcp_tools/resolve_concept_id.py` (lexical fast-path + LLM classification with a real `in_scope` flag) instead of a second, hand-rolled implementation that silently forced `primary_concept_id` to the *first row in the concepts table* whenever the model returned an unrecognized id — i.e. any off-syllabus question got answered as if it were about a random, unrelated concept. Off-syllabus queries now stay genuinely unresolved.
+> 2. **Solver / Socratic prompts** now carry an explicit grounding signal (`retrieval_confidence`: `"unresolved" | "low" | "ok"`, surfaced via `agents/solver.py::_grounding_note`) instead of the old "chunks are optional, compose freely" instruction — the model is told plainly when it has no or weak grounding rather than answering confidently either way.
+> 3. **Groq model roster** (table below) was silently running on two decommissioned models (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`) — every classification call and Socratic turn was burning dead round-trips before falling back. Reassigned to the account's actual live catalog; `tests/test_model_health.py` (opt-in, `RUN_LIVE_GROQ_CHECKS=1`) pings every configured model so this doesn't silently drift again.
+> 4. **`utils/groq_pool.py`'s multi-key rotation** was dead code — `groq_complete()` never called into it, so a second `GROQ_API_KEY_2` gave no rate-limit resilience. Now wired in: a 429 rotates to the next key immediately (no backoff), and a TPM 413 clamps `max_tokens` before falling to a fallback model.
+> 5. **Retrieved chunk text reaches the LLM sanitized**, not raw — `utils/latex_guidelines.py::sanitize_chunk_text_for_prompt()` fixes unicode math symbols / stray literal `\n` / double-escaping before a chunk is shown to Solver, Socratic, or the slide-deck content summarizer, and a new rule in the shared `LATEX_OUTPUT_RULES` tells the model to reconstruct — never copy — a formula that still looks corrupted (OCR/ingestion noise). A separate, independently-duplicated bug (a sentence with 2+ LaTeX macros and few words got wrongly wrapped whole as display math, gluing every word together) was found and fixed on both this side and `Aeropt-frontend`.
+>
+> **Known limitation, not fixed in the pass above:** practice/PYQ questions (including the answer key) are generated fresh by the LLM (`skills/practice_coach.yaml`) rather than served from verified stored content — `agents/solver.py::_format_practice_response`, the deterministic "assemble from DB, no LLM" formatter its own docstring promises, is dead code, never called. Fixing this touches the practice-question UI contract on `Aeropt-frontend` and needs a product decision (stored-question-verbatim vs. LLM-generated-with-a-verification-step) before anyone changes it.
 
 ---
 
@@ -64,7 +73,7 @@ flowchart TB
     subgraph External["Knowledge & Storage Layer"]
         NEO4J[("Neo4j Aura Graph DB<br/>• 33 Concepts & Prereq Edges<br/>• Vector Index (768-dim)")]
         SUPA[("Supabase PostgreSQL (public)<br/>• sessions & chat_turns<br/>• user_concept_state<br/>• user_attempts & content")]
-        GROQ["Groq Cloud LLM Pool<br/>• LLaMA-3.3-70B / 8B<br/>• Qwen-2.5-32B / 14B"]
+        GROQ["Groq Cloud LLM Pool (multi-key, §Agent Roster)<br/>• openai/gpt-oss-120b / 20b<br/>• qwen/qwen3.6-27b / qwen3.8-27b"]
         GEMINI["Google Gemini API<br/>• text-embedding-004"]
     end
 
@@ -168,17 +177,25 @@ flowchart TD
 
 | Agent Node | Source File | Core Responsibility | Primary LLM / Model |
 |---|---|---|---|
-| **Orchestrator** | `agents/orchestrator.py` | Intent classification, session bootstrapping, user turn recording. | `llama-3.1-8b-instant` |
-| **Concept Resolver** | `agents/concept_resolver.py` | Entity resolution mapping query to one of 33 canonical Physics concept UUIDs. | `llama-3.1-8b-instant` |
-| **Retrieval Gate** | `agents/retrieval_gate.py` | *Inline check inside GraphRAG Retriever, not a separate graph node.* Decides whether this turn needs fresh retrieval at all — see §7. | `llama3-8b-8192`/Groq small model (meta/repair classification only) |
-| **GraphRAG Retriever** | `agents/graphrag_retriever.py` | Prerequisite subgraph traversal (Neo4j), vector similarity search, chunk retrieval, and invokes the canonical personalization strategy (§8). | `gemini-embedding-2` (No generative LLM) |
+| **Orchestrator** | `agents/orchestrator.py` | Intent classification, session bootstrapping, user turn recording. | `config.ORCHESTRATOR_MODEL` (`openai/gpt-oss-20b`) |
+| **Concept Resolver** | `agents/concept_resolver.py` | Delegates to `mcp_tools/resolve_concept_id.py` (lexical fast-path + LLM with an `in_scope` flag) mapping query to one of 33 canonical Physics concepts, or leaving it unresolved if off-syllabus. | `config.CONCEPT_RESOLVER_MODEL` (`openai/gpt-oss-20b`) |
+| **Retrieval Gate** | `agents/retrieval_gate.py` | *Inline check inside GraphRAG Retriever, not a separate graph node.* Decides whether this turn needs fresh retrieval at all — see §7. | Groq small model, `config.SMALL_MODEL_FALLBACK[0]` (meta/repair classification only) |
+| **GraphRAG Retriever** | `agents/graphrag_retriever.py` | Prerequisite subgraph traversal (Neo4j), vector similarity search, chunk retrieval (sanitized via `utils/latex_guidelines.py` before it reaches a prompt), and invokes the canonical personalization strategy (§8). | `gemini-embedding-2` (No generative LLM) |
 | **Personalization Strategy** | `agents/planner.py::compute_personalization_strategy` | *Function called from inside GraphRAG Retriever, not a separate graph node.* Canonical teaching_mode/framing/difficulty decision — see §8. | Deterministic (No LLM) |
-| **Solver** | `agents/solver.py` | Full-depth physics explanation, LaTeX derivations, markdown formatting. | `qwen-2.5-32b` / `llama-3.3-70b-versatile` |
-| **Socratic** | `agents/socratic.py` | Guided inquiry and scaffolding when student has strong prerequisites but weak target mastery. | `llama-3.3-70b-versatile` |
-| **Diagnostic** | `agents/diagnostic.py` | Exponential decay, weighted moving average (WMA) proficiency math, mistake taxonomy. | `llama-3.1-8b-instant` (error analysis only) |
+| **Solver** | `agents/solver.py` | Full-depth physics explanation, LaTeX derivations, markdown formatting; tells the model its grounding confidence (`_grounding_note`) instead of always inviting free improvisation. | `config.SOLVER_MODEL` (`qwen/qwen3.6-27b`) |
+| **Socratic** | `agents/socratic.py` | Guided inquiry and scaffolding when student has strong prerequisites but weak target mastery. | `config.SOCRATIC_MODEL` (`openai/gpt-oss-120b`) |
+| **Diagnostic** | `agents/diagnostic.py` | Exponential decay, weighted moving average (WMA) proficiency math, mistake taxonomy. | `config.DIAGNOSTIC_MODEL` (`openai/gpt-oss-20b`, error analysis only) |
 | **Follow-Up** | `agents/follow_up.py` | Suggesting related sub-concepts, surfacing weak prerequisites, advancing quiz batches. | Deterministic (No LLM) |
-| **Quiz** | `agents/quiz.py` | Generating multi-question diagnostic quizzes or struggle checkpoint questions. | `llama-3.3-70b-versatile` / Deterministic chunks |
-| **Context Manager** | `agents/context_manager.py` | Periodic rolling conversation compression every 5 interactions. | `llama-3.1-8b-instant` |
+| **Quiz** | `agents/quiz.py` | Generating multi-question diagnostic quizzes or struggle checkpoint questions. | `config.QUIZ_MODEL` (`qwen/qwen3.6-27b`) / Deterministic chunks |
+| **Context Manager** | `agents/context_manager.py` | Periodic rolling conversation compression every 5 interactions. | `config.CONTEXT_MANAGER_MODEL` (`openai/gpt-oss-20b`) |
+
+> All model assignments now reference `config.py` constants rather than hardcoding a name in
+> each module's docstring — the account's live Groq catalog has drifted three times already
+> (§ hardening pass above); re-verify with `tests/test_model_health.py` before trusting any of
+> the names in parentheses above, since they can go stale the same way the previous ones did.
+> Groq calls route through `utils/groq_pool.py`'s multi-key pool (round-robins
+> `GROQ_API_KEY`/`GROQ_API_KEY_2..7`, cooling down a key on 429 rather than just falling back to
+> a weaker model) whenever more than one key is configured.
 
 ---
 
@@ -423,7 +440,7 @@ sequenceDiagram
     FE->>API: POST /api/v1/chat/message
     API->>Orch: invoke(TutorState)
     Orch->>Supabase: read_user / read_session / read_recent_chat_turns
-    Orch->>Orch: classify intent (Groq llama-3.1-8b) → "doubt"
+    Orch->>Orch: classify intent (Groq config.ORCHESTRATOR_MODEL) → "doubt"
     Orch->>Supabase: insert_chat_turn(role=user)
     Orch-->>CR: intent=doubt, query, focus_chapters
 
@@ -446,9 +463,9 @@ sequenceDiagram
 
     GR-->>Resp: retrieved_chunks + strategy
     alt teaching_mode == "socratic"
-        Resp->>Resp: Socratic node (Groq llama-3.3-70b) — guiding questions
+        Resp->>Resp: Socratic node (Groq config.SOCRATIC_MODEL) — guiding questions
     else
-        Resp->>Resp: Solver node (Groq qwen3.6-27b) — direct explanation framed per strategy
+        Resp->>Resp: Solver node (Groq config.SOLVER_MODEL) — direct explanation framed per strategy
     end
     Resp->>Supabase: insert_chat_turn(role=assistant)
     Resp-->>FU: response, has_graded_outcome=False
@@ -591,7 +608,8 @@ sequenceDiagram
 cd Aeropt-agent
 source .venv/bin/activate
 
-# 2. Run full test suite (74 tests, incl. tests/test_retrieval_gate.py and tests/test_personalization.py)
+# 2. Run full test suite (108 tests + 1 opt-in live check, incl. tests/test_retrieval_gate.py,
+#    tests/test_personalization.py, tests/test_latex_sanitization.py, tests/test_model_health.py)
 python -m unittest discover tests/
 
 # 3. Start local development server
