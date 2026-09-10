@@ -7,7 +7,7 @@ This is the only agent triggered by another agent's write, not by Orchestrator.
 Responsibilities:
   1. Read user_concept_state — find the struggling concept
   2. Neo4j: REQUIRES chain → decompose into prerequisite sub-concepts for steps
-  3. Generate a 3-5 step micro-quiz (deepseek-r1-distill-llama-70b)
+  3. Generate a 3-5 step micro-quiz (config.QUIZ_MODEL)
      Each step tests one prerequisite concept building up to the target
   4. Write session active_quiz = True
   5. Return quiz_steps list for the caller to administer step-by-step
@@ -15,7 +15,7 @@ Responsibilities:
 Each step gets its own Diagnostic call when the student answers it (orchestrated
 by main.py / workflow, not here).
 
-Model: deepseek-r1-distill-llama-70b (Groq) — strong multi-step reasoning
+Model: config.QUIZ_MODEL (Groq) — strong multi-step reasoning
 """
 
 from __future__ import annotations

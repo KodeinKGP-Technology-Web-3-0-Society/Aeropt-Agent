@@ -9,7 +9,7 @@ rather than giving a direct answer.
 
 Auto-escalation: Evaluates lack of progress (proficiency delta) to decide when to yield to direct explanation, replacing the old fixed 3-turn limit.
 
-Model: llama-3.3-70b-versatile (Groq) — best conversational reasoning on Groq
+Model: config.SOCRATIC_MODEL (Groq) — best conversational reasoning available on this account
 """
 
 from __future__ import annotations

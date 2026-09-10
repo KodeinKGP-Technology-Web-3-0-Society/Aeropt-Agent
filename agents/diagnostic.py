@@ -9,7 +9,7 @@ Fires ASYNCHRONOUSLY after any interaction with a graded outcome:
 Does NOT fire after a pure explanation-only doubt (no answer was submitted).
 
 Responsibilities:
-  1. Classify error_type if not already supplied (llama-3.1-8b-instant)
+  1. Classify error_type if not already supplied (config.DIAGNOSTIC_MODEL)
   2. Update proficiency_score via weighted moving average (α=0.7/0.3)
   3. Update struggle_streak (increment on wrong, reset to 0 on first correct)
   4. Update flagged_weak (set < 0.4, clear > 0.65 + 2 consecutive correct)
@@ -19,7 +19,7 @@ Responsibilities:
   8. Write a new user_attempts row
   9. Return trigger_quiz = True if struggle_streak >= STRUGGLE_STREAK_QUIZ_TRIGGER
 
-Model: llama-3.1-8b-instant (Groq) — only needed for error classification
+Model: config.DIAGNOSTIC_MODEL (Groq) — only needed for error classification
 """
 
 from __future__ import annotations

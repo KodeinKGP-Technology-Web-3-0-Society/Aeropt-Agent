@@ -30,36 +30,46 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 # ── Model assignments per agent ───────────────────────────────────────────────
+# Verified against this account's live Groq catalog on 2026-09-11
+# (`client.models.list()`): llama-3.1-8b-instant and llama-3.3-70b-versatile —
+# both used below until this fix — are decommissioned and 404 on every call.
+# The only confirmed-live chat models on this account right now are
+# qwen/qwen3.6-27b, qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b.
+# Re-run that same models.list() check before relying on any of the four names
+# below again — Groq's catalog on this account has now drifted three times.
+#
 # Orchestrator + lightweight classifiers → smallest fast model
-ORCHESTRATOR_MODEL = "llama-3.1-8b-instant"
-CONCEPT_RESOLVER_MODEL = "llama-3.1-8b-instant"
-DIAGNOSTIC_MODEL = "llama-3.1-8b-instant"
-CONTEXT_MANAGER_MODEL = "llama-3.1-8b-instant"
+ORCHESTRATOR_MODEL = "openai/gpt-oss-20b"
+CONCEPT_RESOLVER_MODEL = "openai/gpt-oss-20b"
+DIAGNOSTIC_MODEL = "openai/gpt-oss-20b"
+CONTEXT_MANAGER_MODEL = "openai/gpt-oss-20b"
 
 # Generation agents → larger reasoning models
 # qwen/qwen3-32b was removed from Groq (Jul 2026); qwen3.6-27b is the replacement.
 SOLVER_MODEL = "qwen/qwen3.6-27b"
-SOCRATIC_MODEL = "llama-3.3-70b-versatile"
+SOCRATIC_MODEL = "openai/gpt-oss-120b"
 QUIZ_MODEL = "qwen/qwen3.6-27b"
 
 # ── Fallback chains (used when primary model is over capacity / unavailable) ──
-# Listed in preference order — first available wins.
+# Listed in preference order — first available wins. Every entry below is
+# confirmed live (see note above); none of these repeat the model it's a
+# fallback for.
 SOLVER_FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
+    "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
 ]
 QUIZ_FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
+    "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
 ]
 SOCRATIC_FALLBACK_MODELS = [
-    "openai/gpt-oss-120b",
-    "llama-3.1-8b-instant",
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
 ]
 # Lightweight agents share a simpler fallback
 SMALL_MODEL_FALLBACK = [
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
+    "qwen/qwen3.8-27b",
 ]
 
 # Embedding (GraphRAG Retriever only) — no chat LLM

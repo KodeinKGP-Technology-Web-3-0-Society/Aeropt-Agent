@@ -15,7 +15,7 @@ Responsibilities:
 The running summary is cumulative — it captures all turns up to now,
 not just the latest window.  This keeps long sessions within token budget.
 
-Model: llama-3.1-8b-instant (Groq) — speed matters; summary quality > cost here
+Model: config.CONTEXT_MANAGER_MODEL (Groq) — speed matters; summary quality > cost here
 """
 
 from __future__ import annotations

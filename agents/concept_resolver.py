@@ -19,7 +19,7 @@ Off-syllabus handling (fixed 2026-09-11 — was the #1 cause of hallucinated ans
   Solver (see agents/solver.py's grounding_note) tell the student plainly that this is
   outside the syllabus this tutor covers, instead of guessing.
 
-Model: llama-3.1-8b-instant (Groq) — fast; 33-item closed-set fits trivially in context
+Model: config.CONCEPT_RESOLVER_MODEL (Groq) — fast; 33-item closed-set fits trivially in context
 Design note (Section 6): no embeddings here.  A full 33-item list costs <500 tokens.
 Embeddings add a failure mode (nearest-neighbour error) without adding accuracy at this scale.
 """

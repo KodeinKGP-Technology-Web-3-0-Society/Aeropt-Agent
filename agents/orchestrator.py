@@ -17,7 +17,7 @@ Responsibilities:
   - Flag run_context_manager every CONTEXT_MANAGER_EVERY_N interactions
   - Insert the user's chat turn into chat_turns
 
-Model: llama-3.1-8b-instant (Groq) — fast, cheap, classification only
+Model: config.ORCHESTRATOR_MODEL (Groq) — fast, cheap, classification only
 """
 
 from __future__ import annotations
