@@ -528,6 +528,30 @@ def _attach_agent_signals(result: TutorState, user_id: str, focus_chapters: Opti
     return result
 
 
+_STUDENT_FACING_ERROR = (
+    "Something went wrong generating a response. Please try again — if it keeps "
+    "happening, start a new session."
+)
+
+
+def _student_facing_error(raw: Optional[str]) -> Optional[str]:
+    """
+    Turn an internal failure into a message safe to show a student.
+
+    Every agent node's exception handler (and the two outer try/except blocks
+    in this file) returns/raises the raw Python exception text, e.g.
+    "GraphRAG Retriever failed: 'NoneType' object has no attribute 'get'" —
+    that string used to flow straight into ChatMessageResponse.error and from
+    there into the chat UI verbatim (Aeropt-frontend/ChatWorkspace.tsx throws
+    it as-is). The raw detail is still logged server-side; students just get a
+    generic, actionable message instead of a stack-trace fragment.
+    """
+    if not raw:
+        return None
+    logging.error("[student-facing error suppressed] %s", raw)
+    return _STUDENT_FACING_ERROR
+
+
 def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageResponse:
     payload = build_chat_payload(result)
     flashcards = payload.get("flashcards")
@@ -568,7 +592,7 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
         active_agent=result.get("active_agent") or payload.get("active_agent"),
         agent_signals=result.get("agent_signals") or payload.get("agent_signals"),
         steps=steps,
-        error=payload.get("error"),
+        error=_student_facing_error(payload.get("error")),
     )
 
 
@@ -758,7 +782,7 @@ async def chat_message(req: ChatMessageRequest):
             loop.call_soon_threadsafe(lambda: asyncio.create_task(asyncio.to_thread(prefetch_bg)))
         except Exception as exc:
             logging.exception("tutor_graph.invoke failed for session %s", session_id)
-            err = ChatMessageResponse(session_id=session_id, error=str(exc))
+            err = ChatMessageResponse(session_id=session_id, error=_student_facing_error(str(exc)))
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "result", "data": err.model_dump_json()})
 
     asyncio.create_task(asyncio.to_thread(sync_worker))
@@ -822,7 +846,7 @@ def sandbox_execute(req: SandboxExecuteRequest) -> ChatMessageResponse:
         session_id = result.get("session_id") or session_id
     except Exception as exc:
         logging.exception("sandbox_execute failed for session %s", session_id)
-        return ChatMessageResponse(session_id=session_id, error=str(exc))
+        return ChatMessageResponse(session_id=session_id, error=_student_facing_error(str(exc)))
 
     _update_carry(carry, result, was_graded=False)
     chat_response = _to_chat_response(session_id, result)
