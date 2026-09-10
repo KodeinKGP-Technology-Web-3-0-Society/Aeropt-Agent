@@ -2,10 +2,22 @@
 Concept Resolver Agent
 
 Responsibilities:
-  - Load the flat list of 33 concepts from Supabase (closed-set classification)
-  - Optionally use last 1-2 turns if the query is ambiguous ("explain that again")
-  - Map the query to primary_concept_id + secondary_concept_ids
-  - Infer content_type_requested (theory | practice | pyq | example)
+  - Map the user's query to primary_concept_id + secondary_concept_ids + content_type
+  - Delegate the actual classification to mcp_tools.resolve_concept_id, which already
+    combines a fast lexical pre-check with an LLM fallback that outputs an explicit
+    in_scope flag — this used to be a second, independent, hand-rolled implementation
+    here that had no in_scope concept at all.
+
+Off-syllabus handling (fixed 2026-09-11 — was the #1 cause of hallucinated answers):
+  When the query doesn't match any concept this tutor tracks (in_scope=False), or the
+  resolver otherwise can't pick a concept, primary_concept_id is left empty ("").
+  Previously this fell back to "the first concept in the Supabase table", which meant
+  *any* off-syllabus or unrecognized question (a different subject, a typo, small talk)
+  was silently answered as if it were about that arbitrary first concept — GraphRAG would
+  retrieve real chunks for the wrong topic and the Solver would confidently "explain" the
+  actual question using them. Leaving primary_concept_id empty lets the retrieval gate and
+  Solver (see agents/solver.py's grounding_note) tell the student plainly that this is
+  outside the syllabus this tutor covers, instead of guessing.
 
 Model: llama-3.1-8b-instant (Groq) — fast; 33-item closed-set fits trivially in context
 Design note (Section 6): no embeddings here.  A full 33-item list costs <500 tokens.
@@ -14,151 +26,45 @@ Embeddings add a failure mode (nearest-neighbour error) without adding accuracy 
 
 from __future__ import annotations
 
-import json
-import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from groq import Groq
-
-import config
 from db.supabase_client import db
+from mcp_tools.resolve_concept_id import ResolveConceptIdArgs, resolve_concept_id
 from models.state import TutorState
-from utils.llm import groq_complete
-
-_groq = Groq(api_key=config.GROQ_API_KEY)
-
-_RESOLVER_PROMPT = """\
-You are a concept classifier for JEE Physics.
-
-Here are the concepts in this system (concept_id | concept_name):
-{concepts_list}
-
-Classify the student's query into:
-  - primary_concept_id: the single best matching concept_id from the list above
-  - secondary_concept_ids: ONLY concepts explicitly mentioned alongside the primary.
-    Leave this as [] in most cases. Do NOT add related or prerequisite concepts —
-    those are handled separately by the graph. Only add a secondary concept if the
-    student's query clearly and explicitly references two concepts at once.
-  - content_type_requested: one of [theory, practice, pyq, example]
-    • theory   — asking for explanation / definition / formula
-    • practice — asking for problems to solve
-    • pyq      — asking for past JEE papers / PYQs
-    • example  — asking for a worked example or solved problem
-
-Use the last 2 turns (below) ONLY if the query is ambiguous (e.g. "that", "same thing", "again").
-When using context to resolve ambiguity, keep secondary_concept_ids as [].
-
-Last 2 turns:
-{context}
-
-Student query: "{query}"
-
-Respond with ONLY valid JSON — no markdown, no prose:
-{{
-  "primary_concept_id": "<concept_id>",
-  "secondary_concept_ids": ["<concept_id>", ...],
-  "content_type_requested": "<theory|practice|pyq|example>"
-}}"""
-
-
-def _format_concepts(concepts: List[Dict[str, Any]]) -> str:
-    lines = [
-        f"  {c['concept_id']} | {c['concept_name']} ({c.get('chapter', '')})"
-        for c in concepts
-    ]
-    return "\n".join(lines)
-
-
-def _format_recent_turns(turns: List[Dict[str, Any]]) -> str:
-    if not turns:
-        return "  (none)"
-    lines = []
-    for t in turns:
-        role = t.get("role", "")
-        content = t.get("content", "")[:300]
-        lines.append(f"  [{role}]: {content}")
-    return "\n".join(lines)
-
-
-def _extract_json(text: str) -> Dict[str, Any]:
-    """Pull JSON from model output even if it's wrapped in markdown fences."""
-    text = text.strip()
-    # Strip ```json ... ``` or ``` ... ```
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
 
 
 def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
     query = state["query"]
     recent_turns = state.get("recent_turns", [])
-    roadmap_concept_id = state.get("roadmap_concept_id") or ""
+    roadmap_concept_id = state.get("roadmap_concept_id") or None
+    study_stage = state.get("study_stage") or None
 
-    try:
-        concepts = db.read_concepts()
-        if not concepts:
-            return {"error": "No concepts found in Supabase. Ingestion may not have run."}
+    # Fail loudly here (not silently) if the taxonomy itself is missing/empty — that's
+    # a data/ingestion problem, distinct from "this one query is off-syllabus" below.
+    concepts = db.read_concepts()
+    if not concepts:
+        return {"error": "No concepts found in Supabase. Ingestion may not have run."}
 
-        # Build concept ID set for validation
-        valid_ids = {c["concept_id"] for c in concepts}
-
-        if roadmap_concept_id and roadmap_concept_id in valid_ids:
-            study_stage = state.get("study_stage") or ""
-            valid_stages = {"theory", "example", "practice", "pyq"}
-            if study_stage in valid_stages:
-                content_type = study_stage
-            else:
-                content_type = "theory"
-                lowered = query.lower()
-                if any(word in lowered for word in ("practice", "problem", "question")):
-                    content_type = "practice"
-                elif any(word in lowered for word in ("pyq", "past year", "jee main", "jee advanced")):
-                    content_type = "pyq"
-                elif any(word in lowered for word in ("example", "worked", "solve")):
-                    content_type = "example"
-
-            return {
-                "primary_concept_id": roadmap_concept_id,
-                "secondary_concept_ids": [],
-                "content_type_requested": content_type,
-                "error": None,
-            }
-
-        prompt = _RESOLVER_PROMPT.format(
-            concepts_list=_format_concepts(concepts),
-            context=_format_recent_turns(recent_turns),
+    result = resolve_concept_id(
+        ResolveConceptIdArgs(
             query=query,
+            recent_turns=recent_turns,
+            roadmap_concept_id=roadmap_concept_id,
+            study_stage=study_stage,
         )
+    )
 
-        raw, _ = groq_complete(
-            client=_groq,
-            model=config.CONCEPT_RESOLVER_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            fallback_models=config.SMALL_MODEL_FALLBACK,
-            temperature=0.0,
-            max_tokens=150,
-        )
+    if result.get("error"):
+        return {"error": f"Concept Resolver failed: {result['error']}"}
 
-        parsed = _extract_json(raw)
+    primary = result.get("primary_concept_id") or ""
+    if result.get("in_scope") is False:
+        # Doesn't match anything this tutor covers — stay unresolved, don't guess.
+        primary = ""
 
-        primary = parsed.get("primary_concept_id", "")
-        secondaries = [
-            cid
-            for cid in parsed.get("secondary_concept_ids", [])
-            if cid in valid_ids and cid != primary
-        ]
-        content_type = parsed.get("content_type_requested", "theory")
-
-        # Fallback: if primary not in taxonomy, use first concept as default
-        if primary not in valid_ids and concepts:
-            primary = concepts[0]["concept_id"]
-
-        return {
-            "primary_concept_id": primary,
-            "secondary_concept_ids": secondaries,
-            "content_type_requested": content_type,
-            "error": None,
-        }
-
-    except Exception as exc:
-        return {"error": f"Concept Resolver failed: {exc}"}
+    return {
+        "primary_concept_id": primary,
+        "secondary_concept_ids": result.get("secondary_concept_ids") or [],
+        "content_type_requested": result.get("content_type_requested") or "theory",
+        "error": None,
+    }

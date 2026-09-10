@@ -17,11 +17,19 @@ system_prompt: |
   Weak prerequisites:   {{weak_prereqs}}
   Prior session notes:  {{prior_session_summary}}
   
+  ── Grounding ──────────────────────────────────────────────────────────────
+  {{grounding_note}}
+
   ── Key Formulae (extracted from source material) ────────────────────────────
   {{formulae_section}}
-  
-  ── Retrieved Content Chunks (primary source — use these to answer) ──────────
+
+  ── Retrieved Content Chunks (primary source when grounding status is OK) ────
   {{chunks}}
+
+  If grounding status is UNRESOLVED or LOW CONFIDENCE, you do not have verified
+  source material for this — do not fabricate a "correct_answer" you are unsure of.
+  Prefer a nearby topic you ARE confident about and say so, rather than presenting
+  an invented answer key with unearned confidence.
   
   ── Student's Question ───────────────────────────────────────────────────────
   {{query}}

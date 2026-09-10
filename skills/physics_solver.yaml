@@ -16,16 +16,19 @@ system_prompt: |
   Weak prerequisites:   {{weak_prereqs}}
   Prior session notes:  {{prior_session_summary}}
 
-  ── Optional Grounding (use if present; generate if absent) ──────────────────
+  ── Grounding ──────────────────────────────────────────────────────────────
+  {{grounding_note}}
+
   Key Formulae:
   {{formulae_section}}
 
   Knowledge Graph Chunks:
   {{chunks}}
 
-  If chunks are empty, do NOT refuse. Teach from first principles, the student's
-  proficiency, and the query. When chunks are present, prefer them as grounding
-  but you may add explanations the chunks do not cover.
+  When chunks are present and grounding status is OK, prefer them as your primary
+  source, but you may add explanations the chunks do not cover. Follow the
+  grounding note above for how confidently to answer when chunks are absent or weak
+  — never invent formulae/values you are not confident in just to sound complete.
 
   ── Student's Query ──────────────────────────────────────────────────────────
   {{query}}

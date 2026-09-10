@@ -73,6 +73,15 @@ def _build_prereq_states(
 
 
 def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
+    if not state.get("primary_concept_id"):
+        # Concept Resolver couldn't match this query to anything in the syllabus
+        # (in_scope=False) — there is nothing to retrieve, and reusing whatever
+        # retrieval_confidence/retrieved_chunks was left over from a *previous*,
+        # unrelated turn would be misleading. Tag it explicitly so the Solver can
+        # tell the student this looks outside what it covers, instead of silently
+        # answering ungrounded (see agents/solver.py's grounding_note).
+        return {"retrieval_confidence": "unresolved", "retrieved_chunks": []}
+
     from agents.retrieval_gate import should_skip_retrieval
     if should_skip_retrieval(state):
         return {}

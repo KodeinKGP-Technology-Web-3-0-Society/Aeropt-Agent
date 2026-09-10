@@ -623,12 +623,43 @@ def _parse_steps(markdown: str) -> List[Dict[str, Any]]:
     return steps
 
 
+def _grounding_note(state: Dict[str, Any]) -> str:
+    """
+    Tell the model plainly what kind of grounding it has for this turn, instead of
+    letting it silently improvise a confident-sounding answer either way. This is the
+    fix for the two most common hallucination triggers: (1) a question that doesn't
+    match anything in the tracked syllabus (primary_concept_id never resolved), and
+    (2) a resolved concept where retrieval came back weak/empty (retrieval_confidence
+    == "low", already detected by graphrag_retriever.py's confidence gate but
+    previously discarded before it reached the student).
+    """
+    confidence = state.get("retrieval_confidence")
+    if confidence == "unresolved":
+        return (
+            "GROUNDING STATUS: UNRESOLVED — this question did not match any concept in "
+            "this tutor's JEE Physics syllabus. Say so plainly in your first sentence "
+            "(e.g. \"This looks outside the syllabus this tutor covers\"), then you may "
+            "still give a brief, clearly-labelled best-effort general explanation — but "
+            "do not present it as verified JEE material or invent formulae/values you "
+            "are not confident in."
+        )
+    if confidence == "low":
+        return (
+            "GROUNDING STATUS: LOW CONFIDENCE — no strongly-matching reference content "
+            "was found for this specific question, even though the concept is in "
+            "syllabus. Briefly flag that (one short clause is enough, don't dwell on "
+            "it), then answer carefully from first principles. Do not state numeric "
+            "values, formulae, or exam-specific claims with more confidence than you "
+            "actually have."
+        )
+    return "GROUNDING STATUS: OK — answer normally using the chunks below as your primary source."
+
+
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
     if not chunks:
         return (
-            "(no knowledge-graph chunks — compose from physics knowledge, "
-            "student proficiency, and the query. Chunks are optional grounding, "
-            "not a requirement.)"
+            "(none retrieved for this turn — see GROUNDING STATUS above for how to "
+            "handle that.)"
         )
     parts = []
     for i, c in enumerate(chunks, 1):
@@ -773,6 +804,7 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         prompt = prompt.replace("{{weak_prereqs}}", str(_weak_prereqs_summary(prereq_states)))
         prompt = prompt.replace("{{prior_session_summary}}", str(prior_summary))
         prompt = prompt.replace("{{formulae_section}}", str(_extract_formulae(chunks)))
+        prompt = prompt.replace("{{grounding_note}}", str(_grounding_note(state)))
         prompt = prompt.replace("{{chunks}}", str(_format_chunks(chunks)))
         
         query = state["query"]
