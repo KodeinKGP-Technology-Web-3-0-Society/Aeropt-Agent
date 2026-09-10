@@ -31,7 +31,12 @@ from groq import Groq
 import config
 from db.supabase_client import db
 from models.state import TutorState
-from utils.latex_guidelines import LATEX_OUTPUT_RULES
+from utils.latex_guidelines import (
+    LATEX_OUTPUT_RULES,
+    balance_dollar_delimiters,
+    find_latex_issues,
+    sanitize_chunk_text_for_prompt,
+)
 from utils.llm import groq_complete
 
 # ── Supabase storage URL builder ───────────────────────────────────────────────
@@ -430,7 +435,12 @@ def prepare_student_markdown(text: str) -> str:
     """
     if not text:
         return text
-    return _render_math_text(_normalize_latex_output(text))
+    out = _render_math_text(_normalize_latex_output(text))
+    out = balance_dollar_delimiters(out)
+    issues = find_latex_issues(out)
+    if issues:
+        logger.warning("[Solver] Possible malformed LaTeX in outbound text: %s", issues)
+    return out
 
 
 # ── Deterministic math rendering for stored DB text (solution / core_text) ────
@@ -663,10 +673,15 @@ def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
         )
     parts = []
     for i, c in enumerate(chunks, 1):
-        text = (c.get("core_text") or "").strip()
+        # Sanitize before the LLM ever sees it — unicode math symbols, stray
+        # literal "\n" separators, and double-escaped macros are mechanical DB
+        # formatting noise, not something worth asking the model to work around
+        # (rule 7 in LATEX_OUTPUT_RULES covers what's left: genuinely corrupted
+        # source LaTeX the model must reconstruct rather than copy).
+        text = sanitize_chunk_text_for_prompt((c.get("core_text") or "").strip())
         ctype = c.get("content_type", "")
         difficulty = c.get("difficulty", "?")
-        diagram = (c.get("diagram_description_core") or "").strip()
+        diagram = sanitize_chunk_text_for_prompt((c.get("diagram_description_core") or "").strip())
         chunk_str = f"[Chunk {i} | type={ctype} | difficulty={difficulty}]\n{text}"
         if diagram:
             chunk_str += f"\nDiagram: {diagram}"

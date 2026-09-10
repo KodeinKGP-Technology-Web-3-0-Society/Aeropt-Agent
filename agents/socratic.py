@@ -23,7 +23,7 @@ from agents.solver import prepare_student_markdown
 import config
 from db.supabase_client import db
 from models.state import TutorState
-from utils.latex_guidelines import LATEX_OUTPUT_RULES
+from utils.latex_guidelines import LATEX_OUTPUT_RULES, sanitize_chunk_text_for_prompt
 from utils.llm import groq_complete
 
 _groq = Groq(api_key=config.GROQ_API_KEY)
@@ -83,7 +83,7 @@ def _chunks_summary(chunks: List[Dict[str, Any]]) -> str:
         )
     lines = []
     for c in chunks[:3]:  # summarise top 3 only
-        text = (c.get("core_text") or "")[:200]
+        text = sanitize_chunk_text_for_prompt((c.get("core_text") or "")[:200])
         lines.append(f"• {text}")
     return "\n".join(lines)
 

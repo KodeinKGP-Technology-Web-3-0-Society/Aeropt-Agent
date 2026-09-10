@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from groq import Groq
 
 import config
+from utils.latex_guidelines import sanitize_chunk_text_for_prompt
 from utils.llm import groq_complete
 
 logger = logging.getLogger("jee_tutor.content_summarizer")
@@ -55,6 +56,10 @@ In JSON strings escape every backslash twice (e.g. write \\\\vec{{F}} for $\\vec
    - formula: primary equation with brief context
    - example: worked idea or application mentioned in source
    - takeaway: exam-relevant summary or common trap from source
+7. The core_text/formulae below come from an OCR/ingestion pipeline and can
+   contain corrupted LaTeX (unbalanced braces, stray characters). If a formula
+   looks malformed, do not copy it verbatim into a card — reconstruct the
+   correct standard form from physics principles.
 """.format(min_chars=MIN_INPUT_FOR_THREE_CARDS)
 
 _USER_PROMPT = """\
@@ -156,8 +161,8 @@ def summarize_to_slide_cards(
     Returns list of dicts:
       {title, body, card_type, formula?, diagram_hint?}
     """
-    core_text = (core_text or "").strip()
-    latex_formulae_core = (latex_formulae_core or "").strip()
+    core_text = sanitize_chunk_text_for_prompt((core_text or "").strip())
+    latex_formulae_core = sanitize_chunk_text_for_prompt((latex_formulae_core or "").strip())
     concept_label = (concept_label or "Concept").strip()
     source_len = len(core_text)
 
