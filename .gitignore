@@ -32,3 +32,6 @@ api.log
 
 # Cursor-generated assets (not part of the project)
 assets/
+
+# Local scratch work (not part of the project)
+scratch/

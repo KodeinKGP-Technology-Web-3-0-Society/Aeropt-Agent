@@ -19,6 +19,8 @@ import config
 class SupabaseClient:
     def __init__(self, url: str, key: str) -> None:
         self.client: Client = create_client(url, key)
+        # None = not probed yet; set by memory_enabled() on first use.
+        self._memory_enabled: Optional[bool] = None
 
     # ─────────────────────────── users ────────────────────────────────────────
 
@@ -512,6 +514,214 @@ class SupabaseClient:
             .execute()
         )
         return res.data or []
+
+    # ─────────────────────── learner memory (migration 006) ───────────────────
+    #
+    # Every method here degrades to a no-op / empty result when migration 006 has
+    # not been applied yet, so the agent runs against an un-migrated database
+    # without memory instead of crashing the turn. `memory_enabled()` reports
+    # which of the two worlds we are in.
+
+    _MISSING_TABLE_MARKERS = (
+        "does not exist",
+        "could not find the table",
+        "pgrst205",
+        "relation \"public.learner_memory\"",
+        "schema cache",
+    )
+
+    def _is_missing_table(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(marker in msg for marker in self._MISSING_TABLE_MARKERS)
+
+    def memory_enabled(self) -> bool:
+        """True when migration 006 has been applied (learner_memory is queryable)."""
+        if self._memory_enabled is None:
+            try:
+                self.client.table("learner_memory").select("memory_id").limit(1).execute()
+                self._memory_enabled = True
+            except Exception as exc:
+                if self._is_missing_table(exc):
+                    self._memory_enabled = False
+                else:
+                    # A transient error is not proof the table is absent — don't
+                    # cache a false negative that disables memory for the process.
+                    return False
+        return self._memory_enabled
+
+    def read_learner_memories(
+        self,
+        user_id: str,
+        *,
+        subject_key: Optional[str] = None,
+        kinds: Optional[List[str]] = None,
+        limit: int = 12,
+        min_confidence: float = 0.3,
+    ) -> List[Dict[str, Any]]:
+        """Active learner memories, strongest first. Empty list if memory is off."""
+        if not self.memory_enabled():
+            return []
+        try:
+            q = (
+                self.client.table("learner_memory")
+                .select("memory_id, kind, subject_key, fact, evidence, confidence, created_at")
+                .eq("user_id", user_id)
+                .is_("superseded_by", "null")
+                .gte("confidence", min_confidence)
+            )
+            if subject_key:
+                q = q.eq("subject_key", subject_key)
+            if kinds:
+                q = q.in_("kind", kinds)
+            res = q.order("confidence", desc=True).limit(limit).execute()
+            return res.data or []
+        except Exception:
+            return []
+
+    def insert_learner_memory(
+        self,
+        user_id: str,
+        kind: str,
+        fact: str,
+        *,
+        evidence: Optional[str] = None,
+        subject_key: Optional[str] = None,
+        confidence: float = 0.6,
+        source: str = "tutor",
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Write one atomic learner fact. Returns the row, or None if memory is off."""
+        if not self.memory_enabled():
+            return None
+        row = {
+            "user_id": user_id,
+            "kind": kind,
+            "fact": fact,
+            "evidence": evidence,
+            "subject_key": subject_key,
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "source": source,
+            "session_id": session_id,
+        }
+        try:
+            res = self.client.table("learner_memory").insert(row).execute()
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    def supersede_learner_memory(self, memory_id: str, replacement_id: Optional[str]) -> None:
+        """Retire a memory that is now wrong, optionally pointing at what replaced it."""
+        if not self.memory_enabled():
+            return
+        try:
+            self.client.table("learner_memory").update(
+                {
+                    "superseded_by": replacement_id,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("memory_id", memory_id).execute()
+        except Exception:
+            pass
+
+    def bump_learner_memory_hits(self, memory_ids: List[str]) -> None:
+        """Record that these memories were recalled into a prompt."""
+        if not memory_ids or not self.memory_enabled():
+            return
+        try:
+            for mid in memory_ids:
+                self.client.rpc(
+                    "increment_learner_memory_hit", {"p_memory_id": mid}
+                ).execute()
+        except Exception:
+            pass  # RPC is optional; hit_count is telemetry, never load-bearing.
+
+    # ─────────────────────── review schedule (migration 006) ──────────────────
+
+    def upsert_review(
+        self,
+        user_id: str,
+        concept_id: str,
+        due_at: str,
+        *,
+        reason: Optional[str] = None,
+        created_by: str = "tutor",
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Schedule (or re-schedule) one pending review for a concept."""
+        if not self.memory_enabled():
+            return None
+        try:
+            existing = (
+                self.client.table("review_schedule")
+                .select("review_id")
+                .eq("user_id", user_id)
+                .eq("concept_id", concept_id)
+                .eq("status", "pending")
+                .execute()
+            )
+            if existing.data:
+                rid = existing.data[0]["review_id"]
+                self.client.table("review_schedule").update(
+                    {"due_at": due_at, "reason": reason}
+                ).eq("review_id", rid).execute()
+                return {"review_id": rid, "due_at": due_at, "rescheduled": True}
+            res = (
+                self.client.table("review_schedule")
+                .insert(
+                    {
+                        "user_id": user_id,
+                        "concept_id": concept_id,
+                        "due_at": due_at,
+                        "reason": reason,
+                        "created_by": created_by,
+                        "session_id": session_id,
+                    }
+                )
+                .execute()
+            )
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    def read_due_reviews(self, user_id: str, *, now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Pending reviews whose due_at has passed."""
+        if not self.memory_enabled():
+            return []
+        cutoff = now_iso or datetime.now(timezone.utc).isoformat()
+        try:
+            res = (
+                self.client.table("review_schedule")
+                .select("review_id, concept_id, due_at, reason")
+                .eq("user_id", user_id)
+                .eq("status", "pending")
+                .lte("due_at", cutoff)
+                .order("due_at")
+                .execute()
+            )
+            return res.data or []
+        except Exception:
+            return []
+
+    def complete_review(self, review_id: str) -> None:
+        if not self.memory_enabled():
+            return
+        try:
+            self.client.table("review_schedule").update(
+                {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()}
+            ).eq("review_id", review_id).execute()
+        except Exception:
+            pass
+
+    # ─────────────────────── agent trace (migration 006) ──────────────────────
+
+    def insert_agent_trace(self, trace: Dict[str, Any]) -> None:
+        """Persist one turn's decision trace. Never raises — telemetry only."""
+        if not self.memory_enabled():
+            return
+        try:
+            self.client.table("agent_trace").insert(trace).execute()
+        except Exception:
+            pass
 
     # ─────────────────────────── registration helper ──────────────────────────
 

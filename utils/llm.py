@@ -93,19 +93,24 @@ def _pick_client(pool, override_client: Groq, model: str) -> Tuple[Optional[int]
     return None, override_client
 
 
-def groq_complete(
+def _run_chain(
     client: Groq,
     model: str,
     messages: List[Dict[str, Any]],
     fallback_models: Optional[List[str]] = None,
-    min_chars: int = 0,
+    soft_check: Optional[Any] = None,
     **kwargs: Any,
-) -> Tuple[str, str]:
+) -> Tuple[Any, str]:
     """
-    Call Groq with retry + automatic model fallback.
+    Call Groq with retry + automatic model fallback; return the raw message.
+
+    `soft_check(message) -> Optional[str]` lets the caller reject an otherwise
+    successful response (e.g. a think-only reply with no usable text). Returning
+    a reason string treats the attempt as a transient failure: retry, then fall
+    back to the next model. Returning None accepts the message.
 
     Returns:
-        (response_text, model_that_succeeded)
+        (message, model_that_succeeded)
 
     Key rotation: if utils/groq_pool has a multi-key pool configured
     (GROQ_API_KEYS / GROQ_API_KEY_2..7), each attempt is made against a client
@@ -149,15 +154,14 @@ def groq_complete(
                     messages=messages,
                     **call_kwargs,
                 )
-                text = completion.choices[0].message.content or ""
-                if min_chars and len(text.strip()) < min_chars:
-                    # Model returned a suspiciously short response (e.g. think-only).
-                    # Treat as a soft failure and continue to next attempt / model.
-                    logger.warning(
-                        "[LLM] %s returned %d chars (min=%d), treating as empty.",
-                        current_model, len(text.strip()), min_chars,
-                    )
-                    last_exc = RuntimeError(f"Response too short: {len(text.strip())} chars")
+                message = completion.choices[0].message
+                reason = soft_check(message) if soft_check else None
+                if reason:
+                    # Model returned a technically-successful but unusable reply
+                    # (e.g. think-only text). Treat as a soft failure and continue
+                    # to the next attempt / model.
+                    logger.warning("[LLM] %s: %s", current_model, reason)
+                    last_exc = RuntimeError(reason)
                     if attempt < MAX_RETRIES:
                         time.sleep(BACKOFF_BASE)
                         continue
@@ -171,7 +175,7 @@ def groq_complete(
                         attempt + 1,
                         MAX_RETRIES + 1,
                     )
-                return text, current_model
+                return message, current_model
 
             except Exception as exc:
                 last_exc = exc
@@ -246,4 +250,98 @@ def groq_complete(
     raise RuntimeError(
         f"All LLM models in chain failed. Last error: {last_exc}\n"
         f"Chain tried: {chain}"
+    )
+
+
+def groq_complete(
+    client: Groq,
+    model: str,
+    messages: List[Dict[str, Any]],
+    fallback_models: Optional[List[str]] = None,
+    min_chars: int = 0,
+    **kwargs: Any,
+) -> Tuple[str, str]:
+    """
+    Call Groq for plain text with retry + automatic model fallback.
+
+    Returns:
+        (response_text, model_that_succeeded)
+
+    `min_chars` rejects a suspiciously short reply (a think-only response) as a
+    soft failure, retrying and then falling back rather than returning nothing.
+
+    Key rotation: if utils/groq_pool has a multi-key pool configured
+    (GROQ_API_KEYS / GROQ_API_KEY_2..7), each attempt is made against a client
+    picked from that pool (round-robin, skipping cooled-down/RPM-hot keys) —
+    `client` is only used directly when no multi-key pool is configured, so
+    every existing call site keeps working unchanged. A 429 marks that key
+    cooled-down and moves to the next one immediately, without the model
+    fallback chain being touched — same-account keys share one quota, but
+    different-org keys don't, so this is the actual fix for a 429 rather than
+    just retrying the same (still-limited) key or downgrading model quality.
+    """
+
+    def _check(message: Any) -> Optional[str]:
+        if not min_chars:
+            return None
+        text = (getattr(message, "content", None) or "").strip()
+        if len(text) < min_chars:
+            return f"returned {len(text)} chars (min={min_chars}), treating as empty."
+        return None
+
+    message, model_used = _run_chain(
+        client=client,
+        model=model,
+        messages=messages,
+        fallback_models=fallback_models,
+        soft_check=_check,
+        **kwargs,
+    )
+    return (getattr(message, "content", None) or ""), model_used
+
+
+def groq_chat(
+    client: Groq,
+    model: str,
+    messages: List[Dict[str, Any]],
+    fallback_models: Optional[List[str]] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[str] = None,
+    **kwargs: Any,
+) -> Tuple[Any, str]:
+    """
+    Tool-calling counterpart of `groq_complete`: returns the raw assistant
+    message so the caller can read `.tool_calls` as well as `.content`.
+
+    Used by the autonomous agent loop (`agents/runtime/loop.py`), which needs to
+    see tool calls, not just text. Shares the same retry, key-rotation, TPM
+    clamping and model-fallback behaviour as `groq_complete`.
+
+    A reply carrying tool calls but no text is valid here (that is the normal
+    shape of a tool-calling turn), so the only soft failure is a reply with
+    neither text nor tool calls — nothing the loop could act on.
+
+    Returns:
+        (message, model_that_succeeded)
+    """
+
+    def _check(message: Any) -> Optional[str]:
+        has_text = bool((getattr(message, "content", None) or "").strip())
+        has_calls = bool(getattr(message, "tool_calls", None))
+        if not has_text and not has_calls:
+            return "returned neither text nor tool calls."
+        return None
+
+    call_kwargs: Dict[str, Any] = dict(kwargs)
+    if tools:
+        call_kwargs["tools"] = tools
+        call_kwargs["tool_choice"] = tool_choice or "auto"
+
+    return _run_chain(
+        client=client,
+        model=model,
+        messages=messages,
+        fallback_models=fallback_models,
+        soft_check=_check,
+        **call_kwargs,
     )

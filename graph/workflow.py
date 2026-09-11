@@ -1,217 +1,159 @@
-"""
-LangGraph workflow — wires all 9 agents into the correct execution order.
+"""Graph wiring for the autonomous Learning Agent.
 
-Intent routing after Orchestrator:
-  doubt / practice_request  → Concept Resolver → GraphRAG Retriever → Solver | Socratic
-                              → Diagnostic (if graded) | Follow Up → Context Manager
-  quiz_response             → Diagnostic → Quiz | Follow Up → Context Manager
-  graded_response           → Diagnostic → Follow Up (prereq surfacing or suggestions)
-                              → Context Manager
-  prereq_confirmation       → GraphRAG Retriever → Solver | Socratic
-                              → Diagnostic | Follow Up → Context Manager
-  follow_up_response        → Follow Up → Context Manager   (FIXED: was → END)
+What this graph is *not* any more: a flowchart. The previous version encoded the
+tutor's behaviour as conditional edges between nine agent nodes, switched on a
+closed seven-value intent enum. Every genuinely new situation — a compound
+request, a cross-concept comparison, "why did you mark that wrong?" — had to be
+squeezed into one of those seven values, and the edges decided the rest. That is
+a workflow wearing an agent's clothes.
 
-Special routes:
-  • trigger_quiz = True after Diagnostic → Quiz instead of Follow Up
-  • error in state            → END immediately
+What is left here is the small amount of structure that genuinely *is* fixed:
+
+    bootstrap ──> [structured input?] ──> fast path ──┐
+                           │                          ├──> context manager ──> END
+                           └──> learning agent ───────┘
+
+One routing decision, and it turns on the *shape of the input*, not on a guess
+about its meaning. A Correct/Incorrect button click is a structured payload with
+one correct handling and no ambiguity to reason about, so it takes a
+deterministic path with no agent call at all — it is also most of the traffic,
+so this is where the latency budget is won.
+
+Everything that arrives as open-ended text goes to the agent, which decides for
+itself what it needs. There is no intent enum to fall outside of.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from models.state import TutorState
-from agents.orchestrator import orchestrator_node
-from agents.concept_resolver import concept_resolver_node
-from agents.graphrag_retriever import graphrag_retriever_node
-from agents.solver import solver_node
-from agents.socratic import socratic_node
 from agents.diagnostic import diagnostic_node
-from agents.follow_up import follow_up_node
-from agents.quiz import quiz_node
 from agents.context_manager import context_manager_node
+from agents.follow_up import follow_up_node
+from agents.learning_agent import learning_agent_node
+from agents.session_bootstrap import session_bootstrap_node
+from models.state import TutorState
+
+logger = logging.getLogger("jee_tutor.workflow")
 
 
-# ── Routing functions ─────────────────────────────────────────────────────────
-
-_PRACTICE_TYPES = {"practice", "pyq"}
+# ── The one routing decision ──────────────────────────────────────────────────
 
 
-def route_after_orchestrator(state: TutorState) -> str:
+def is_structured_input(state: TutorState) -> bool:
+    """True when this turn has exactly one correct handling and no ambiguity.
+
+    Today that means a graded outcome: the student pressed Correct or Incorrect
+    on a practice question. `services/turn_service.parse_turn_input` sets
+    `has_graded_outcome` for that case, from the button payload rather than from
+    reading the text.
+
+    Keep this test structural. The moment it starts inspecting *what the student
+    said*, it has become an intent classifier again, and the whole problem comes
+    back.
+    """
+    return bool(state.get("has_graded_outcome"))
+
+
+def route_from_bootstrap(state: TutorState) -> str:
     if state.get("error"):
         return "end"
-    intent = state.get("intent", "doubt")
-
-    if intent == "follow_up_response":
-        return "follow_up"
-
-    if intent in {"quiz_response", "graded_response"}:
-        # If has_graded_outcome is False the Orchestrator already wrote a
-        # reminder message and set response in state — route straight to END.
-        if not state.get("has_graded_outcome"):
-            return "end"
-        return "diagnostic"
-
-    if intent == "prereq_confirmation":
-        # Orchestrator already injected primary_concept_id from pending prereq;
-        # skip Concept Resolver and go straight to retrieval.
-        return "graphrag_retriever"
-
-    # doubt | practice_request | quiz_request → full pipeline.
-    # quiz_request rides the same path; quiz_batch_mode (set by Orchestrator)
-    # diverts the retriever's output to the Quiz agent in route_to_responder.
-    return "concept_resolver"
+    if is_structured_input(state):
+        logger.debug("fast path: structured graded outcome")
+        return "graded_fast_path"
+    return "learning_agent"
 
 
-def route_to_responder(state: TutorState) -> str:
+def route_after_turn(state: TutorState) -> str:
+    """Run the session summariser if this turn is due for one."""
     if state.get("error"):
         return "end"
-    # On-demand quiz: build a batch of questions instead of a single answer.
-    if state.get("quiz_batch_mode"):
-        return "quiz"
-    if state.get("use_socratic"):
-        return "socratic"
-    return "solver"
+    return "context_manager" if state.get("run_context_manager") else "end"
 
 
-def route_after_response(state: TutorState) -> str:
-    """After Solver or Socratic emits a response, decide post-processing path."""
-    if state.get("error"):
-        return "end"
-    if state.get("has_graded_outcome"):
-        return "diagnostic"
-    # Bug 2 / Bug 1 fix: when a practice or PYQ question was just served the
-    # student has not answered yet — Follow-Up suggestions here are premature
-    # and confusing.  Skip Follow-Up entirely; still honour the Context Manager
-    # schedule if it is due.
-    if state.get("content_type_requested") in _PRACTICE_TYPES:
-        return "context_manager" if state.get("run_context_manager") else "end"
-    return "follow_up"
+# ── Fast path ─────────────────────────────────────────────────────────────────
 
 
-def route_after_diagnostic(state: TutorState) -> str:
-    if state.get("error"):
-        return "end"
-    # An in-progress on-demand quiz batch must advance to its next question via
-    # Follow-Up — never divert into the struggle-triggered micro-quiz mid-batch.
-    if state.get("quiz_batch_mode"):
-        return "follow_up"
-    if state.get("trigger_quiz"):
-        return "quiz"
-    return "follow_up"
+def graded_fast_path_node(state: TutorState) -> Dict[str, Any]:
+    """Handle a Correct/Incorrect button click without any agent reasoning.
+
+    Two deterministic steps, in order: record the attempt (fixed proficiency
+    maths), then decide what to put in front of the student next (a weak
+    prerequisite, the next quiz question, or fresh suggestions). Both already
+    existed and are unchanged — this path is a latency optimisation, not new
+    behaviour, and it must not drift away from what the agent would do.
+    """
+    updates: Dict[str, Any] = {}
+
+    graded = diagnostic_node(state)
+    if graded.get("error"):
+        # Grading failed, but the student still pressed a button and is waiting.
+        # Fall through to follow-up so they get a reply, and keep the reason.
+        logger.warning("Fast-path grading failed: %s", graded["error"])
+        graded.pop("error", None)
+    updates.update(graded)
+
+    merged: Dict[str, Any] = {**state, **updates}
+    follow_up = follow_up_node(merged)  # type: ignore[arg-type]
+    if follow_up.get("error"):
+        logger.warning("Fast-path follow-up failed: %s", follow_up["error"])
+        follow_up.pop("error", None)
+    updates.update(follow_up)
+
+    updates.setdefault("agent_used", "graded_fast_path")
+    updates["error"] = None
+    return updates
 
 
-def route_after_quiz_or_followup(state: TutorState) -> str:
-    """After quiz or follow-up, optionally run Context Manager."""
-    if state.get("run_context_manager"):
-        return "context_manager"
-    return "end"
+# ── Node guard ────────────────────────────────────────────────────────────────
 
-
-# ── Node wrappers (add error short-circuit guard) ──────────────────────────────
 
 def _guard(node_fn):
-    """Skip the node if there's already an error in state."""
+    """Skip a node when the turn has already failed."""
+
     def wrapped(state: TutorState) -> Dict[str, Any]:
         if state.get("error"):
             return {}
         return node_fn(state)
+
     wrapped.__name__ = node_fn.__name__
     return wrapped
 
 
-# ── Build the graph ───────────────────────────────────────────────────────────
+# ── Build ─────────────────────────────────────────────────────────────────────
+
 
 def build_graph() -> Any:
     workflow = StateGraph(TutorState)
 
-    # Register nodes
-    workflow.add_node("orchestrator",       _guard(orchestrator_node))
-    workflow.add_node("concept_resolver",   _guard(concept_resolver_node))
-    workflow.add_node("graphrag_retriever", _guard(graphrag_retriever_node))
-    workflow.add_node("solver",             _guard(solver_node))
-    workflow.add_node("socratic",           _guard(socratic_node))
-    workflow.add_node("diagnostic",         _guard(diagnostic_node))
-    workflow.add_node("follow_up",          _guard(follow_up_node))
-    workflow.add_node("quiz",               _guard(quiz_node))
-    workflow.add_node("context_manager",    _guard(context_manager_node))
+    workflow.add_node("bootstrap", session_bootstrap_node)
+    workflow.add_node("graded_fast_path", _guard(graded_fast_path_node))
+    workflow.add_node("learning_agent", _guard(learning_agent_node))
+    workflow.add_node("context_manager", _guard(context_manager_node))
 
-    # Entry point
-    workflow.set_entry_point("orchestrator")
+    workflow.set_entry_point("bootstrap")
 
-    # ── Orchestrator routing ──────────────────────────────────────────────────
     workflow.add_conditional_edges(
-        "orchestrator",
-        route_after_orchestrator,
+        "bootstrap",
+        route_from_bootstrap,
         {
-            "concept_resolver":   "concept_resolver",
-            "diagnostic":         "diagnostic",      # quiz_response / graded_response
-            "follow_up":          "follow_up",       # follow_up_response
-            "graphrag_retriever": "graphrag_retriever",  # prereq_confirmation
-            "end":                END,
+            "graded_fast_path": "graded_fast_path",
+            "learning_agent": "learning_agent",
+            "end": END,
         },
     )
 
-    # ── Concept → Retriever → Responder ──────────────────────────────────────
-    workflow.add_edge("concept_resolver", "graphrag_retriever")
-
-    workflow.add_conditional_edges(
-        "graphrag_retriever",
-        route_to_responder,
-        {
-            "solver":   "solver",
-            "socratic": "socratic",
-            "quiz":     "quiz",        # on-demand quiz batch (quiz_batch_mode)
-            "end":      END,
-        },
-    )
-
-    # ── After response: Diagnostic, FollowUp, or direct to ContextManager ───────
-    _post_response_map = {
-        "diagnostic":      "diagnostic",
-        "follow_up":       "follow_up",
-        "context_manager": "context_manager",   # practice/PYQ: skip Follow-Up
-        "end":             END,
-    }
-    workflow.add_conditional_edges("solver",   route_after_response, _post_response_map)
-    workflow.add_conditional_edges("socratic", route_after_response, _post_response_map)
-
-    # ── After Diagnostic: Quiz or FollowUp ────────────────────────────────────
-    workflow.add_conditional_edges(
-        "diagnostic",
-        route_after_diagnostic,
-        {
-            "quiz":      "quiz",
-            "follow_up": "follow_up",
-            "end":       END,
-        },
-    )
-
-    # ── After Quiz / FollowUp: optionally run Context Manager ─────────────────
-    workflow.add_conditional_edges(
-        "quiz",
-        route_after_quiz_or_followup,
-        {
-            "context_manager": "context_manager",
-            "end":             END,
-        },
-    )
-
-    workflow.add_conditional_edges(
-        "follow_up",
-        route_after_quiz_or_followup,
-        {
-            "context_manager": "context_manager",
-            "end":             END,
-        },
-    )
+    post_turn = {"context_manager": "context_manager", "end": END}
+    workflow.add_conditional_edges("graded_fast_path", route_after_turn, post_turn)
+    workflow.add_conditional_edges("learning_agent", route_after_turn, post_turn)
 
     workflow.add_edge("context_manager", END)
 
     return workflow.compile()
 
 
-# Compiled graph — import and call `.invoke(state)` from main.py
+#: Compiled graph — `tutor_graph.invoke(state)` from the entry points.
 tutor_graph = build_graph()

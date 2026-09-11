@@ -116,3 +116,43 @@ STRUGGLE_STREAK_QUIZ_TRIGGER = 3
 
 # ── Context Manager ───────────────────────────────────────────────────────────
 CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
+
+# ── Autonomous Learning Agent ─────────────────────────────────────────────────
+# The Main Tutor reasons in a tool-calling loop rather than following fixed graph
+# edges, so its cost and latency are bounded here rather than by the shape of a
+# flowchart. See agents/learning_agent.py and agents/runtime/loop.py.
+#
+# The model must support function calling. Verified live on this account
+# (2026-09-11): openai/gpt-oss-120b, openai/gpt-oss-20b and qwen/qwen3.6-27b all
+# return well-formed tool calls. Re-check before changing this — a model without
+# tool support does not error, it just silently stops calling tools and the agent
+# degrades into a chatbot with no access to the syllabus.
+LEARNING_AGENT_MODEL = "openai/gpt-oss-120b"
+LEARNING_AGENT_FALLBACK_MODELS = [
+    "qwen/qwen3.6-27b",
+    "qwen/qwen3.8-27b",
+]
+
+# Reasoning steps per turn. Enough for resolve -> retrieve -> verify -> compose,
+# with room for one recovery, and no more.
+LEARNING_AGENT_MAX_STEPS = 6
+
+# Wall-clock ceiling for one turn's reasoning, in seconds. On overrun the agent
+# is forced to answer with what it has rather than being cut off mid-thought.
+LEARNING_AGENT_TIME_BUDGET_S = 45.0
+
+LEARNING_AGENT_TEMPERATURE = 0.3
+
+# ── Answer Checker ────────────────────────────────────────────────────────────
+# A fresh review pass over every substantial reply before the student sees it.
+# Fail-open: if the checker is unavailable the draft is sent unchanged, and the
+# turn trace records the skip.
+ANSWER_CHECKER_ENABLED = os.getenv("ANSWER_CHECKER_ENABLED", "true").lower() != "false"
+ANSWER_CHECKER_MODEL = "openai/gpt-oss-120b"
+
+# ── Background Learning Coach ─────────────────────────────────────────────────
+# The same agent, run after platform events rather than in a live conversation.
+# It decides for itself whether any action is warranted — doing nothing is a
+# valid and common outcome, so there is no "N wrong answers triggers X" rule.
+LEARNING_COACH_MODEL = "openai/gpt-oss-120b"
+LEARNING_COACH_MAX_STEPS = 4

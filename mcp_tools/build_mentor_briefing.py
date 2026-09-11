@@ -39,13 +39,22 @@ def build_mentor_briefing(args: BuildMentorBriefingArgs) -> Dict[str, Any]:
             if float(s.get("proficiency_score") or 0) >= config.MASTERY_THRESHOLD
         ][:5]
 
+        # `db.read_structured_memory` was called here until this fix. Migration
+        # 003 dropped the structured_memory column and the method with it, so
+        # every briefing that was given a session_id raised AttributeError,
+        # landed in the broad handler below, and returned "Briefing unavailable"
+        # — the failure was total but silent. The durable replacement is
+        # learner_memory (migration 006), which is what this reads now.
         session_summary: Optional[str] = None
-        structured: Optional[Dict[str, Any]] = None
         if args.session_id:
-            structured = db.read_structured_memory(args.session_id)
             session_summary = db.read_session_summary(args.session_id)
-            if structured and structured.get("text_summary"):
-                session_summary = structured["text_summary"]
+
+        remembered = db.read_learner_memories(
+            args.user_id,
+            kinds=["misconception", "goal", "preference"],
+            limit=5,
+            min_confidence=0.5,
+        )
 
         lines: List[str] = []
         if session_summary:
@@ -62,12 +71,19 @@ def build_mentor_briefing(args: BuildMentorBriefingArgs) -> Dict[str, Any]:
         if dominant:
             lines.append(f"Most common error type lately: {dominant}.")
 
+        goals = [m["fact"] for m in remembered if m.get("kind") == "goal"]
+        if goals:
+            lines.append(f"Working towards: {goals[0]}")
+        misconceptions = [m["fact"] for m in remembered if m.get("kind") == "misconception"]
+        if misconceptions:
+            lines.append(f"Recurring difficulty: {misconceptions[0]}")
+
         summary = " ".join(lines)
         return {
             "summary": summary,
             "weak_concepts": weak,
             "strong_concepts": strong,
-            "structured_memory": structured,
+            "remembered_facts": remembered,
             "goal_minutes": args.goal_minutes,
         }
     except Exception as exc:

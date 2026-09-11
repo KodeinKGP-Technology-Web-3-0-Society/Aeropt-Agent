@@ -1,9 +1,21 @@
 """
-Shared LangGraph state for the JEE Tutor Agent pipeline.
+Shared LangGraph state for the tutor pipeline.
 
 Every node receives the full TutorState and returns a dict of keys to update.
 total=False means every key is optional from a Python perspective — nodes only
 need to populate the keys they own.
+
+**Anything a node returns that is not declared here is silently discarded.**
+LangGraph builds its channels from this TypedDict, so an undeclared key does not
+raise — it just never lands, and the bug shows up much later as a field that is
+mysteriously always empty. If a tool stages a value, declare it here.
+
+This state is now *conversational*, not procedural. Under the old graph it also
+carried the routing machinery — which of seven intents this turn was, which
+branch the edges should take, which facade agent was notionally active. The
+agent decides all of that per turn now, so those fields are gone: `intent`,
+`secondary_intents`, `confidence` and `active_agent` no longer exist. Per-call
+data belongs in the tool argument and result schemas in `mcp_tools/`, not here.
 """
 
 from __future__ import annotations
@@ -22,17 +34,17 @@ class TutorState(TypedDict, total=False):
     preferred_depth: str    # "standard" | "deep" | "quick"
     journey_type: Optional[str]   # fresh_start | mid_journey | revision_dropper
     focus_chapters: List[str]     # weak chapters from onboarding placement
+    grade_level: Optional[str]
+    daily_goal_minutes: Optional[int]
 
     # ── Session state (Orchestrator reads/writes) ─────────────────────────────
     interaction_count: int
     active_quiz: bool
     recent_turns: List[Dict[str, Any]]   # last 1–2 chat_turns rows
 
-    # ── Orchestrator classification ───────────────────────────────────────────
-    # doubt | practice_request | quiz_response | follow_up_response
-    intent: str
-    secondary_intents: List[str]
-    confidence: float
+    # Rolling summary of THIS session so far (the Context Manager's output).
+    # Distinct from prior_session_summary, which is the previous session's.
+    session_summary: Optional[str]
 
     # ── Roadmap hint (Phase 2) ────────────────────────────────────────────────
     roadmap_node_id: Optional[str]     # UUID from Django PathNode
@@ -52,15 +64,48 @@ class TutorState(TypedDict, total=False):
     secondary_concept_states: List[Dict[str, Any]]  # [{concept_id, concept_name, proficiency_score, ...}]
     target_concept_state: Optional[Dict[str, Any]]  # user_concept_state row for primary concept
 
-    # ── Socratic / Solver routing ─────────────────────────────────────────────
+    # ── Teaching signals (advisory, not routing) ─────────────────────────────
+    # Computed by agents/planner.compute_personalization_strategy and surfaced to
+    # the agent through retrieve_content as a *recommendation*. Nothing branches
+    # on these any more — the agent weighs them against the conversation.
     use_socratic: bool
-    socratic_turn_count: int  # loaded from chat_turns by retriever
+    socratic_turn_count: int   # guiding questions already asked on this concept
+    teaching_mode: Optional[str]       # direct | socratic | prereq_first | practice
+    difficulty_target: Optional[float]  # 1.0–5.0
+    framing: Optional[str]
 
     # ── Main response ─────────────────────────────────────────────────────────
-    # Set by Solver or Socratic; never set by both in the same turn.
+    # What the student sees. Written by the Learning Agent (possibly a composer's
+    # draft it accepted verbatim) and then passed through the Answer Checker, or
+    # by the deterministic graded fast path.
     response: str
-    agent_used: str    # "solver" | "socratic"
-    model_used: str    # actual Groq model that generated the response
+    agent_used: str    # "learning_agent" | "graded_fast_path" | "follow_up"
+    model_used: str    # the Groq model that produced the final text
+    # Which capability the frontend's agent-roster panel should highlight.
+    # Derived from what the agent actually did this turn, not from a guess made
+    # before it ran. NOTE: this must stay declared — the old Orchestrator
+    # returned it without it being in this TypedDict, so LangGraph dropped it
+    # every turn and the panel never lit up.
+    active_agent: Optional[str]
+
+    # ── Learning Agent turn record ────────────────────────────────────────────
+    # A draft staged by a composer expert, before the agent accepts or replaces
+    # it. Cleared before the turn returns — it is never the student-facing value.
+    draft_response: Optional[str]
+    draft_author: Optional[str]
+    draft_model: Optional[str]
+    # Memories recalled into this turn's prompt, so the Answer Checker can judge
+    # the reply against what the tutor claimed to know.
+    recalled_memories: List[Dict[str, Any]]
+    # Observability: an autonomous path cannot be read off a diagram, so it is
+    # recorded. e.g. ["tool:resolve_concept", "tool:retrieve_content",
+    # "handoff:worked_solution", "check:answer_checker"].
+    agent_trace_path: List[str]
+    agent_stop_reason: Optional[str]     # answered | max_steps | time_budget | llm_error
+    checker_verdict: Optional[str]       # pass | revised | failed | skipped
+    # Consequential actions the agent stopped short of, pending the student's
+    # go-ahead. Surfaced to the caller; never acted on silently.
+    pending_permissions: List[Dict[str, Any]]
 
     # ── Graded outcome (supplied by caller before graph invocation) ───────────
     # Set to True when the student submitted a numeric / multi-choice answer.

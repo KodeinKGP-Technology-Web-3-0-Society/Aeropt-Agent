@@ -61,18 +61,28 @@ def is_meta_repair_turn(query: str, recent_turns: list) -> bool:
         return False
 
 def should_skip_retrieval(state: Dict[str, Any]) -> bool:
-    # 1. Unresolved primary concept
+    # 1. Unresolved primary concept — nothing to retrieve against. This one
+    #    holds even under _force_retrieval: it is a data fact, not a heuristic.
     primary_id = state.get("primary_concept_id")
     if not primary_id:
         logger.info("[RetrievalGate] Skipping retrieval: no primary_concept_id resolved.")
         return True
-        
-    # 2. Prefetch cache hit
+
+    # 2. Explicit agent decision.
+    #    The gates below guess whether this turn needs retrieval. When the
+    #    autonomous agent calls retrieve_content it has already made that
+    #    judgement with far more context than a keyword-free classifier prompt,
+    #    so a guess must not silently cancel it — that would make the tool lie
+    #    about what it did.
+    if state.get("_force_retrieval"):
+        return False
+
+    # 3. Prefetch cache hit
     if state.get("_prefetch_fast_forward"):
         logger.info("[RetrievalGate] Skipping retrieval: fast-forwarding from prefetch cache.")
         return True
-        
-    # 3. Meta/repair turn
+
+    # 4. Meta/repair turn
     intent = state.get("intent", "")
     if intent in {"doubt", "follow_up_response"}:
         query = state.get("query", "")
