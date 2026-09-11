@@ -52,6 +52,7 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarning)
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
@@ -67,6 +68,7 @@ from pydantic import BaseModel
 
 # ── Agent pipeline — same import targets as main.py ───────────────────────────
 from db.supabase_client import db
+from agents.learning_coach import coach_user
 from graph.workflow import tutor_graph
 from models.state import TutorState
 
@@ -244,6 +246,24 @@ class SandboxExecuteRequest(BaseModel):
     journey_type: Optional[str] = None
     focus_chapters: Optional[List[str]] = None
     weak_prereq: Optional[str] = None
+
+
+class CoachRunRequest(BaseModel):
+    user_id: str
+    #: What prompted this look — a finished session, a due review, a nightly
+    #: sweep. The coach weighs the trigger, so say something real.
+    trigger: str = "scheduled check"
+    session_id: Optional[str] = None
+
+
+class CoachRunResponse(BaseModel):
+    ok: bool
+    #: False is the common, healthy outcome: nothing warranted acting on.
+    acted: bool
+    actions: List[str] = []
+    note: Optional[str] = None
+    trace_path: List[str] = []
+    error: Optional[str] = None
 
 
 class EndSessionRequest(BaseModel):
@@ -984,4 +1004,43 @@ def end_session(req: EndSessionRequest) -> EndSessionResponse:
     """
     _flush_session_summary(session_id=req.session_id, user_id=req.user_id)
     release_carry(req.session_id)
+
+    # A finished session is the natural moment for the Background Learning Coach
+    # to look. It runs detached so ending a session stays instant — the student
+    # is closing the tab and must not wait on background reasoning.
+    threading.Thread(
+        target=coach_user,
+        args=(req.user_id,),
+        kwargs={"trigger": "student ended a session", "session_id": req.session_id},
+        daemon=True,
+    ).start()
+
     return EndSessionResponse(ok=True)
+
+
+@app.post("/api/v1/coach/run", response_model=CoachRunResponse)
+def run_coach(req: CoachRunRequest) -> CoachRunResponse:
+    """Run the Background Learning Coach over one student's records.
+
+    The same Learning Agent, looking at what has happened between sessions and
+    deciding whether anything deserves a response. `acted: false` is the normal
+    result and is not an error — a student working steadily needs nothing.
+
+    Nothing here reaches the student. The coach can remember something and can
+    schedule a review; anything student-facing happens in a live turn, where
+    they can answer back.
+
+    Synchronous, for a caller that wants the decision (a cron sweep, an admin
+    tool). Session-end triggers its own detached run instead.
+    """
+    result = coach_user(
+        req.user_id, trigger=req.trigger, session_id=req.session_id
+    )
+    return CoachRunResponse(
+        ok=bool(result.get("ok")),
+        acted=bool(result.get("acted")),
+        actions=result.get("actions") or [],
+        note=result.get("note"),
+        trace_path=result.get("trace_path") or [],
+        error=result.get("error"),
+    )
