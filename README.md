@@ -1,6 +1,14 @@
 # PrepWise — JEE Tutor Agent (`Aeropt-agent`)
 
-A multi-agent, LangGraph-based AI tutoring and diagnostic system for **JEE Main** and **JEE Advanced Physics**. The agent retrieves curriculum-aligned concepts from a Neo4j knowledge graph, dynamically adapts explanations to student proficiency, tracks learning gaps, and serves structured theory, worked examples, interactive practice questions, and quizzes through an SSE-streaming interface.
+An autonomous AI tutor for **JEE Main** and **JEE Advanced Physics**. One Learning Agent owns
+each student's turn: it decides what it needs to look up, whether to compute, whether to hand a
+narrow job to a temporary expert, and how to teach the person in front of it. It retrieves
+curriculum-aligned material from a Neo4j knowledge graph, adapts to measured proficiency,
+remembers what it learns about a student across sessions, and serves theory, worked examples,
+practice questions and quizzes over an SSE-streaming interface.
+
+There is no intent enum and no routing table. Every reply is reviewed before the student sees
+it, and every turn records the path it actually took.
 
 Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**.
 
@@ -10,17 +18,35 @@ Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**
 
 1. [System Architecture](#system-architecture)
 2. [End-to-End Execution Flowchart](#end-to-end-execution-flowchart)
-3. [Agent Roster & Node Responsibilities](#agent-roster--node-responsibilities)
+3. [Components & Responsibilities](#components--responsibilities)
 4. [Turn Service & Session Layer (`services/turn_service.py`)](#turn-service--session-layer)
-5. [Intent Classification & Routing Logic](#intent-classification--routing-logic)
+5. [How the Agent Decides](#how-the-agent-decides)
 6. [GraphRAG Retrieval Engine](#graphrag-retrieval-engine)
 7. [Retrieval Gating — Conditional Retrieval](#retrieval-gating--conditional-retrieval)
 8. [Pedagogy Policies & Canonical Personalization Strategy](#pedagogy-policies--canonical-personalization-strategy)
-9. [Cross-Turn Memory & Carry State Lifecycle](#cross-turn-memory--carry-state-lifecycle)
+9. [Learner Memory & Cross-Turn State](#learner-memory--cross-turn-state)
 10. [Data Layer: Supabase & Neo4j Schema](#data-layer-supabase--neo4j-schema)
 11. [FastAPI Gateway & SSE Streaming API](#fastapi-gateway--sse-streaming-api)
 12. [Sequence Diagrams](#sequence-diagrams)
 13. [Local Development & Verification](#local-development--verification)
+
+> **Sept 2026 — the routing rewrite.** The nine-node graph, the seven-value intent enum and the
+> hand-wired conditional edges are gone, replaced by one autonomous Learning Agent that reasons
+> in a tool-calling loop (§1, §3, §5). `agents/orchestrator.py` and the five facade agent nodes
+> were deleted with them. What survives unchanged is everything that was genuinely
+> deterministic — retrieval order, the content cascade, the proficiency WMA — now exposed as
+> tools the agent *calls* rather than nodes it is routed through. New alongside it: temporary
+> expert subagents (`agents/experts.py`), an Answer Checker on every substantial reply
+> (`agents/answer_checker.py`), durable learner memory (migration 006), per-turn decision traces,
+> and a Background Learning Coach (`agents/learning_coach.py`).
+>
+> Wiring the trace up made three long-standing silent failures visible, all fixed in the same
+> pass: retrieval timed out on **every** turn (a 600 ms budget against ~1700 ms of real work),
+> so every answer was ungrounded while the code believed it had searched — and each miss logged
+> a false content-gap event; concept resolution truncated its reply at 100 tokens and reported
+> any long concept id as off-syllabus; and a missing `SELECT` grant on `user_learning_profile`
+> took the entire retriever down rather than degrading. See §9 for the grant, which still needs
+> applying at the deployment.
 
 > **Sept 2026 update:** retrieval is now conditionally skippable (§7, new — was previously dead code), and teaching-mode/framing/difficulty personalization is computed by one canonical function, `agents/planner.py::compute_personalization_strategy` (§8, replaces three previously-drifted, independent heuristics that used to live in `planner.py`, `graphrag_retriever.py`, and `solver.py` separately). The `agent_memory` table and `sessions.structured_memory` column referenced in earlier drafts of this doc were retired (`db/migrations/003_retire_structured_memory.sql`) — they had zero read/write call sites in the running system; cross-session continuity is carried entirely by `sessions.session_summary` (plain text) via `prior_session_summary`.
 >
@@ -39,6 +65,15 @@ Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**
 
 The agent service runs on port **8001** as a standalone FastAPI service. It is loosely coupled with Django (`Aeropt-backend`, port 8000) through shared Supabase PostgreSQL storage (`public` schema for agent telemetry; `django` schema for auth and roadmap), and communicates directly with the Next.js frontend (`Aeropt-frontend`, port 3000) over Server-Sent Events (SSE).
 
+**One agent owns the student's turn.** There is no intent enum, no router and no per-capability
+agent node. A single Learning Agent reasons about each message in a tool-calling loop and
+decides for itself what it needs: whether to look something up, whether to compute, whether to
+hand a narrow job to a temporary expert, how to teach, and what is worth remembering.
+
+The graph around it is deliberately small. It carries the one decision that is genuinely
+structural — does this input have a shape that needs no reasoning at all — plus the bookkeeping
+either side of the turn.
+
 ```mermaid
 flowchart TB
     subgraph Client["Client Layer (Browser)"]
@@ -52,152 +87,211 @@ flowchart TB
         CARRY[".carry_sessions/ / Redis<br/>Ephemeral Cross-Turn Carry Store"]
     end
 
-    subgraph Pipeline["LangGraph Tutor Engine (graph/workflow.py)"]
-        ORCH["Orchestrator Node<br/>(agents/orchestrator.py)"]
-        CR["Concept Resolver Node<br/>(agents/concept_resolver.py)"]
-        GATE{"Retrieval Gate<br/>(agents/retrieval_gate.py)<br/>should_skip_retrieval()<br/>— inline check, not a graph node"}
-        GR["GraphRAG Retriever Node<br/>(agents/graphrag_retriever.py)"]
-        PLAN["compute_personalization_strategy()<br/>(agents/planner.py)<br/>— called from inside GraphRAG, not a separate node"]
+    subgraph Graph["Graph (graph/workflow.py)"]
+        BOOT["Session Bootstrap<br/>(agents/session_bootstrap.py)<br/>deterministic — no model runs"]
+        SHAPE{"is_structured_input()<br/>shape of the payload,<br/>never its text"}
+        FAST["Graded Fast Path<br/>Diagnostic → Follow-Up<br/>no agent call"]
+        CM["Context Manager<br/>(agents/context_manager.py)"]
+    end
 
-        subgraph Responders["Pedagogical Responders"]
-            SOL["Solver Node<br/>(agents/solver.py)"]
-            SOC["Socratic Node<br/>(agents/socratic.py)"]
-            QUIZ["Quiz Node<br/>(agents/quiz.py)"]
-        end
+    subgraph Agent["Learning Agent (agents/learning_agent.py)"]
+        LOOP["Reasoning loop<br/>(agents/runtime/loop.py)<br/>decide → act → observe<br/>bounded by steps + wall clock"]
+        BELT["Toolbelt (agents/runtime/toolbelt.py)<br/>typed args • enforced scopes<br/>errors returned, never raised"]
+        CHECK["Answer Checker<br/>(agents/answer_checker.py)<br/>fresh pass, may rewrite, fails open"]
+        TRACE["Trace (agents/runtime/trace.py)<br/>what it actually did"]
+    end
 
-        DIAG["Diagnostic Node<br/>(agents/diagnostic.py)"]
-        FU["Follow-Up Node<br/>(agents/follow_up.py)"]
-        CM["Context Manager Node<br/>(agents/context_manager.py)"]
+    subgraph Tools["Tools — the agent calls these directly"]
+        T1["resolve_concept · retrieve_content<br/>open_material · suggest_next_material"]
+        T2["calculate — exact arithmetic"]
+        T3["get_learner_context · record_attempt"]
+        T4["remember_about_learner · schedule_review"]
+    end
+
+    subgraph Experts["Temporary Experts (agents/experts.py)"]
+        COMP["Composers — draft what the student reads<br/>worked_solution · socratic_guide<br/>practice_set · quiz_builder"]
+        ANA["Analysts — report a finding, privately<br/>verifier · error_locator<br/>alt_explainer · comparer"]
+    end
+
+    subgraph Background["Between sessions"]
+        COACH["Background Learning Coach<br/>(agents/learning_coach.py)<br/>usually decides to do nothing"]
     end
 
     subgraph External["Knowledge & Storage Layer"]
-        NEO4J[("Neo4j Aura Graph DB<br/>• 33 Concepts & Prereq Edges<br/>• Vector Index (768-dim)")]
-        SUPA[("Supabase PostgreSQL (public)<br/>• sessions & chat_turns<br/>• user_concept_state<br/>• user_attempts & content")]
-        GROQ["Groq Cloud LLM Pool (multi-key, §Agent Roster)<br/>• openai/gpt-oss-120b / 20b<br/>• qwen/qwen3.6-27b / qwen3.8-27b"]
-        GEMINI["Google Gemini API<br/>• text-embedding-004"]
+        NEO4J[("Neo4j Aura Graph DB<br/>• Concepts & Prereq Edges<br/>• Vector Index")]
+        SUPA[("Supabase PostgreSQL (public)<br/>• sessions & chat_turns<br/>• user_concept_state · user_attempts<br/>• learner_memory · review_schedule · agent_trace")]
+        GROQ["Groq Cloud LLM Pool (multi-key)<br/>• openai/gpt-oss-120b / 20b<br/>• qwen/qwen3.6-27b / qwen3.8-27b"]
+        GEMINI["Google Gemini API<br/>• embeddings"]
     end
 
     UI -->|HTTP POST SSE| API
     CLI --> TURN
     API --> TURN
     TURN <--> CARRY
-    TURN -->|Initial TutorState| ORCH
+    TURN -->|Initial TutorState| BOOT
 
-    ORCH --> CR
-    ORCH -.->|Fast-path Graded| DIAG
-    ORCH -.->|Prereq Resume| GR
-    ORCH -.->|Choice Select| FU
+    BOOT --> SHAPE
+    SHAPE -->|"graded button click"| FAST
+    SHAPE -->|"anything open-ended"| LOOP
 
-    CR --> GATE
-    GATE -.->|"skip: unresolved concept /<br/>prefetch cache hit /<br/>meta-repair turn"| Responders
-    GATE -->|proceed| GR
-    GR <--> NEO4J
-    GR <--> GEMINI
-    GR <--> SUPA
-    GR --> PLAN
-    PLAN -->|"{teaching_mode, framing,<br/>difficulty_target, use_socratic,<br/>prereq_to_teach_first}"| GR
-
-    GR -->|Strategy-routed| Responders
-    SOL --> DIAG
-    SOL --> FU
-    SOC --> DIAG
-    SOC --> FU
-    DIAG --> FU
-    DIAG -.->|Struggle Streak >= 3| QUIZ
-    QUIZ --> FU
-    FU --> CM
+    LOOP <--> BELT
+    BELT --> T1 & T2 & T3 & T4
+    BELT -->|"consult_expert"| COMP & ANA
+    LOOP --> CHECK
+    LOOP -.-> TRACE
+    CHECK --> CM
+    FAST --> CM
     CM -->|Final State| API
 
-    ORCH & CR & SOL & SOC & DIAG & QUIZ & CM <--> GROQ
-    API -->|SSE Tokens & Presentation Payload| UI
+    T1 <--> NEO4J
+    T1 <--> GEMINI
+    T1 & T3 & T4 <--> SUPA
+    TRACE --> SUPA
+    LOOP & COMP & ANA & CHECK & COACH <--> GROQ
+    COACH --> SUPA
+    API -->|"SSE Tokens & Presentation Payload"| UI
 ```
 
----
+### What the agent decides, and what the platform guarantees
+
+The split is the whole design. Everything on the left is judgement that changes with the
+student and the turn; everything on the right has one right answer and must not vary.
+
+| The Learning Agent decides | The platform guarantees |
+|---|---|
+| What the student actually means | A turn only ever touches its own learner's data |
+| Whether to ask for clarification | Retrieval order and content cascade are fixed |
+| Whether to look anything up, and what | Proficiency maths is never model-improvised |
+| Whether to compute, and what | Tool arguments are validated before anything runs |
+| Whether to delegate, and to whom | An expert cannot write memory, grade, or delegate |
+| How to explain this, to this person | Step and wall-clock budgets, with a forced close |
+| Whether anything is worth remembering | Every substantial reply passes the Answer Checker |
+| Whether a review should be scheduled | Consequential actions stop and ask first |
+| When to stop and just answer | Every turn's decisions are traced and persisted |
+
 
 ## End-to-End Execution Flowchart
 
-Every student message is processed through the compiled LangGraph state machine. Below is the complete execution path showing all conditional branch points:
-
 ```mermaid
 flowchart TD
-    START([Student Input Message / UI Event]) --> TURN_PARSE["Turn Service: parse_turn_input()<br/>1. Button Click (correct/incorrect)<br/>2. Plain '1'/'0' (if awaiting)<br/>3. Free-text student query"]
+    A["Student message arrives"] --> B["Session bootstrap<br/>profile · session · turn count · record the message"]
+    B --> C{"Structured payload?<br/>(a Correct/Incorrect button click)"}
 
-    TURN_PARSE --> BUILD_STATE["Turn Service: build_initial_state()<br/>Merge active carry + request context"]
-    BUILD_STATE --> ORCH["1. Orchestrator Node<br/>• Load student profile & concept states<br/>• Classify intent (7-class enum)<br/>• Log user chat_turn to Supabase"]
+    C -->|"Yes — one correct handling"| D["Record the attempt (fixed maths)"]
+    D --> E["Follow-Up: weak prereq, next quiz question,<br/>or fresh suggestions"]
+    E --> Z
 
-    ORCH --> INTENT_SWITCH{Intent Type?}
+    C -->|"No — open-ended text"| F["Learning Agent<br/>recalls what it knows about this student"]
+    F --> G{"What does this turn need?"}
 
-    %% Path A: Doubt, Practice, or Quiz Request
-    INTENT_SWITCH -->|doubt / practice_request / quiz_request| CR["2. Concept Resolver Node<br/>Map query to 1 of 33 Physics concepts<br/>Identify content_type (theory/practice/pyq/example)"]
-    CR --> GATE{"3. Retrieval Gate<br/>should_skip_retrieval()<br/>(first check inside GraphRAG node)"}
-    GATE -->|"unresolved concept_id"| SOL
-    GATE -->|"_prefetch_fast_forward cache hit<br/>(Redis, 120s TTL)"| SOL
-    GATE -->|"meta/repair turn<br/>(Groq classifies vs. last 2 turns)"| SOL
-    GATE -->|"none of the above — proceed"| GR["3b. GraphRAG Retriever<br/>• Traverse Neo4j prerequisites (1-2 hops)<br/>• Gemini embedding search on concept chunks<br/>• Fetch full content chunks from Supabase<br/>• Fetch student's prior mastery on target & prereqs<br/>• compute_personalization_strategy() → teaching_mode/framing/difficulty"]
+    G -->|"look it up"| H["resolve_concept → retrieve_content<br/>→ open_material"]
+    G -->|"get a number right"| I["calculate"]
+    G -->|"know who I'm teaching"| J["get_learner_context"]
+    G -->|"a second opinion"| K["consult_expert → analyst<br/>verifier · error_locator · alt_explainer · comparer"]
+    G -->|"something written for them"| L["consult_expert → composer<br/>worked_solution · socratic_guide<br/>practice_set · quiz_builder"]
+    G -->|"nothing — I can answer"| M
 
-    %% Path B: Fast paths
-    INTENT_SWITCH -->|prereq_confirmation| GR
-    INTENT_SWITCH -->|graded_response / quiz_response| DIAG["6. Diagnostic Node<br/>• Calculate updated WMA proficiency<br/>• Classify error type (conceptual/calculation/speed)<br/>• Record row in user_attempts<br/>• Track struggle_streak count"]
-    INTENT_SWITCH -->|follow_up_response| FU["7. Follow-Up Node<br/>• Resolve selected follow-up index (1, 2, 3)<br/>• Render target suggestion"]
+    H & I & J & K --> G
+    L --> N{"Is the draft right?"}
+    N -->|"Yes"| O["USE_DRAFT — sent verbatim,<br/>formatting and figures intact"]
+    N -->|"No"| M
+    O --> P
+    M["Agent writes the reply"] --> P
 
-    %% Responder routing after GraphRAG
-    GR --> RESP_GATE{"Pedagogical Routing Gate<br/>(teaching_mode from compute_personalization_strategy)"}
-    RESP_GATE -->|quiz_batch_mode = True| QUIZ["5a. Quiz Batch Generator<br/>Construct 3-5 multi-step questions"]
-    RESP_GATE -->|"teaching_mode = socratic<br/>(cold_start=False, weak direct prereq absent,<br/>prereq_avg > 0.6 AND target < 0.7,<br/>socratic_turn_count < SOCRATIC_MAX_TURNS)"| SOC["4b. Socratic Node<br/>Generate guiding question to help student discover concept"]
-    RESP_GATE -->|"teaching_mode = prereq_first<br/>(a direct prereq is weak AND target < 0.5)"| PREREQ["Swap primary_concept_id to the<br/>weak prerequisite before responding"]
-    RESP_GATE -->|"teaching_mode = direct / practice"| SOL["4a. Solver Node<br/>• Theory / Worked Example (LLM)<br/>• Practice / PYQ question with solution<br/>• Explicit 'explain/what is/define' always forces direct"]
-    PREREQ --> SOL
+    P["Answer Checker<br/>correct · responsive · grounded · honest · pitched"]
+    P --> Q{"Verdict"}
+    Q -->|"pass"| R
+    Q -->|"revise"| S["Checker's corrected answer"] --> R
+    Q -->|"unavailable"| R
 
-    %% Post-responder
-    SOL --> POST_SOL{Content Type?}
-    POST_SOL -->|Practice / PYQ served| AWAIT["Set awaiting_graded_response = True<br/>Skip Follow-Up suggestions"]
-    POST_SOL -->|Theory / Example| FU
-    SOC --> FU
-
-    %% Diagnostic routing
-    DIAG --> DIAG_ROUTE{Struggle Check}
-    DIAG_ROUTE -->|struggle_streak >= 3| QUIZ_TRIGGER["5b. Struggle Micro-Quiz<br/>Trigger quick 2-question checkpoint"]
-    DIAG_ROUTE -->|Normal progress| FU
-    QUIZ_TRIGGER --> FU
-    QUIZ --> FU
-
-    %% Follow-up and finalization
-    FU --> CM_CHECK{interaction_count % 5 == 0?}
-    AWAIT --> CM_CHECK
-    CM_CHECK -->|Yes| CM["8. Context Manager Node<br/>LLM compresses rolling conversation<br/>into structured session summary"]
-    CM_CHECK -->|No| SAVE_CARRY["Save Ephemeral Carry State<br/>(.carry_sessions/)"]
-    CM --> SAVE_CARRY
-
-    SAVE_CARRY --> SSE_OUT([FastAPI SSE Stream / Presentation Payload])
+    R["Reply to the student"] --> T{"Worth remembering?"}
+    T -->|"a pattern, a preference, a goal"| U["remember_about_learner"]
+    T -->|"this will fade"| V["schedule_review"]
+    T -->|"usually — nothing"| Z
+    U & V --> Z
+    Z["Context Manager, if this turn is due"] --> ZZ["Persist trace · END"]
 ```
 
----
+The agent does not touch every tool on every turn. A question it can answer well without
+looking anything up gets answered, and that restraint is part of the job — an easy turn spent
+calling four tools is latency the student pays for.
 
-## Agent Roster & Node Responsibilities
+The budget is real: `LEARNING_AGENT_MAX_STEPS` reasoning steps and
+`LEARNING_AGENT_TIME_BUDGET_S` seconds. On overrun the loop withdraws the tools entirely and
+forces one closing pass, so running out of budget produces a real answer with an honest caveat
+rather than an empty turn.
 
-| Agent Node | Source File | Core Responsibility | Primary LLM / Model |
+
+## Components & Responsibilities
+
+### The turn
+
+| Component | Source File | Responsibility | Model |
 |---|---|---|---|
-| **Orchestrator** | `agents/orchestrator.py` | Intent classification, session bootstrapping, user turn recording. | `config.ORCHESTRATOR_MODEL` (`openai/gpt-oss-20b`) |
-| **Concept Resolver** | `agents/concept_resolver.py` | Delegates to `mcp_tools/resolve_concept_id.py` (lexical fast-path + LLM with an `in_scope` flag) mapping query to one of 33 canonical Physics concepts, or leaving it unresolved if off-syllabus. | `config.CONCEPT_RESOLVER_MODEL` (`openai/gpt-oss-20b`) |
-| **Retrieval Gate** | `agents/retrieval_gate.py` | *Inline check inside GraphRAG Retriever, not a separate graph node.* Decides whether this turn needs fresh retrieval at all — see §7. | Groq small model, `config.SMALL_MODEL_FALLBACK[0]` (meta/repair classification only) |
-| **GraphRAG Retriever** | `agents/graphrag_retriever.py` | Prerequisite subgraph traversal (Neo4j), vector similarity search, chunk retrieval (sanitized via `utils/latex_guidelines.py` before it reaches a prompt), and invokes the canonical personalization strategy (§8). | `gemini-embedding-2` (No generative LLM) |
-| **Personalization Strategy** | `agents/planner.py::compute_personalization_strategy` | *Function called from inside GraphRAG Retriever, not a separate graph node.* Canonical teaching_mode/framing/difficulty decision — see §8. | Deterministic (No LLM) |
-| **Solver** | `agents/solver.py` | Full-depth physics explanation, LaTeX derivations, markdown formatting; tells the model its grounding confidence (`_grounding_note`) instead of always inviting free improvisation. | `config.SOLVER_MODEL` (`qwen/qwen3.6-27b`) |
-| **Socratic** | `agents/socratic.py` | Guided inquiry and scaffolding when student has strong prerequisites but weak target mastery. | `config.SOCRATIC_MODEL` (`openai/gpt-oss-120b`) |
-| **Diagnostic** | `agents/diagnostic.py` | Exponential decay, weighted moving average (WMA) proficiency math, mistake taxonomy. | `config.DIAGNOSTIC_MODEL` (`openai/gpt-oss-20b`, error analysis only) |
-| **Follow-Up** | `agents/follow_up.py` | Suggesting related sub-concepts, surfacing weak prerequisites, advancing quiz batches. | Deterministic (No LLM) |
-| **Quiz** | `agents/quiz.py` | Generating multi-question diagnostic quizzes or struggle checkpoint questions. | `config.QUIZ_MODEL` (`qwen/qwen3.6-27b`) / Deterministic chunks |
-| **Context Manager** | `agents/context_manager.py` | Periodic rolling conversation compression every 5 interactions. | `config.CONTEXT_MANAGER_MODEL` (`openai/gpt-oss-20b`) |
+| **Session Bootstrap** | `agents/session_bootstrap.py` | Profile, session, turn count, recording the student's message. Bookkeeping with exactly one right answer. | None — no model runs |
+| **Learning Agent** | `agents/learning_agent.py` | Owns the turn. Decides what it needs, calls tools, delegates, teaches, decides what to remember. | `config.LEARNING_AGENT_MODEL` |
+| **Reasoning loop** | `agents/runtime/loop.py` | decide → act → observe, bounded by steps and wall clock, with a forced close. | — |
+| **Toolbelt** | `agents/runtime/toolbelt.py` | Typed arguments, enforced scopes, permission gating. Tools never raise into the loop. | — |
+| **Answer Checker** | `agents/answer_checker.py` | Fresh review of every substantial reply; rewrites when needed. Fails open. | `config.ANSWER_CHECKER_MODEL` |
+| **Trace** | `agents/runtime/trace.py` | Records the path an autonomous turn took, since it can no longer be read off a diagram. | — |
+| **Graded fast path** | `graph/workflow.py` | Button clicks: record the attempt, then Follow-Up. No agent call. | Diagnostic's error classifier only |
+| **Context Manager** | `agents/context_manager.py` | Rolling session summary every `CONTEXT_MANAGER_EVERY_N` interactions. | `config.CONTEXT_MANAGER_MODEL` |
+| **Background Coach** | `agents/learning_coach.py` | The same agent between sessions. Usually decides to do nothing. | `config.LEARNING_COACH_MODEL` |
 
-> All model assignments now reference `config.py` constants rather than hardcoding a name in
-> each module's docstring — the account's live Groq catalog has drifted three times already
-> (§ hardening pass above); re-verify with `tests/test_model_health.py` before trusting any of
-> the names in parentheses above, since they can go stale the same way the previous ones did.
-> Groq calls route through `utils/groq_pool.py`'s multi-key pool (round-robins
-> `GROQ_API_KEY`/`GROQ_API_KEY_2..7`, cooling down a key on 429 rather than just falling back to
-> a weaker model) whenever more than one key is configured.
+### Tools — the agent calls these directly
 
----
+Deterministic work stays deterministic. Retrieval order, the content-type cascade and the
+proficiency maths are unchanged; only the calling convention moved, so the agent chooses
+*whether*, never *how*.
+
+| Tool | Wraps | Notes |
+|---|---|---|
+| `resolve_concept` | `agents/concept_resolver.py` | Reports honestly when a topic is off-syllabus |
+| `retrieve_content` | `agents/graphrag_retriever.py` | Returns previews; full chunks stay in state for the composer |
+| `open_material` | `db.read_content_by_ids` | Opens a specific item the student picked |
+| `suggest_next_material` | `mcp_tools/generate_suggestions.py` | Sized to proficiency, excludes what they have seen |
+| `calculate` | `mcp_tools/compute_tools.py` | Whitelisted-AST evaluator. No `eval`, no imports, no names |
+| `get_learner_context` | memory + concept state | Remembered facts, weak concepts, attempts, due reviews |
+| `record_attempt` | `agents/diagnostic.py` | The agent supplies the outcome, never the score |
+| `remember_about_learner` | `learner_memory` | One atomic fact, with evidence and a confidence |
+| `schedule_review` | `review_schedule` | One pending review per concept |
+| `consult_expert` | `agents/experts.py` | The handoff. Tutor-only, refuses at depth ≥ 1 |
+
+### Temporary experts
+
+**Composers** draft what the student reads — the existing generators, so their LaTeX rules,
+figure handling and practice payloads survive verbatim. The agent may accept a draft unchanged
+with `USE_DRAFT`; retyping a composed answer through another model is how careful formatting
+quietly gets mangled.
+
+| Composer | Runs | For |
+|---|---|---|
+| `worked_solution` | `agents/solver.py` | The default when something needs teaching |
+| `socratic_guide` | `agents/socratic.py` | When a question would teach more than an answer |
+| `practice_set` | `agents/practice_generator.py` | Questions to attempt |
+| `quiz_builder` | `agents/quiz.py` | Testing across a concept |
+
+**Analysts** answer a question the tutor has about its own work, in their own small read-only
+loop: `verifier` (independently rework a result), `error_locator` (first wrong step in the
+student's work), `alt_explainer` (a genuinely different angle after one has failed), `comparer`
+(the distinction between two things being conflated).
+
+Every expert, of both kinds, is constrained the same way — and structurally, not by asking:
+
+- one task, stated by the tutor, with only the context that task needs;
+- read-only tools: no memory writes, no progress writes, no scheduling;
+- no handoffs of its own (`depth >= 1` removes `consult_expert` and the tool refuses anyway);
+- no channel to the student. Output goes back to the tutor, always.
+
+`tests/test_experts_and_checker.py` asserts each of those as a property of the toolbelt rather
+than trusting a prompt to hold the line.
+
+> Model names live in `config.py`, not in module docstrings — this account's live Groq catalog
+> has drifted three times. Re-verify with `tests/test_model_health.py`
+> (`RUN_LIVE_GROQ_CHECKS=1`) before trusting any specific name. The Learning Agent's model
+> **must support function calling**; one that does not will not error, it will silently stop
+> calling tools and degrade into a chatbot with no access to the syllabus.
+
 
 ## Turn Service & Session Layer
 
@@ -223,19 +317,45 @@ and legacy formats.         evicts stale retrieval.     with proper validation.
 
 ---
 
-## Intent Classification & Routing Logic
+## How the Agent Decides
 
-The Orchestrator classifies student queries into one of seven intents:
+There is no intent classifier. The previous design sorted every message into one of seven
+intents and let hand-wired edges do the rest, which meant anything outside those seven —
+*"explain X and then quiz me"*, *"how is X different from Y"*, *"why did you mark that
+wrong?"* — was forced into the nearest label and routed on that guess.
 
-1. `doubt`: Student asks a conceptual physics question (e.g., *"Why does normal force do zero work on an inclined plane?"*). Routes: `ConceptResolver` → `GraphRAG` → `Solver`/`Socratic` → `FollowUp`.
-2. `practice_request`: Student asks for a practice or PYQ question. Routes: `ConceptResolver` → `GraphRAG` → `Solver` (formats question) → Skips `FollowUp` until answered.
-3. `quiz_request`: Student asks to be tested on a concept. Routes: `ConceptResolver` → `GraphRAG` → `Quiz` (batch mode).
-4. `graded_response`: Student submits self-evaluation (`1` for correct, `0` for incorrect, or clicks UI button). Routes directly to `Diagnostic` → `FollowUp`.
-5. `prereq_confirmation`: Student agrees to review a suggested weak prerequisite. Routes directly to `GraphRAG` with the injected prerequisite concept ID.
-6. `follow_up_response`: Student selects option 1, 2, or 3 from previous follow-up suggestions. Routes to `FollowUp` to show content.
-7. `quiz_response`: Student answers a step in an ongoing struggle micro-quiz. Routes: `Diagnostic` → `Quiz` / `FollowUp`.
+The agent now reads the message, its own memory of the student, and the conversation, and picks
+its own actions. The only structural test left is `graph/workflow.py::is_structured_input`,
+and it looks at the **shape** of the payload, never its text:
 
----
+```python
+def is_structured_input(state: TutorState) -> bool:
+    return bool(state.get("has_graded_outcome"))
+```
+
+`has_graded_outcome` is set by `services/turn_service.parse_turn_input` from a Correct/Incorrect
+button payload. That is the one input with exactly one correct handling and nothing to reason
+about — and it is most of the traffic, so it is where the latency budget is won.
+
+The moment that test starts inspecting what the student *said*, it has become an intent
+classifier again and the whole problem returns.
+`tests/test_pipeline_alignment.py::test_message_text_never_reaches_the_fast_path_test` exists
+to fail if that happens.
+
+### Observability
+
+An autonomous path cannot be read off a diagram, so each turn records one:
+
+```
+['tool:resolve_concept', 'tool:retrieve_content', 'handoff:worked_solution', 'check:answer_checker']
+```
+
+Available on the turn result as `agent_trace_path`, alongside `agent_stop_reason`
+(`answered` / `max_steps` / `time_budget` / `llm_error`) and `checker_verdict`
+(`pass` / `revised` / `failed` / `skipped`), and persisted to `agent_trace` with per-step
+timings. A rise in `max_steps`, or in `skipped` checks, is the signal that something has
+started going wrong — which is exactly what was invisible before.
+
 
 ## GraphRAG Retrieval Engine
 
@@ -262,14 +382,22 @@ fetch) unconditionally on every `doubt` / `practice_request` / `quiz_request` /
 one of its branches returned `"retrieve"`, so it never actually skipped anything, and the node
 didn't consult it anyway.
 
-`agents/retrieval_gate.py::should_skip_retrieval(state)` now runs as the **first line** of
-`graphrag_retriever_node`, before any Neo4j/Gemini/Supabase call, and short-circuits (`return {}`,
-leaving whatever `retrieved_chunks`/strategy were already in state from the prior turn) on
-three conditions, checked in order:
+`agents/retrieval_gate.py::should_skip_retrieval(state)` runs as the **first line** of
+`graphrag_retriever_node`, before any Neo4j/Gemini/Supabase call, and short-circuits
+(`return {}`, leaving whatever was already in state from the prior turn).
 
-1. **Unresolved concept** — `primary_concept_id` is empty (Concept Resolver couldn't map the
-   query to a known concept). Nothing to retrieve against; Solver answers from conversation
-   context alone.
+**Most of this gate is now redundant, by design.** It exists to guess whether a turn needs
+retrieval; the agent makes that judgement itself, with the conversation in front of it, and
+simply does not call `retrieve_content` on a turn that does not need one. So when the agent
+*does* call it, that is an explicit decision and the guessing must not override it — the tool
+sets `_force_retrieval`, which bypasses every heuristic below except the first. Without that,
+the tool would report material it never fetched.
+
+The conditions, in order:
+
+1. **Unresolved concept** — `primary_concept_id` is empty. Nothing to retrieve against. This
+   one holds even under `_force_retrieval`: it is a fact about the data, not a guess.
+1b. **Explicit agent decision** — `_force_retrieval` is set, so nothing below applies.
 2. **Prefetch fast-forward** — `state["_prefetch_fast_forward"]` is set. This means the student
    picked a follow-up suggestion that `api_server.py::_prefetch_next_query` already
    speculatively retrieved for in the background (Redis, 120s TTL) after the previous turn —
@@ -290,18 +418,28 @@ flowchart LR
     B -->|yes| SKIP1([skip — Solver answers<br/>from conversation only])
     B -->|no| C{_prefetch_fast_forward<br/>set?}
     C -->|yes| SKIP2([skip — reuse Redis-cached<br/>chunks from prefetch])
-    C -->|no| D{intent in doubt /<br/>follow_up_response?}
-    D -->|no| RETRIEVE([proceed: full 8-step retrieval])
-    D -->|yes| E["Groq: is_meta_repair_turn(query, last 2 turns)"]
+    C -->|no| D{"_force_retrieval set?<br/>(the agent called retrieve_content)"}
+    D -->|yes| RETRIEVE([proceed: full 8-step retrieval])
+    D -->|no| E["Groq: is_meta_repair_turn(query, last 2 turns)"]
     E -->|TRUE| SKIP3([skip — reuse this turn's<br/>existing retrieved_chunks])
     E -->|FALSE| RETRIEVE
 ```
 
 ## Pedagogy Policies & Canonical Personalization Strategy
 
+> **Since the routing rewrite this heuristic advises; it no longer decides.** Its output
+> reaches the agent through `retrieve_content` as a `teaching_signal` — the suggested approach,
+> the reasoning behind it, the difficulty target, and a caution when several guiding questions
+> have already failed on this concept — explicitly labelled as a heuristic from proficiency
+> numbers rather than an instruction. The agent weighs it against everything it can see that
+> the numbers cannot. Nothing branches on `use_socratic` any more.
+>
+> The thresholds below are unchanged and still worth reading: they are what the recommendation
+> is computed from.
+
 `agents/planner.py::compute_personalization_strategy(target_state, prereq_states,
 learning_profile, content_type, query, socratic_turn_count)` is the single function that
-decides how to teach a given concept to a given student on a given turn. It replaced three
+computes a recommended teaching approach for a given concept, student and turn. It replaced three
 independent, drifted implementations of essentially the same judgment (`planner.py`'s old
 teaching-mode matrix — previously dead code, never wired into the live graph;
 `graphrag_retriever.py`'s local `_should_use_socratic`/`_compute_prereq_score`; and
@@ -348,20 +486,52 @@ $$P_t = \alpha \cdot \text{Score}_t + (1 - \alpha) \cdot P_{t-1}$$
 
 ---
 
-## Cross-Turn Memory & Carry State Lifecycle
+## Learner Memory & Cross-Turn State
 
-LangGraph invocations are stateless. Cross-turn continuity is preserved through the file-backed carry store (`.carry_sessions/<session_id>.json`):
+Three different lifetimes, deliberately not merged:
 
-| Carry Field | Lifetime | Purpose |
-|---|---|---|
-| `primary_concept_id` | Session-long | Tracks the current active topic. |
-| `seen_follow_up_ids` | Session-long | Deduplicates suggested follow-up items. |
-| `prior_session_summary` | Session-long | Holds previous session summaries from Context Manager. |
-| `awaiting_graded_response` | Single-cycle | Set when practice/PYQ is served; cleared once graded. |
-| `retrieved_chunks` | Single-cycle | Held only while question is awaiting grade so Diagnostic knows the question. |
-| `presentation_by_turn` | Session-long | Stores rich cards, slides, and quizzes by turn index. |
+| Layer | Lives in | Lifetime | Written by |
+|---|---|---|---|
+| **Carry state** | `.carry_sessions/` or Redis | Between turns of one session | `services/turn_service.py` |
+| **Session summary** | `sessions.session_summary` | One session, rolling | Context Manager |
+| **Learner memory** | `learner_memory` (migration 006) | Indefinite, per student | The agent, by choosing to |
 
----
+The distinction that matters is the last one. A session summary records *what happened*. A
+learner memory records *something true about this person* — a mistake they keep making, a
+framing that works for them, a goal they stated — with the evidence behind it and a confidence
+the agent has to commit to. The agent decides what earns a row; nothing is written
+automatically, because a memory store that fills itself is one nobody can trust.
+
+`review_schedule` holds spaced review the agent proposed, one pending row per concept, read by
+the Background Coach when due. `agent_trace` holds per-turn decision records.
+
+**All three degrade to no-ops until migration 006 is applied.** Every read returns empty and
+every write returns `saved: false` with a note the agent can read and report honestly, rather
+than the service failing. `db.memory_enabled()` reports which world you are in.
+
+### Applying the migrations
+
+```sql
+-- db/migrations/006_learner_memory.sql   learner_memory, review_schedule, agent_trace
+-- db/migrations/007_chat_turns_agent_used.sql   widen the agent_used check constraint
+```
+
+Until 007 lands, `db.insert_chat_turn` learns on first rejection that the constraint is the
+narrow one and maps labels for the rest of the process, so the service runs against either
+schema.
+
+### Known deployment gap
+
+`user_learning_profile` is not readable by the current Supabase role:
+
+```sql
+GRANT SELECT ON public.user_learning_profile TO service_role;
+```
+
+Retrieval no longer dies when that read fails (it degrades to defaults and logs a warning
+naming the cause), but until the grant is in place the learning-velocity and
+preferred-content-type signals are simply absent from every personalisation decision.
+
 
 ## Data Layer: Supabase & Neo4j Schema
 
@@ -372,20 +542,30 @@ LangGraph invocations are stateless. Cross-turn continuity is preserved through 
 - `user_concept_state`: Live concept mastery (`proficiency_score`, `attempts_count`, `last_attempt_at`).
 - `user_attempts`: Every question attempt (`is_correct`, `time_taken_sec`, `error_type`).
 - `user_learning_profile`: Global per-student stats — `learning_velocity`,
-  `preferred_content_type`, `weak_chapters`/`strong_chapters`. Now actually read by
-  `compute_personalization_strategy` (§8); previously only `weak_chapters` was consulted
-  (via `focus_chapters` in the Orchestrator).
+  `preferred_content_type`, `weak_chapters`/`strong_chapters`. Read by
+  `compute_personalization_strategy` (§8). **Currently unreadable by the deployed Supabase
+  role** — see the grant in §13. Retrieval degrades to defaults rather than failing.
 - `content`: Practice bank, PYQs, theory chunks, and LaTeX equations.
+- `learner_memory`, `review_schedule`, `agent_trace` (migration 006): see §9.
 
 > **Retired (`db/migrations/003_retire_structured_memory.sql`):** `agent_memory` table and
 > `sessions.structured_memory` column. Earlier drafts of this document described them as the
 > mechanism for cross-session structured memory managed by Context Manager — an audit found
 > zero read/write call sites for either anywhere in the codebase, and a call to a
 > `read_prior_structured_memory` method that never existed on `SupabaseClient` was crashing
-> turn 1 of every new session (caught silently by Orchestrator's broad exception handler). Both
-> were dropped; cross-session continuity is `sessions.session_summary` (plain text, written by
-> Context Manager) via `prior_session_summary`, loaded through the real
-> `db.read_prior_session_summary` method — see the sequence diagram in §12.
+> turn 1 of every new session (caught silently by the old Orchestrator's broad exception
+> handler). Both were dropped.
+>
+> `learner_memory` (migration 006, §9) is the deliberate second attempt, and differs in the
+> way that made the first one dead: it does not try to serialise session state. Each row is one
+> atomic fact about a person, written because the agent chose to write it, with the evidence
+> and a confidence attached. Session continuity stays where it worked —
+> `sessions.session_summary`, plain text from the Context Manager, surfaced as
+> `prior_session_summary`.
+>
+> A related bug outlived that migration by two years: `build_mentor_briefing` still called the
+> removed `db.read_structured_memory`, so every briefing given a `session_id` raised, was
+> swallowed, and returned "Briefing unavailable". It now reads `learner_memory`.
 
 ### Neo4j Knowledge Graph
 - `(:Concept)` nodes: 33 JEE Physics topics with properties (`concept_id`, `name`, `chapter`, `difficulty_tier`).
@@ -408,176 +588,145 @@ Hosted in `api_server.py` on port `8001`.
 | `POST` | `/api/v1/sandbox/execute` | Executes proactive study cards from dashboard. |
 | `GET` | `/api/v1/agents/status` | Reports active agent catalog and signals. |
 | `POST` | `/api/v1/onboarding/diagnostic` | Generates diagnostic probe questions and evaluates placement score. |
+| `POST` | `/api/v1/coach/run` | Runs the Background Learning Coach over one student's records. `acted: false` is the normal, healthy result. |
 
 ---
 
 ## Sequence Diagrams
 
-The flowcharts in §1–2 show the graph's static shape; these show the actual call sequence
-across services for the flows that matter most, including the two new behaviors from §7–8.
+### A. A compound request — the turn the old graph could not represent
 
-### A. Happy path — new doubt, full retrieval + personalization
+*"Explain Newton's second law, then give me one practice question on it."* Under the intent
+enum this was either a `doubt` or a `practice_request`, never both, and the half that lost got
+dropped. The agent simply does both.
 
 ```mermaid
 sequenceDiagram
-    actor Student
-    participant FE as Frontend (:3000)
-    participant API as api_server.py (:8001)
-    participant Orch as Orchestrator
-    participant CR as Concept Resolver
-    participant Gate as Retrieval Gate
-    participant GR as GraphRAG Retriever
-    participant Planner as compute_personalization_strategy
+    participant S as Student
+    participant Boot as Session Bootstrap
+    participant LA as Learning Agent
+    participant Tools
     participant Neo4j
-    participant Supabase
-    participant Gemini
-    participant Resp as Solver / Socratic
+    participant AC as Answer Checker
+
+    S->>Boot: "Explain Newton's second law, then give me a practice question"
+    Boot->>Boot: profile, session, turn count, record the message
+    Note over Boot: is_structured_input → false (free text) → Learning Agent
+    Boot-->>LA: TutorState + recalled learner memory
+
+    LA->>LA: one request, two things needed
+    LA->>Tools: resolve_concept("Newton's second law")
+    Tools-->>LA: {in_scope: true, concept_id: "newtons_2nd_law_f__ma"}
+    LA->>Tools: retrieve_content(concept_id, "theory")
+    Tools->>Neo4j: prereq walk + vector search
+    Neo4j-->>Tools: 3 chunks (0.865 / 0.84 / 0.838)
+    Tools-->>LA: previews + proficiency + teaching_signal
+    Note over LA: full chunk text stays in state — the loop sees previews only
+
+    LA->>AC: draft (explanation + practice question + understanding check)
+    AC->>AC: correct? responsive? grounded? honest? pitched?
+    AC-->>LA: pass
+    LA-->>S: one taught answer covering both halves
+
+    Note over LA: trace = [tool:resolve_concept, tool:retrieve_content, check:answer_checker]
+```
+
+### B. The agent accepts a composer's draft verbatim
+
+The composer is the existing solver, with its LaTeX rules and figure handling. `USE_DRAFT`
+sends it unchanged — retyping it through another model is how that formatting gets mangled.
+
+```mermaid
+sequenceDiagram
+    participant LA as Learning Agent
+    participant Belt as Toolbelt
+    participant WS as worked_solution (composer)
+    participant AC as Answer Checker
+
+    LA->>Belt: consult_expert(worked_solution, "<the whole job, self-contained>")
+    Note over Belt: scope check — consult_expert needs `compose`, which only the tutor has
+    Belt->>WS: child context, depth 1, read-only tools
+    WS->>WS: agents/solver.py with the retrieved chunks
+    WS-->>Belt: draft (LaTeX, figures, worked steps)
+    Note over Belt: draft lifted to the PARENT context — it must outlive the expert
+    Belt-->>LA: preview + "reply USE_DRAFT to send it unchanged"
+
+    LA->>LA: the draft answers the question
+    LA-->>AC: "USE_DRAFT"
+    Note over AC: checker reviews the FULL draft, not the preview
+    AC-->>LA: pass → draft sent verbatim
+```
+
+### C. A graded button click — no agent call at all
+
+Most of the traffic. One unambiguous handling, so nothing here reasons.
+
+```mermaid
+sequenceDiagram
+    participant S as Student
+    participant TS as turn_service
+    participant Boot as Session Bootstrap
     participant Diag as Diagnostic
-    participant FU as Follow Up
-    participant CM as Context Manager
+    participant FU as Follow-Up
 
-    Student->>FE: "Explain Newton's second law"
-    FE->>API: POST /api/v1/chat/message
-    API->>Orch: invoke(TutorState)
-    Orch->>Supabase: read_user / read_session / read_recent_chat_turns
-    Orch->>Orch: classify intent (Groq config.ORCHESTRATOR_MODEL) → "doubt"
-    Orch->>Supabase: insert_chat_turn(role=user)
-    Orch-->>CR: intent=doubt, query, focus_chapters
+    S->>TS: clicks "Incorrect"
+    TS->>TS: parse_turn_input → has_graded_outcome = true
+    TS->>Boot: TutorState
+    Note over Boot: is_structured_input → true → fast path, zero LLM routing
 
-    CR->>Neo4j: resolve query → primary_concept_id
-    CR-->>Gate: state with primary_concept_id, content_type_requested
-
-    Gate->>Gate: should_skip_retrieval(state)
-    Note over Gate: concept resolved ✓, no _prefetch_fast_forward ✓,<br/>Groq meta/repair check → FALSE
-    Gate-->>GR: proceed
-
-    GR->>Supabase: read_user_concept_state(user, concept) → target_state
-    GR->>Neo4j: get_prerequisite_concepts(concept, depth=2)
-    GR->>Neo4j: get_content_ids_for_concept (type/exam filtered, cascade)
-    GR->>Gemini: embed_content(query)
-    GR->>Neo4j: vector_search(query_vector, candidate_ids)
-    GR->>Supabase: read_content_by_ids(top_k) → retrieved_chunks
-    GR->>Supabase: read_user_learning_profile(user)
-    GR->>Planner: compute_personalization_strategy(target_state, prereq_states, learning_profile, content_type, query, socratic_turn_count)
-    Planner-->>GR: {teaching_mode, framing, difficulty_target, use_socratic, prereq_to_teach_first}
-
-    GR-->>Resp: retrieved_chunks + strategy
-    alt teaching_mode == "socratic"
-        Resp->>Resp: Socratic node (Groq config.SOCRATIC_MODEL) — guiding questions
-    else
-        Resp->>Resp: Solver node (Groq config.SOLVER_MODEL) — direct explanation framed per strategy
-    end
-    Resp->>Supabase: insert_chat_turn(role=assistant)
-    Resp-->>FU: response, has_graded_outcome=False
-
-    FU->>Neo4j: pick 2-3 unseen follow-up suggestions (deterministic, no LLM)
-    FU-->>CM: (if interaction_count % 5 == 0)
-    CM->>Supabase: read_unsummarized_turns → Groq summarise → update_session_summary
-    CM-->>API: final TutorState
-    API-->>FE: response, follow_up_suggestions, agent_signals
+    Boot->>Diag: record the attempt
+    Diag->>Diag: WMA proficiency update, struggle streak, error taxonomy
+    Diag->>FU: outcome
+    FU->>FU: weak prereq? next quiz question? fresh suggestions?
+    FU-->>S: reply + what to do next
 ```
 
-### B. Retrieval-gate skip — meta/repair turn reuses prior context
+### D. An independent check before a number reaches the student
 
 ```mermaid
 sequenceDiagram
-    actor Student
-    participant Orch as Orchestrator
-    participant CR as Concept Resolver
-    participant Gate as Retrieval Gate
-    participant Groq
-    participant GR as GraphRAG Retriever
-    participant Resp as Solver / Socratic
+    participant LA as Learning Agent
+    participant V as verifier (analyst)
+    participant Calc as calculate
+    participant AC as Answer Checker
 
-    Note over Student,Resp: Turn N: normal doubt, retrieval ran, retrieved_chunks cached in state
-    Student->>Orch: "why did you use that formula instead of the other one?"
-    Orch-->>CR: intent=doubt (same concept, no new resolution needed)
-    CR-->>Gate: primary_concept_id unchanged
-    Gate->>Gate: primary_concept_id present, no prefetch flag
-    Gate->>Groq: is_meta_repair_turn(query, last 2 turns)
-    Groq-->>Gate: TRUE — "about the previous answer, not a new question"
-    Gate-->>GR: skip retrieval (return {})
-    Note over GR: retrieved_chunks from turn N still in state — nothing re-fetched
-    GR-->>Resp: same retrieved_chunks, no fresh Neo4j/Gemini calls
-    Resp->>Resp: answer using existing context + chat history
+    Note over LA: a wrong number here would mislead them — worth a second pass
+    LA->>V: consult_expert(verifier, "<the calculation, stated in full>")
+    Note over V: read-only. No memory writes, no grading, no further delegation
+    V->>Calc: evaluate each step exactly
+    Calc-->>V: values
+    V->>V: work it independently, then compare
+    V-->>LA: VERDICT: incorrect / DISAGREEMENT: step 3 drops a factor of 2
+
+    LA->>LA: fold the finding into the explanation
+    LA->>AC: draft
+    AC-->>LA: pass
 ```
 
-### C. Personalization divergence — identical query, different students
+### E. The Background Learning Coach decides to do nothing
+
+The common case, and a real outcome rather than a failure.
 
 ```mermaid
 sequenceDiagram
-    participant GR as GraphRAG Retriever
-    participant Supabase
-    participant Planner as compute_personalization_strategy
+    participant Ev as Session ended
+    participant LC as Learning Coach
+    participant DB as Supabase
 
-    par Student A — cold start
-        GR->>Supabase: read_user_concept_state(A, concept) → is_cold_start=True
-        GR->>Planner: compute_personalization_strategy(...)
-        Planner-->>GR: teaching_mode=direct, framing=cold_start
-    and Student B — weak target, strong prereqs
-        GR->>Supabase: read_user_concept_state(B, concept) → proficiency=0.3
-        GR->>Supabase: prereq states avg proficiency=0.75
-        GR->>Planner: compute_personalization_strategy(...)
-        Planner-->>GR: teaching_mode=socratic, framing=deepen
-    and Student C — weak target AND weak direct prereq
-        GR->>Supabase: read_user_concept_state(C, concept) → proficiency=0.4
-        GR->>Supabase: one direct prereq at proficiency=0.3
-        GR->>Planner: compute_personalization_strategy(...)
-        Planner-->>GR: teaching_mode=prereq_first, prereq_to_teach_first=<weak prereq id>
-    and Student D — near mastery, high learning velocity
-        GR->>Supabase: read_user_concept_state(D, concept) → proficiency=0.85
-        GR->>Supabase: read_user_learning_profile(D) → learning_velocity=high
-        GR->>Planner: compute_personalization_strategy(...)
-        Planner-->>GR: teaching_mode=practice, difficulty_target≈5.0 (clamped)
+    Ev->>LC: detached run — the student is closing the tab, they must not wait
+    LC->>DB: weak concepts, mistake spread, due reviews, recent summaries
+    DB-->>LC: the record, as counts and outcomes, not a narrative
+    LC->>LC: pattern, or a bad evening?
+
+    alt A pattern across concepts
+        LC->>DB: remember_about_learner(misconception, evidence, confidence)
+        LC->>DB: schedule_review(concept, in_days)
+        Note over LC: acted = true only if these actually persisted
+    else Steady progress
+        LC-->>Ev: no action — logged with the reasoning, nothing sent
     end
-```
 
-### D. New session, returning student — cross-session continuity (post-fix)
-
-```mermaid
-sequenceDiagram
-    actor Student
-    participant Orch as Orchestrator
-    participant Supabase
-
-    Student->>Orch: first message of a new session
-    Orch->>Supabase: create_session(user_id) → interaction_count = 1
-    alt interaction_count == 1 and prior_session_summary is None
-        Orch->>Supabase: read_prior_session_summary(user_id, exclude_session_id)
-        alt user has a prior session
-            Supabase-->>Orch: prior session's rolling text summary
-        else brand-new user
-            Supabase-->>Orch: None
-        end
-        Orch-->>Orch: prior_session_summary injected into Solver/Socratic prompt (or left None)
-    end
-    Note over Orch: Previously called db.read_prior_structured_memory (didn't exist) here first —<br/>AttributeError caught by the blanket except, ending the turn with an error and no response.<br/>Now falls straight to read_prior_session_summary. Regression-tested in tests/test_personalization.py.
-```
-
-### E. Graded response — deterministic fast path
-
-```mermaid
-sequenceDiagram
-    actor Student
-    participant FE
-    participant API
-    participant Orch as Orchestrator
-    participant Diag as Diagnostic
-    participant FU as Follow Up
-
-    Student->>FE: clicks "Correct" / "Incorrect" on a served practice question
-    FE->>API: POST /chat/message {has_graded_outcome: true, is_correct, student_answer}
-    API->>Orch: invoke(TutorState)
-    Note over Orch: has_graded_outcome=True and is_correct is not None →<br/>intent="graded_response" set directly — zero Groq calls, zero retrieval
-    Orch-->>Diag: routes straight to Diagnostic (Concept Resolver + GraphRAG both skipped)
-    Diag->>Diag: classify error_type if wrong (Groq, only if needed)
-    Diag->>Diag: update proficiency_score (WMA, α=0.35 correct / 0.45 incorrect)
-    Diag->>Diag: update struggle_streak, flagged_weak, error_type_dist, avg_time_seconds
-    alt struggle_streak >= 3
-        Diag-->>FU: trigger_quiz=True → routes to Quiz next
-    else
-        Diag-->>FU: routes to Follow Up (surfaces weak prereq after 2 wrong in a row)
-    end
+    Note over LC: the coach never speaks to the student. Anything student-facing<br/>waits for a live turn, where they can answer back
 ```
 
 ### F. Speculative prefetch — warming the fast-forward path
@@ -585,21 +734,18 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant API as api_server.py
-    participant CR as Concept Resolver
-    participant Gate as Retrieval Gate
-    participant GR as GraphRAG Retriever
+    participant CR as concept_resolver_node
+    participant GR as graphrag_retriever_node
     participant Redis
 
-    Note over API: Runs in the background after the main response is already sent
-    API->>API: pick follow_up_suggestions[0] as next_query
-    API->>CR: concept_resolver_node({query: next_query})
-    API->>Gate: should_skip_retrieval — no _prefetch_fast_forward set on *this* speculative call, so it proceeds
-    API->>GR: graphrag_retriever_node(...) — full retrieval + compute_personalization_strategy for the *predicted* next turn
-    API->>Redis: SETEX prefetch:{session_id}:{next_query} 120s {retrieved_chunks, strategy, ...}
-    Note over Redis: If the student actually asks this next within 120s, should_skip_retrieval()<br/>sees _prefetch_fast_forward=True on the real turn and reuses this cache (diagram B's skip path)
+    Note over API: background, after the student's response has already been sent
+    API->>API: pick follow_up_suggestions[0] as the predicted next query
+    API->>CR: resolve it
+    API->>GR: full retrieval for the predicted turn
+    API->>Redis: SETEX prefetch:{session_id}:{next_query} 120s {chunks, strategy}
+    Note over Redis: if the student does ask it within 120s, _prefetch_fast_forward<br/>lets the retrieval gate reuse this instead of re-fetching
 ```
 
----
 
 ## Local Development & Verification
 
@@ -608,13 +754,48 @@ sequenceDiagram
 cd Aeropt-agent
 source .venv/bin/activate
 
-# 2. Run full test suite (108 tests + 1 opt-in live check, incl. tests/test_retrieval_gate.py,
-#    tests/test_personalization.py, tests/test_latex_sanitization.py, tests/test_model_health.py)
-python -m unittest discover tests/
+# 2. Run the full test suite (175 tests + 1 opt-in live check)
+python -m pytest tests/ -q
 
-# 3. Start local development server
+# 3. Start the local development server
 python -m uvicorn api_server:app --port 8001 --reload
 
-# 4. Run interactive CLI test session
+# 4. Run an interactive CLI session
 python main.py
 ```
+
+### Before the agent will work properly
+
+Two migrations and one grant. The service runs without them, but degraded in ways that are
+easy to mistake for working:
+
+```sql
+-- db/migrations/006_learner_memory.sql
+--   Without it: the agent remembers nothing between sessions, schedules no reviews, and
+--   records no traces. Memory tools return saved:false rather than failing, so the only
+--   visible symptom is a tutor that never seems to learn anything about its student.
+
+-- db/migrations/007_chat_turns_agent_used.sql
+--   Without it: insert_chat_turn maps new agent labels onto legacy ones after learning the
+--   constraint is narrow. Works, but chat_turns.agent_used cannot distinguish the student's
+--   own message from the tutor's.
+
+GRANT SELECT ON public.user_learning_profile TO service_role;
+--   Without it: learning velocity and preferred content type are absent from every
+--   personalisation decision. Logged as a warning on each retrieval.
+```
+
+### Watching what the agent actually does
+
+Each turn logs its full path:
+
+```
+agent turn user=… session=… steps=3
+  path=tool:resolve_concept → tool:retrieve_content → check:answer_checker
+  checker=pass 7792ms
+```
+
+Worth watching for: `stop_reason=max_steps` (the agent is running out of budget — look for
+repeated tool calls), `checker=skipped` at any volume (the checker is failing, and replies are
+going out unreviewed), and turns with an empty path on substantive questions (the agent is
+answering ungrounded).
