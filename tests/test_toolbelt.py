@@ -178,3 +178,52 @@ class ContextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatedReadTests(unittest.TestCase):
+    """An identical repeated read wastes a step the student is waiting on."""
+
+    def setUp(self):
+        self.calls = []
+
+        def _counting(args: _Args, ctx: ToolContext):
+            self.calls.append(args.name)
+            return {"echo": args.name}
+
+        self.read = ToolSpec(
+            "counting_read", "A read.", _Args, _counting, frozenset({SCOPE_READ})
+        )
+        self.write = ToolSpec(
+            "counting_write",
+            "A write.",
+            _Args,
+            _counting,
+            frozenset({SCOPE_WRITE_MEMORY}),
+        )
+
+    def test_an_identical_read_is_served_from_cache_and_flagged(self):
+        belt, _ = _belt([self.read])
+        first = belt.call("counting_read", {"name": "x"})
+        second = belt.call("counting_read", {"name": "x"})
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(second.ok)
+        self.assertIn("repeated_call", second.data)
+        self.assertEqual(second.data["echo"], first.data["echo"])
+
+    def test_different_arguments_are_a_different_call(self):
+        belt, _ = _belt([self.read])
+        belt.call("counting_read", {"name": "x"})
+        belt.call("counting_read", {"name": "y"})
+        self.assertEqual(self.calls, ["x", "y"])
+
+    def test_a_write_always_runs_even_when_repeated(self):
+        belt, _ = _belt([self.write])
+        belt.call("counting_write", {"name": "x"})
+        belt.call("counting_write", {"name": "x"})
+        self.assertEqual(len(self.calls), 2)
+
+    def test_repeats_are_still_traced_as_real_calls(self):
+        belt, ctx = _belt([self.read])
+        belt.call("counting_read", {"name": "x"})
+        belt.call("counting_read", {"name": "x"})
+        self.assertEqual(ctx.trace.tool_calls, 2)

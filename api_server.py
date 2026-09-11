@@ -393,11 +393,10 @@ def _store_turn_presentation(
     try:
         updated = db.update_chat_turn_presentation(session_id, turn_index, blob)
         if not updated:
-            agent_for_db = result.get("agent_used") or "diagnostic"
-            valid_agents = {"tutor", "solver", "socratic", "quiz", "syllabus", "diagnostic"}
-            if agent_for_db not in valid_agents:
-                agent_for_db = "tutor"
-                
+            # The chat_turns constraint is handled inside insert_chat_turn now
+            # (see SupabaseClient._AGENT_USED_COMPAT) — this used to keep its own
+            # copy of the allowed list, which drifted from the labels in use.
+            agent_for_db = result.get("agent_used") or "learning_agent"
             db.insert_chat_turn(
                 session_id=session_id,
                 role="assistant",
@@ -480,7 +479,6 @@ def _prefetch_next_query(session_id: str, result: TutorState) -> None:
 
         p_state = dict(result)
         p_state["query"] = next_query
-        p_state["intent"] = "doubt"
         p_state["content_type_requested"] = "theory"
         p_state.update(concept_resolver_node(p_state))
         p_state.update(planner_node(p_state))
@@ -733,7 +731,6 @@ async def chat_message(req: ChatMessageRequest):
             if req.study_stage in {"theory", "example", "practice", "pyq"}:
                 stage_overrides.update({
                     "study_stage": req.study_stage,
-                    "intent": "doubt",
                     "content_type_requested": req.study_stage,
                 })
             result = _invoke_tutor(

@@ -21,6 +21,9 @@ import config
 from db.supabase_client import db
 from db.neo4j_client import graph_db
 from models.state import TutorState
+import logging
+
+logger = logging.getLogger("jee_tutor.retriever")
 
 _genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
@@ -181,12 +184,20 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
                 candidate_ids=candidate_ids if candidate_ids else None,
             )
 
+        search_timed_out = False
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(run_search)
                 vector_results = future.result(timeout=config.RETRIEVAL_TIMEOUT_MS / 1000.0)
         except TimeoutError:
+            logger.warning(
+                "Vector search exceeded %d ms for concept %s — answering without "
+                "retrieved material.",
+                config.RETRIEVAL_TIMEOUT_MS,
+                primary_concept_id,
+            )
             vector_results = []
+            search_timed_out = True
         
         # Filter by confidence threshold (Task 1.2)
         strong_results = [r for r in vector_results if r["score"] >= config.RETRIEVAL_CONFIDENCE_THRESHOLD]
@@ -194,13 +205,17 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
             top_content_ids = []
             retrieved_chunks = []
             top_score = vector_results[0]["score"] if vector_results else 0.0
-            db.insert_content_gap_event(
-                user_id=user_id,
-                session_id=session_id,
-                concept_id=primary_concept_id,
-                query_text=query,
-                top_score=top_score
-            )
+            # A timeout means we never looked, so it says nothing about whether
+            # the content exists. Recording it as a content gap filled the table
+            # with false misses at score 0.0 and made the signal worthless.
+            if not search_timed_out:
+                db.insert_content_gap_event(
+                    user_id=user_id,
+                    session_id=session_id,
+                    concept_id=primary_concept_id,
+                    query_text=query,
+                    top_score=top_score
+                )
         else:
             top_content_ids = [r["content_id"] for r in strong_results]
             # ── 8. Supabase: fetch full text for top-k hits ───────────────────────
@@ -214,7 +229,22 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
         )
         
         from agents.planner import compute_personalization_strategy
-        learning_profile = db.read_user_learning_profile(user_id)
+
+        # The learning profile only tunes *how* to teach (velocity, preferred
+        # content type). Retrieval works fine without it, so a failure here must
+        # not take the retrieved material down with it — which is exactly what
+        # happened when the Supabase role was missing SELECT on
+        # user_learning_profile: every retrieval returned zero chunks and the
+        # tutor answered ungrounded, with no visible cause.
+        try:
+            learning_profile = db.read_user_learning_profile(user_id)
+        except Exception as exc:
+            logger.warning(
+                "Learning profile unavailable for %s (%s) — continuing with defaults.",
+                user_id,
+                str(exc)[:160],
+            )
+            learning_profile = None
         
         strategy = compute_personalization_strategy(
             target_state=target_state or {},

@@ -6,6 +6,7 @@ Encapsulates the Concept Resolver Agent logic as a standalone tool.
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import json
+import logging
 import re
 
 import config
@@ -147,11 +148,54 @@ def _format_recent_turns(turns: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _salvage_fields(text: str) -> Optional[Dict[str, Any]]:
+    """Recover the fields we need from JSON that did not finish.
+
+    A truncated reply still usually contains the concept id, which is the only
+    field that really matters — and returning it beats reporting the topic as
+    off-syllabus, which is what a parse failure degrades into.
+    """
+    m = re.search(r'"primary_concept_id"\s*:\s*"([A-Za-z0-9_\-]+)', text)
+    if not m:
+        return None
+    in_scope = not re.search(r'"in_scope"\s*:\s*false', text, flags=re.IGNORECASE)
+    ctype = "theory"
+    ct = re.search(r'"content_type_requested"\s*:\s*"(theory|practice|pyq|example)"', text)
+    if ct:
+        ctype = ct.group(1)
+    return {
+        "in_scope": in_scope,
+        "primary_concept_id": m.group(1),
+        "secondary_concept_ids": [],
+        "content_type_requested": ctype,
+    }
+
+
 def _extract_json(text: str) -> Dict[str, Any]:
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Wrapped in prose: take the outermost braces.
+    braces = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if braces:
+        try:
+            return json.loads(braces.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    salvaged = _salvage_fields(text)
+    if salvaged:
+        logging.warning(
+            "resolve_concept_id: recovered %s from malformed JSON.",
+            salvaged["primary_concept_id"],
+        )
+        return salvaged
+    raise json.JSONDecodeError("Could not parse resolver output", text, 0)
 
 
 def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
@@ -203,7 +247,12 @@ def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SMALL_MODEL_FALLBACK,
             temperature=0.0,
-            max_tokens=100,
+            # Was 100, which truncated the reply mid-string for any concept with
+            # a long id (e.g. "newtons_2nd_law_f__ma"). The JSON then failed to
+            # parse and the whole query was reported as off-syllabus — a silent
+            # total failure for those concepts. 400 leaves ample headroom for
+            # the fixed four-field response.
+            max_tokens=400,
             min_chars=5,
         )
         
@@ -213,6 +262,19 @@ def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
         primary = parsed.get("primary_concept_id") or ""
         if isinstance(primary, str) and primary.lower() in {"null", "none", ""}:
             primary = ""
+
+        # A salvaged id from a truncated reply is a prefix of the real one. If
+        # exactly one concept starts with it there is no ambiguity to resolve,
+        # so completing it beats discarding the answer.
+        if primary and primary not in valid_ids:
+            matches = [cid for cid in valid_ids if cid.startswith(primary)]
+            if len(matches) == 1:
+                logging.warning(
+                    "resolve_concept_id: completed truncated id %r -> %r.",
+                    primary,
+                    matches[0],
+                )
+                primary = matches[0]
 
         if primary in valid_ids and in_scope is not False:
             sec = parsed.get("secondary_concept_ids", [])
@@ -234,7 +296,9 @@ def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
         }
 
     except Exception as exc:
-        import logging
+        # NOTE: `import logging` used to live here. A function-local import makes
+        # the name local for the WHOLE function, so every earlier logging call in
+        # this function raised UnboundLocalError. It is imported at module level.
         logging.exception("resolve_concept_id tool failed.")
         return {
             "in_scope": False,

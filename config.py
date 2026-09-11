@@ -96,7 +96,15 @@ NEO4J_CONTENT_CORPUS_SIZE = 700
 # well-matched queries scored 0.7+, off-syllabus queries scored below 0.45 in calibration on 2026-09-09
 RETRIEVAL_CONFIDENCE_THRESHOLD = 0.55
 RETRIEVAL_CONFIDENCE_MIN_HITS = 1
-RETRIEVAL_TIMEOUT_MS = 600
+# Wall-clock budget for embed + vector search combined.
+#
+# This was 600 ms, which is less than the Gemini embedding call alone. Measured
+# on 2026-09-11: embed ~1175 ms, Neo4j vector search ~516 ms, ~1700 ms total. So
+# the timeout fired on EVERY retrieval, every turn returned zero chunks, the
+# tutor answered ungrounded without saying so, and each miss logged a bogus
+# content-gap event. Set from that measurement with headroom for a slow call.
+# Re-measure before lowering it.
+RETRIEVAL_TIMEOUT_MS = 5000
 
 # ── Diagnostic thresholds ─────────────────────────────────────────────────────
 WEAK_THRESHOLD = 0.4

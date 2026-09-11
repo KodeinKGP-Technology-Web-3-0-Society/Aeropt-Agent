@@ -81,6 +81,9 @@ class ToolContext:
         self.granted_permissions = set(granted_permissions or ())
         #: Permission requests raised by consequential tools this turn.
         self.pending_permissions: List[Dict[str, Any]] = []
+        #: Results of read-only calls already made this turn, keyed by
+        #: (tool, arguments). See Toolbelt.call for why.
+        self._read_cache: Dict[str, "ToolResult"] = {}
 
     def stage(self, **updates: Any) -> None:
         """Record state changes for the loop to apply after the turn resolves."""
@@ -277,6 +280,37 @@ class Toolbelt:
             self._record(name, parsed_args, result, started)
             return result
 
+        # Repeating an identical read is always a mistake: either the model lost
+        # track, or it is hoping for a different answer from a deterministic
+        # lookup. Serving the cached result costs nothing and says so plainly,
+        # which is what actually breaks the loop — a silent repeat just burns
+        # another step of the student's budget. Only ever applied to reads;
+        # a write must happen every time it is asked for.
+        cache_key = ""
+        is_cacheable = spec.scopes <= frozenset({SCOPE_READ}) and not spec.consequential
+        if is_cacheable:
+            cache_key = f"{name}:{json.dumps(parsed_args, sort_keys=True, default=str)}"
+            cached = self.ctx._read_cache.get(cache_key)
+            if cached is not None:
+                repeat = ToolResult(
+                    ok=cached.ok,
+                    data=(
+                        {
+                            "repeated_call": (
+                                "You already called this with these exact arguments "
+                                "this turn. Here is the same result. Do something "
+                                "different with it, or answer the student."
+                            ),
+                            **(cached.data if isinstance(cached.data, dict) else {"result": cached.data}),
+                        }
+                        if cached.ok
+                        else None
+                    ),
+                    error=cached.error,
+                )
+                self._record(name, parsed_args, repeat, started)
+                return repeat
+
         if spec.consequential and name not in self.ctx.granted_permissions:
             request = {
                 "action": name,
@@ -294,6 +328,9 @@ class Toolbelt:
         except Exception as exc:  # noqa: BLE001 — deliberate: never break the loop
             logger.exception("Tool %s failed", name)
             result = ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+        if is_cacheable:
+            self.ctx._read_cache[cache_key] = result
 
         self._record(name, parsed_args, result, started)
         return result

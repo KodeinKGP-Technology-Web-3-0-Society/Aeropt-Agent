@@ -21,6 +21,8 @@ class SupabaseClient:
         self.client: Client = create_client(url, key)
         # None = not probed yet; set by memory_enabled() on first use.
         self._memory_enabled: Optional[bool] = None
+        # Set to True the first time chat_turns rejects a post-007 agent label.
+        self._agent_used_is_narrow: bool = False
 
     # ─────────────────────────── users ────────────────────────────────────────
 
@@ -261,6 +263,46 @@ class SupabaseClient:
         )
         return res.data or []
 
+    #: Semantic labels mapped onto ones the PRE-007 check constraint accepts.
+    #:
+    #: `chat_turns.agent_used` is constrained to an enumeration of the old graph
+    #: nodes. Migration 007 widens it to cover the Learning Agent. Rather than
+    #: hardcode which schema we are on — and get it wrong on one of the two —
+    #: inserts use the correct semantic label, and if the constraint rejects it
+    #: we learn that once, fall back, and use this map for the rest of the
+    #: process. After 007 is applied the map is simply never consulted.
+    #:
+    #: Centralised here because api_server.py kept its own copy of this list,
+    #: which had already drifted out of sync with the labels actually in use.
+    _AGENT_USED_COMPAT = {
+        "student": "orchestrator",
+        "learning_agent": "tutor",
+        "graded_fast_path": "diagnostic",
+        "answer_checker": "tutor",
+        "practice_generator": "solver",
+        "context_manager": "orchestrator",
+    }
+
+    #: Accepted by the constraint both before and after migration 007.
+    _AGENT_USED_SAFE_DEFAULT = "tutor"
+
+    def normalize_agent_used(self, agent_used: Optional[str]) -> Optional[str]:
+        """Map an agent label onto one this database's constraint will accept.
+
+        Returns the label unchanged until we have evidence the constraint is the
+        narrow pre-007 one.
+        """
+        if not agent_used:
+            return None
+        if not self._agent_used_is_narrow:
+            return agent_used
+        return self._AGENT_USED_COMPAT.get(agent_used, self._AGENT_USED_SAFE_DEFAULT)
+
+    @staticmethod
+    def _is_agent_used_violation(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "chat_turns_agent_used_check" in msg
+
     def insert_chat_turn(
         self,
         session_id: str,
@@ -278,13 +320,25 @@ class SupabaseClient:
             "turn_index": turn_index,
             "is_summarized": False,
         }
-        if agent_used:
-            row["agent_used"] = agent_used
+        normalized = self.normalize_agent_used(agent_used)
+        if normalized:
+            row["agent_used"] = normalized
         if concepts_referenced:
             row["concepts_referenced"] = concepts_referenced
         if presentation is not None:
             row["presentation"] = presentation
-        res = self.client.table("chat_turns").insert(row).execute()
+
+        try:
+            res = self.client.table("chat_turns").insert(row).execute()
+        except Exception as exc:
+            if not (agent_used and self._is_agent_used_violation(exc)):
+                raise
+            # This database still has the narrow pre-007 constraint. Learn that
+            # once, then map every later label without a failed round-trip. A
+            # label mismatch must never cost a student their turn.
+            self._agent_used_is_narrow = True
+            row["agent_used"] = self.normalize_agent_used(agent_used)
+            res = self.client.table("chat_turns").insert(row).execute()
         return res.data[0]
 
     def update_chat_turn_presentation(
