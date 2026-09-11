@@ -87,17 +87,43 @@ def get_agent_signals(args: GetAgentSignalsArgs) -> Dict[str, Any]:
         session_label = _concept_display_name(primary, concepts)
         active = args.active_agent or "tutor"
 
+        # Syllabus agent: name the actual weak chapter or recommended next
+        # concept when one exists, instead of a bare count — the data was
+        # already being computed by get_syllabus_status(), just not surfaced.
+        weak_chapters = syllabus.get("weak_chapters") or []
+        next_concept_name = syllabus.get("next_concept_name")
+        if weak_chapters:
+            syllabus_signal = f"{weak_chapters[0]} needs review"
+        elif next_concept_name:
+            syllabus_signal = f"Next up: {next_concept_name}"
+        else:
+            unfinished = syllabus.get("unfinished_lessons", 0)
+            syllabus_signal = f"{unfinished} unfinished lesson{'s' if unfinished != 1 else ''}"
+
+        # Doubt resolver: name the single concept the student is struggling
+        # with most (highest struggle_streak) rather than just counting how
+        # many are flagged — that's the one worth actually pointing at.
+        struggling = [s for s in states if int(s.get("struggle_streak") or 0) > 0]
+        struggling.sort(key=lambda s: int(s.get("struggle_streak") or 0), reverse=True)
+        if struggling:
+            worst = struggling[0]
+            worst_name = _concept_display_name(worst.get("concept_id"), concepts)
+            streak = int(worst.get("struggle_streak") or 0)
+            doubt_signal = f"Stuck on {worst_name} ({streak} in a row)"
+        else:
+            doubt_signal = f"{open_doubts} open doubt signal{'s' if open_doubts != 1 else ''}"
+
         signal_map = {
             "tutor": {
                 "signal": f"{session_label} session",
                 "signal_type": "session",
             },
             "syllabus": {
-                "signal": f"{syllabus.get('unfinished_lessons', 0)} unfinished lessons",
+                "signal": syllabus_signal,
                 "signal_type": "count",
             },
             "doubt_resolver": {
-                "signal": f"{open_doubts} open doubt signal{'s' if open_doubts != 1 else ''}",
+                "signal": doubt_signal,
                 "signal_type": "count",
             },
             "practice_coach": {
