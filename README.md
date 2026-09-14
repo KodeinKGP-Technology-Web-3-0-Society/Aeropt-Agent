@@ -13,6 +13,11 @@ it, and every turn records the path it actually took.
 
 Built as part of **PrepWise** in collaboration with **KodeinKGP, IIT Kharagpur**.
 
+> **Product architecture:** [`ARCHITECTURE.md`](ARCHITECTURE.md) — one Main Tutor
+> per student, tools that are not agents, temporary experts, Answer Checker,
+> Background Coach. This README is the implementation map of that plan (files,
+> models, retrieval, API). If the two disagree, `ARCHITECTURE.md` wins.
+
 ---
 
 ## Table of Contents

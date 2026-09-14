@@ -1,6 +1,8 @@
-"""
-MCP Tool: Get Agent Signals
-Computes the five product-agent card signals for the frontend roster panel.
+"""Dashboard status helper for the retired five-facade roster.
+
+The student UI no longer shows a team of agents (see ARCHITECTURE.md: the
+student does not choose an agent). `/api/v1/agents/status` still returns this
+shape so older clients do not break. It is not a model-visible tool.
 """
 
 from __future__ import annotations
