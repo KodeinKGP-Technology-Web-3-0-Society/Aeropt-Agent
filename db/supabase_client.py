@@ -7,6 +7,7 @@ by every agent that needs DB access.  No agent ever calls supabase-py directly.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,30 @@ from supabase import create_client, Client
 import config
 
 
+def _make_redis_client():
+    """Connect the optional prefetch cache, or return None.
+
+    Never raises. The cache is a latency optimisation and nothing depends on it,
+    so an unset URL, a missing package and an unreachable server are all the
+    same answer: no cache, carry on.
+    """
+    url = getattr(config, "REDIS_URL", "")
+    if not url:
+        return None
+    try:
+        import redis  # imported lazily: not needed when the cache is off
+
+        client = redis.Redis.from_url(url, decode_responses=True)
+        client.ping()
+        logging.getLogger("jee_tutor.db").info("Prefetch cache connected.")
+        return client
+    except Exception as exc:
+        logging.getLogger("jee_tutor.db").warning(
+            "Prefetch cache unavailable (%s) — continuing without it.", str(exc)[:160]
+        )
+        return None
+
+
 class SupabaseClient:
     def __init__(self, url: str, key: str) -> None:
         self.client: Client = create_client(url, key)
@@ -23,6 +48,10 @@ class SupabaseClient:
         self._memory_enabled: Optional[bool] = None
         # Set to True the first time chat_turns rejects a post-007 agent label.
         self._agent_used_is_narrow: bool = False
+        # Optional prefetch cache. None when REDIS_URL is unset or unreachable;
+        # callers must treat it as "may not be there" (`if db.redis:`), which is
+        # how api_server.py already uses it.
+        self.redis = _make_redis_client()
 
     # ─────────────────────────── users ────────────────────────────────────────
 

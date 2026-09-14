@@ -84,6 +84,18 @@ SMALL_MODEL_FALLBACK = [
 # Embedding (GraphRAG Retriever only) — no chat LLM
 EMBEDDING_MODEL = "gemini-embedding-2"
 
+# ── Speculative prefetch cache (optional) ─────────────────────────────────────
+# api_server.py warms retrieval for the follow-up a student is most likely to
+# pick next, and reads it back on their next turn. Purely a latency
+# optimisation: with no REDIS_URL set the cache is absent and every turn
+# retrieves normally.
+#
+# NOTE: api_server.py referenced `db.redis` for this, but SupabaseClient never
+# had that attribute — so every HTTP chat turn raised AttributeError inside the
+# request handler and the student got the generic failure message. The CLI path
+# was unaffected, which is why the graph could look healthy while chat was not.
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+
 # ── Neo4j vector index ────────────────────────────────────────────────────────
 NEO4J_VECTOR_INDEX = "content_vector_index"
 NEO4J_VECTOR_TOP_K = 5
