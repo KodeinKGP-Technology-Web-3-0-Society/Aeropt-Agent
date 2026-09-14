@@ -1174,6 +1174,7 @@ def build_chat_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "agent_used": result.get("agent_used"),
         "follow_up_suggestions": follow_ups,
         "quiz_steps": quiz_steps,
+        "practice_batch": result.get("practice_payload") or result.get("generated_practice_batch") or result.get("practice_batch"),
         "awaiting_graded_response": bool(result.get("awaiting_graded_response")),
         "flashcards": flashcards,
         "grading_ui": grading_ui,

@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Generator
 
 from groq import (
     Groq,
@@ -344,4 +344,133 @@ def groq_chat(
         fallback_models=fallback_models,
         soft_check=_check,
         **call_kwargs,
+    )
+
+
+def groq_stream(
+    client: Groq,
+    model: str,
+    messages: List[Dict[str, Any]],
+    fallback_models: Optional[List[str]] = None,
+    **kwargs: Any,
+) -> Generator[Tuple[str, bool], None, str]:
+    """
+    Call Groq for a stream with retry + automatic model fallback.
+    Returns a generator yielding (delta_text, is_final).
+    Returns the model_used when the generator finishes.
+    """
+    chain = [model] + (fallback_models or [])
+    last_exc: Exception = RuntimeError("No attempts made")
+
+    try:
+        from utils.groq_pool import get_pool
+        pool = get_pool()
+    except Exception:
+        pool = None
+
+    for model_idx, current_model in enumerate(chain):
+        is_fallback = model_idx > 0
+        if is_fallback:
+            logger.warning(
+                "[LLM] Switching to fallback model: %s (after %s failed)",
+                current_model,
+                chain[model_idx - 1],
+            )
+
+        call_kwargs = dict(kwargs)
+
+        for attempt in range(MAX_RETRIES + 1):
+            key_idx, active_client = _pick_client(pool, client, current_model)
+            if pool is not None and key_idx is not None:
+                pool.note_attempt(key_idx, current_model)
+
+            try:
+                completion = active_client.chat.completions.create(
+                    model=current_model,
+                    messages=messages,
+                    stream=True,
+                    **call_kwargs,
+                )
+                
+                # If we get here, the connection succeeded. We now yield chunks.
+                # If a chunk fails, we catch it inside the generator and trigger retry.
+                for chunk in completion:
+                    delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else ""
+                    if delta:
+                        yield (delta, False)
+                
+                # After the loop, if we didn't crash, we successfully finished!
+                yield ("", True)
+                if is_fallback or attempt > 0:
+                    logger.info(
+                        "[LLM] Stream Success — model=%s attempt=%d/%d",
+                        current_model,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                    )
+                return current_model
+
+            except Exception as exc:
+                last_exc = exc
+
+                if _is_model_unavailable(exc):
+                    logger.warning("[LLM] %s unavailable, skipping.", current_model)
+                    break  # skip retries, go to next model
+
+                tpm_limit = _tpm_limit_from_error(exc)
+                if tpm_limit is not None:
+                    requested = call_kwargs.get("max_tokens")
+                    candidate = max(MIN_CLAMPED_MAX_TOKENS, tpm_limit // 2)
+                    if requested is not None and candidate < requested:
+                        logger.warning(
+                            "[LLM] %s hit TPM limit (%d); clamping max_tokens %d -> %d and retrying.",
+                            current_model, tpm_limit, requested, candidate,
+                        )
+                        call_kwargs["max_tokens"] = candidate
+                        continue
+                    logger.warning(
+                        "[LLM] %s TPM limit (%d) still exceeded after clamping; moving to next model.",
+                        current_model, tpm_limit,
+                    )
+                    break  # move to next model in chain
+
+                is_transient = isinstance(exc, _TRANSIENT) or _is_capacity_error(exc)
+                if not is_transient:
+                    raise
+
+                if isinstance(exc, RateLimitError) and pool is not None and key_idx is not None:
+                    pool.mark_limited(key_idx)
+
+                if attempt < MAX_RETRIES:
+                    skip_backoff = (
+                        isinstance(exc, RateLimitError) and pool is not None and pool.size > 1
+                    )
+                    if skip_backoff:
+                        logger.warning(
+                            "[LLM] %s key #%s rate-limited (attempt %d/%d) — rotating key, no wait.",
+                            current_model, key_idx, attempt + 1, MAX_RETRIES + 1,
+                        )
+                    else:
+                        wait = BACKOFF_BASE ** (attempt + 1)
+                        logger.warning(
+                            "[LLM] %s transient error in stream (attempt %d/%d): %s — retrying in %.1fs",
+                            current_model,
+                            attempt + 1,
+                            MAX_RETRIES + 1,
+                            str(exc)[:120],
+                            wait,
+                        )
+                        time.sleep(wait)
+                else:
+                    logger.warning(
+                        "[LLM] %s exhausted %d retries for stream: %s",
+                        current_model,
+                        MAX_RETRIES + 1,
+                        str(exc)[:120],
+                    )
+                    break  # move to next model in chain
+
+    raise RuntimeError(
+        f"All LLM models in chain failed during streaming. Last error: {last_exc}\n"
+        f"Chain tried: {chain}"
     )

@@ -54,7 +54,8 @@ class RetrieveContentArgs(BaseModel):
         default="theory",
         description=(
             "'theory' for explanation material, 'example' for worked examples, "
-            "'practice' for practice questions, 'pyq' for past-year questions."
+            "'practice' for practice questions, 'pyq' for past-year questions. "
+            "Calling this with 'practice' or 'pyq' allows the agent to serve verified questions verbatim instead of inventing them."
         ),
     )
     query: Optional[str] = Field(

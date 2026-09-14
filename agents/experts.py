@@ -79,15 +79,15 @@ def _socratic_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _quiz_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    from agents.quiz import quiz_node
+    from agents.quiz import quiz_builder_node
 
-    return quiz_node(state)  # type: ignore[arg-type]
+    return quiz_builder_node(state)  # type: ignore[arg-type]
 
 
 def _practice_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    from agents.practice_generator import practice_generator_node
+    from agents.practice_generator import practice_set_node
 
-    return practice_generator_node(state)  # type: ignore[arg-type]
+    return practice_set_node(state)  # type: ignore[arg-type]
 
 
 _VERIFIER_PROMPT = """\
@@ -366,6 +366,7 @@ def _run_composer(expert: Expert, task: str, ctx: ToolContext) -> Dict[str, Any]
         "quiz_batch_index",
         "awaiting_graded_response",
         "practice_payload",
+        "generated_practice_batch",
         "sandbox_card",
     ):
         if key in out:

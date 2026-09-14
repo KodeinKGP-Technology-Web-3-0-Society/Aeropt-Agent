@@ -27,13 +27,14 @@ from typing import Any, Dict, List, Optional
 from groq import Groq
 
 import config
-from agents.answer_checker import VERDICT_SKIPPED, check_answer
+from agents.answer_checker import VERDICT_SKIPPED, check_answer, check_answer_streaming
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
 from agents.runtime.trace import AgentTrace
 from db.supabase_client import db
 from models.state import TutorState
 from utils.skills import load_skill
+from utils.stream import stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
@@ -284,12 +285,22 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         }
 
     # Fresh review before the student sees any of it.
-    checked = check_answer(
+    cb = stream_callback_var.get()
+    
+    checked = check_answer_streaming(
         query=query,
         draft=answer,
         state=ctx.state,
         trace=trace,
+        on_token=cb,
     )
+    
+    if cb and checked.verdict != "revise" and checked.answer:
+        # Fake-stream the draft
+        words = checked.answer.split(" ")
+        for i, w in enumerate(words):
+            cb(w + (" " if i < len(words) - 1 else ""))
+            time.sleep(0.01)
 
     updates: Dict[str, Any] = dict(ctx.updates)
     updates.pop("draft_response", None)

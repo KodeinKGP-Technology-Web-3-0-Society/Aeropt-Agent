@@ -22,13 +22,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from groq import Groq
 
 import config
 from agents.runtime.trace import AgentTrace, TraceStep
-from utils.llm import groq_complete
+from utils.llm import groq_complete, groq_stream
 
 logger = logging.getLogger("jee_tutor.answer_checker")
 
@@ -231,6 +231,203 @@ def check_answer(
         revised_text = revised.strip()
         # A "revision" that throws away most of the answer is more likely a
         # truncated or confused checker than a real correction. Keep the draft.
+        if len(revised_text) < len(draft) * 0.4:
+            logger.warning(
+                "Checker revision was %d chars against a %d char draft — keeping draft.",
+                len(revised_text),
+                len(draft),
+            )
+            step.result_preview = VERDICT_SKIPPED
+            step.ok = True
+            if trace:
+                trace.add(step)
+                trace.checker_verdict = VERDICT_SKIPPED
+            return CheckResult(
+                draft, VERDICT_SKIPPED, ["Checker revision was implausibly short."], model_used
+            )
+
+        step.result_preview = VERDICT_REVISED
+        if trace:
+            trace.add(step)
+            trace.checker_verdict = VERDICT_REVISED
+        logger.info("Answer checker revised the draft: %s", "; ".join(issues[:3]))
+        return CheckResult(revised_text, VERDICT_REVISED, issues, model_used)
+
+    step.result_preview = VERDICT_PASS
+    if trace:
+        trace.add(step)
+        trace.checker_verdict = VERDICT_PASS
+    return CheckResult(draft, VERDICT_PASS, issues, model_used)
+
+
+def _unescape_json_string(s: str) -> str:
+    if not s: return ""
+    try:
+        return json.loads('"' + s + '"')
+    except json.JSONDecodeError:
+        return s
+
+
+def check_answer_streaming(
+    *,
+    query: str,
+    draft: str,
+    state: Dict[str, Any],
+    trace: Optional[AgentTrace] = None,
+    on_token: Optional[Callable[[str], None]] = None,
+) -> CheckResult:
+    """Review a drafted answer with streaming support for revisions.
+
+    Returns the answer to actually send (CheckResult), plus the verdict.
+    If the verdict is 'revise', streams the revised text as it arrives.
+    """
+    draft = (draft or "").strip()
+
+    if not draft:
+        return CheckResult(draft, VERDICT_FAILED, ["The draft was empty."])
+
+    if len(draft) < MIN_LENGTH_TO_CHECK:
+        return CheckResult(draft, VERDICT_SKIPPED, ["Too short to need review."])
+
+    if not getattr(config, "ANSWER_CHECKER_ENABLED", True):
+        return CheckResult(draft, VERDICT_SKIPPED, ["Checker disabled by config."])
+
+    prompt = _CHECKER_PROMPT.format(
+        query=(query or "")[:1500],
+        learner_context=_format_learner_context(state),
+        evidence=_format_evidence(state.get("retrieved_chunks") or []),
+        draft=draft,
+    )
+
+    step = TraceStep(kind="check", name="answer_checker")
+    try:
+        stream = groq_stream(
+            client=_groq,
+            model=getattr(config, "ANSWER_CHECKER_MODEL", config.SOCRATIC_MODEL),
+            messages=[{"role": "user", "content": prompt}],
+            fallback_models=config.SMALL_MODEL_FALLBACK,
+            temperature=0.1,
+            max_tokens=2400,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Answer checker stream unavailable: %s", exc)
+        step.ok = False
+        step.error = str(exc)[:200]
+        step.result_preview = VERDICT_SKIPPED
+        if trace:
+            trace.add(step)
+            trace.checker_verdict = VERDICT_SKIPPED
+        return CheckResult(draft, VERDICT_SKIPPED, [f"Checker unavailable: {exc}"])
+
+    parser_state = "search_key"
+    buffer = ""
+    target_key = '"revised_answer"'
+    full_response = ""
+    model_used = None
+
+    try:
+        for chunk, is_final in stream:
+            full_response += chunk
+            buffer += chunk
+            
+            while buffer and on_token:
+                if parser_state == "search_key":
+                    idx = buffer.find(target_key)
+                    if idx == -1:
+                        if len(buffer) > len(target_key):
+                            buffer = buffer[-(len(target_key)-1):]
+                        break
+                    else:
+                        parser_state = "search_colon"
+                        buffer = buffer[idx + len(target_key):]
+                
+                elif parser_state == "search_colon":
+                    buffer = buffer.lstrip()
+                    if not buffer:
+                        break
+                    if buffer[0] == ':':
+                        parser_state = "search_quote"
+                        buffer = buffer[1:]
+                    else:
+                        buffer = buffer[1:]
+                
+                elif parser_state == "search_quote":
+                    buffer = buffer.lstrip()
+                    if not buffer:
+                        break
+                    if buffer[0] == '"':
+                        parser_state = "in_string"
+                        buffer = buffer[1:]
+                    else:
+                        parser_state = "done"
+                        break
+                        
+                elif parser_state == "in_string":
+                    i = 0
+                    emitted_idx = 0
+                    while i < len(buffer):
+                        if buffer[i] == '\\':
+                            if i + 1 < len(buffer):
+                                escape_char = buffer[i+1]
+                                if escape_char in '"\\/bfnrt':
+                                    i += 2
+                                elif escape_char == 'u':
+                                    if i + 5 < len(buffer):
+                                        i += 6
+                                    else:
+                                        break
+                                else:
+                                    i += 2
+                            else:
+                                break
+                        elif buffer[i] == '"':
+                            if i > emitted_idx:
+                                on_token(_unescape_json_string(buffer[emitted_idx:i]))
+                            parser_state = "done"
+                            buffer = ""
+                            break
+                        else:
+                            i += 1
+                    
+                    if parser_state == "in_string":
+                        if i > emitted_idx:
+                            on_token(_unescape_json_string(buffer[emitted_idx:i]))
+                            buffer = buffer[i:]
+                    break
+                
+                elif parser_state == "done":
+                    buffer = ""
+                    break
+                    
+    except StopIteration as e:
+        model_used = e.value
+    except Exception as exc:
+        logger.warning("Answer checker stream failed during generation: %s", exc)
+        step.ok = False
+        step.error = str(exc)[:200]
+        step.result_preview = VERDICT_SKIPPED
+        if trace:
+            trace.add(step)
+            trace.checker_verdict = VERDICT_SKIPPED
+        return CheckResult(draft, VERDICT_SKIPPED, [f"Checker stream failed mid-way: {exc}"])
+
+    parsed = _extract_json(full_response)
+    if not parsed:
+        logger.warning("Answer checker returned unparseable output — passing draft through.")
+        step.ok = False
+        step.error = "unparseable checker output"
+        step.result_preview = VERDICT_SKIPPED
+        if trace:
+            trace.add(step)
+            trace.checker_verdict = VERDICT_SKIPPED
+        return CheckResult(draft, VERDICT_SKIPPED, ["Checker output could not be parsed."])
+
+    verdict = str(parsed.get("verdict") or "").strip().lower()
+    issues = [str(i) for i in (parsed.get("issues") or []) if str(i).strip()]
+    revised = parsed.get("revised_answer")
+
+    if verdict == "revise" and isinstance(revised, str) and revised.strip():
+        revised_text = revised.strip()
         if len(revised_text) < len(draft) * 0.4:
             logger.warning(
                 "Checker revision was %d chars against a %d char draft — keeping draft.",

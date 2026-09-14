@@ -301,3 +301,35 @@ def quiz_node(state: TutorState) -> Dict[str, Any]:
 
     except Exception as exc:
         return {"error": f"Quiz Agent failed: {exc}"}
+
+def quiz_builder_node(state: TutorState) -> Dict[str, Any]:
+    """
+    Wrapper for quiz generation that tries to serve verified DB content first.
+    If no valid content is found in the retrieved chunks, falls back to generation.
+    """
+    chunks = state.get("retrieved_chunks", []) or []
+    
+    valid_chunks = [
+        c for c in chunks
+        if (c.get("content_type") or "").lower() in {"practice question", "pyq", "practice"}
+        and bool((c.get("solution") or "").strip())
+    ]
+    
+    if valid_chunks:
+        # Force quiz_batch_mode to use the deterministic quiz builder logic
+        new_state = dict(state)
+        new_state["quiz_batch_mode"] = True
+        return _quiz_batch_node(new_state)
+
+    # Fall back to LLM generation
+    result = quiz_node(state)
+    
+    if not result.get("error") and "quiz_steps" in result:
+        # Just add a flag for the frontend/agent, and optionally append to the message
+        # But wait, quiz_node inserts its own "[Quiz started..." chat turn.
+        # We don't really have a 'response' string returned here besides quiz_steps.
+        # The Orchestrator / Learning Agent will see the steps.
+        # Let's add a flag `generated_quiz: True` so the agent knows.
+        result["generated_quiz"] = True
+        
+    return result
