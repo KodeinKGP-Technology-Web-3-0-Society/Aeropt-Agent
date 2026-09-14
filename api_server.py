@@ -106,6 +106,13 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+@app.get("/api/v1/health")
+def health() -> Dict[str, str]:
+    """Liveness probe for local CI/CD. Does not touch Neo4j or Supabase."""
+    return {"status": "ok", "service": "aeropt-agent"}
+
+
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class ChatMessageRequest(BaseModel):

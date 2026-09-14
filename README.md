@@ -766,8 +766,9 @@ sequenceDiagram
 cd Aeropt-agent
 source .venv/bin/activate
 
-# 2. Run the full test suite (175 tests + 1 opt-in live check)
-python -m pytest tests/ -q
+# 2. CI (syntax + unit tests; skips live Groq checks)
+make ci
+# same as: bash ci/run.sh
 
 # 3. Start the local development server
 python -m uvicorn api_server:app --port 8001 --reload
@@ -775,6 +776,9 @@ python -m uvicorn api_server:app --port 8001 --reload
 # 4. Run an interactive CLI session
 python main.py
 ```
+
+Local CD (start the agent if `:8001` is down): `make deploy`.
+From the workspace root: `./ci/local.sh` (all three) or `./ci/local.sh --deploy`.
 
 ### Before the agent will work properly
 
