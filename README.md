@@ -5,7 +5,8 @@ each student's turn: it decides what it needs to look up, whether to compute, wh
 narrow job to a temporary expert, and how to teach the person in front of it. It retrieves
 curriculum-aligned material from a Neo4j knowledge graph, adapts to measured proficiency,
 remembers what it learns about a student across sessions, and serves theory, worked examples,
-practice questions and quizzes over an SSE-streaming interface.
+practice questions and quizzes over an SSE-shaped interface (token streaming for agent-composed
+replies is not yet wired up — see §11).
 
 There is no intent enum and no routing table. Every reply is reviewed before the student sees
 it, and every turn records the path it actually took.
@@ -509,28 +510,21 @@ the Background Coach when due. `agent_trace` holds per-turn decision records.
 every write returns `saved: false` with a note the agent can read and report honestly, rather
 than the service failing. `db.memory_enabled()` reports which world you are in.
 
-### Applying the migrations
+### Deployment status (checked live 2026-09-14)
 
-```sql
--- db/migrations/006_learner_memory.sql   learner_memory, review_schedule, agent_trace
--- db/migrations/007_chat_turns_agent_used.sql   widen the agent_used check constraint
+| Item | Status |
+|---|---|
+| `db/migrations/006_learner_memory.sql` | **Not applied.** `db.memory_enabled()` returns `False`. The agent remembers nothing between sessions and schedules no reviews. |
+| `db/migrations/007_chat_turns_agent_used.sql` | Applied. `agent_used` accepts the new labels directly. |
+| `GRANT SELECT ON public.user_learning_profile TO service_role;` | Applied. Personalisation reads the real profile again. |
+
+Only 006 is still outstanding. Everything else in this section assumes it is applied — re-check
+the same way before trusting it:
+
+```python
+from db.supabase_client import db
+db.memory_enabled()   # False until 006 lands
 ```
-
-Until 007 lands, `db.insert_chat_turn` learns on first rejection that the constraint is the
-narrow one and maps labels for the rest of the process, so the service runs against either
-schema.
-
-### Known deployment gap
-
-`user_learning_profile` is not readable by the current Supabase role:
-
-```sql
-GRANT SELECT ON public.user_learning_profile TO service_role;
-```
-
-Retrieval no longer dies when that read fails (it degrades to defaults and logs a warning
-naming the cause), but until the grant is in place the learning-velocity and
-preferred-content-type signals are simply absent from every personalisation decision.
 
 
 ## Data Layer: Supabase & Neo4j Schema
@@ -580,7 +574,7 @@ Hosted in `api_server.py` on port `8001`.
 
 | Method | Route | Description |
 |---|---|---|
-| `POST` | `/api/v1/chat/message` | SSE streaming chat endpoint; yields token events and final structured JSON payload. |
+| `POST` | `/api/v1/chat/message` | SSE-shaped endpoint. Yields one final `result` event with the full structured payload. **Does not actually stream tokens for agent-composed replies** — see the note below. |
 | `POST` | `/api/v1/chat/sessions` | Creates an empty study session. |
 | `GET` | `/api/v1/chat/sessions` | Lists recent study sessions for a user. |
 | `GET` | `/api/v1/chat/sessions/{id}` | Returns full session transcript and presentation history. |
@@ -589,6 +583,19 @@ Hosted in `api_server.py` on port `8001`.
 | `GET` | `/api/v1/agents/status` | Reports active agent catalog and signals. |
 | `POST` | `/api/v1/onboarding/diagnostic` | Generates diagnostic probe questions and evaluates placement score. |
 | `POST` | `/api/v1/coach/run` | Runs the Background Learning Coach over one student's records. `acted: false` is the normal, healthy result. |
+
+> **Known gap: token streaming, checked live 2026-09-14.** The endpoint is SSE-shaped, but a
+> live test against a running server showed zero `token` events for a Learning Agent turn — only
+> `agents/practice_generator.py` ever writes to `utils/stream.py::stream_callback_var`. The
+> solver never did, and the agent loop does not either. Turns run 8–50 seconds end to end, so the
+> student currently waits in silence and then receives the whole reply at once.
+>
+> This is not a small wiring fix. Only the *final* composing pass may stream — an intermediate
+> reasoning or tool-selection step must never be shown to the student — and the Answer Checker
+> runs after composition and can rewrite the draft, so naively streaming the composer's output
+> would show text that then silently changes under the reader. Resolving that or checking
+> incrementally is the open work; see `docs/tasks/00-work-split.md` item C1 in the top-level
+> `aeropt/` workspace.
 
 ---
 
@@ -766,24 +773,17 @@ python main.py
 
 ### Before the agent will work properly
 
-Two migrations and one grant. The service runs without them, but degraded in ways that are
-easy to mistake for working:
+One migration still outstanding as of 2026-09-14 — see the status table in §9. The service runs
+without it, degraded in a way that is easy to mistake for working:
 
 ```sql
 -- db/migrations/006_learner_memory.sql
 --   Without it: the agent remembers nothing between sessions, schedules no reviews, and
 --   records no traces. Memory tools return saved:false rather than failing, so the only
 --   visible symptom is a tutor that never seems to learn anything about its student.
-
--- db/migrations/007_chat_turns_agent_used.sql
---   Without it: insert_chat_turn maps new agent labels onto legacy ones after learning the
---   constraint is narrow. Works, but chat_turns.agent_used cannot distinguish the student's
---   own message from the tutor's.
-
-GRANT SELECT ON public.user_learning_profile TO service_role;
---   Without it: learning velocity and preferred content type are absent from every
---   personalisation decision. Logged as a warning on each retrieval.
 ```
+
+(`007_chat_turns_agent_used.sql` and the `user_learning_profile` grant are both applied.)
 
 ### Watching what the agent actually does
 
