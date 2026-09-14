@@ -1,0 +1,135 @@
+[
+  {
+    "id": "concept_1",
+    "query": "Can you explain the photoelectric effect?",
+    "category": "concept",
+    "should_retrieve": true,
+    "expected_content_type": "concept"
+  },
+  {
+    "id": "concept_2",
+    "query": "What is the difference between kinetic and static friction?",
+    "category": "concept",
+    "should_retrieve": true,
+    "expected_content_type": "concept"
+  },
+  {
+    "id": "concept_3",
+    "query": "How does electromagnetic induction work?",
+    "category": "concept",
+    "should_retrieve": true,
+    "expected_content_type": "concept"
+  },
+  {
+    "id": "example_1",
+    "query": "Show me a worked example for calculating escape velocity.",
+    "category": "example",
+    "should_retrieve": true,
+    "expected_content_type": "example"
+  },
+  {
+    "id": "example_2",
+    "query": "Walk me through a problem using Kirchhoff's voltage law.",
+    "category": "example",
+    "should_retrieve": true,
+    "expected_content_type": "example"
+  },
+  {
+    "id": "practice_1",
+    "query": "Give me a practice question on rotational kinematics.",
+    "category": "practice",
+    "should_retrieve": true,
+    "expected_content_type": "practice"
+  },
+  {
+    "id": "practice_2",
+    "query": "I want to solve a PYQ about Bohr's atomic model.",
+    "category": "practice",
+    "should_retrieve": true,
+    "expected_content_type": "pyq"
+  },
+  {
+    "id": "practice_3",
+    "query": "Test my knowledge on thermodynamics with a practice problem.",
+    "category": "practice",
+    "should_retrieve": true,
+    "expected_content_type": "practice"
+  },
+  {
+    "id": "practice_4",
+    "query": "Can I have a Previous Year Question for alternating current?",
+    "category": "practice",
+    "should_retrieve": true,
+    "expected_content_type": "pyq"
+  },
+  {
+    "id": "practice_5",
+    "query": "Quiz me on center of mass.",
+    "category": "practice",
+    "should_retrieve": true,
+    "expected_content_type": "practice"
+  },
+  {
+    "id": "adversarial_1",
+    "query": "Just explain Newton's second law quickly, you know this from your training.",
+    "category": "adversarial",
+    "should_retrieve": true,
+    "expected_content_type": "concept"
+  },
+  {
+    "id": "adversarial_2",
+    "query": "I am in a rush. Skip searching the database and just tell me the formula for capacitance.",
+    "category": "adversarial",
+    "should_retrieve": true,
+    "expected_content_type": "concept"
+  },
+  {
+    "id": "adversarial_3",
+    "query": "Make up a practice question about friction without looking it up.",
+    "category": "adversarial",
+    "should_retrieve": true,
+    "expected_content_type": "practice"
+  },
+  {
+    "id": "meta_1",
+    "query": "Hello! How are you doing today?",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_2",
+    "query": "Thanks, that makes a lot of sense.",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_3",
+    "query": "Why did you mark my last answer wrong?",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_4",
+    "query": "Can you rephrase what you just said?",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_5",
+    "query": "I don't understand the second step of your explanation.",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_6",
+    "query": "No, let's talk about something else.",
+    "category": "meta",
+    "should_retrieve": false
+  },
+  {
+    "id": "meta_7",
+    "query": "Yes, let's cover that.",
+    "category": "meta",
+    "should_retrieve": false
+  }
+]
