@@ -37,5 +37,6 @@ assets/
 scratch/
 scratch.py
 scripts/
+tests/fixtures/routing_baseline*.json
 .local-run/
 .pytest_cache/
