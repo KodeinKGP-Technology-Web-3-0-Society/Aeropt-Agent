@@ -35,5 +35,7 @@ assets/
 
 # Local scratch work (not part of the project)
 scratch/
+scratch.py
+scripts/
 .local-run/
 .pytest_cache/
