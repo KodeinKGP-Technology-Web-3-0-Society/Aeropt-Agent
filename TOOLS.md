@@ -11,6 +11,7 @@ module nothing imports is a tool the agent silently cannot use.
 | `open_material` | open one specific item the student picked |
 | `suggest_next_material` | what to offer next |
 | `calculate` | exact arithmetic, no variables (`mcp_tools/compute_tools.py`) |
+| **`solve_symbolically`** | rearrange, differentiate, integrate, approximate — exactly |
 | **`check_dimensions`** | is this formula dimensionally possible? |
 | **`verify_result`** | does my answer satisfy the equation, and behave in the limits? |
 | **`check_student_work`** | which line of their working broke, with proof |
@@ -20,6 +21,34 @@ module nothing imports is a tool the agent silently cannot use.
 | `remember_about_learner` | save something durable |
 | `schedule_review` | schedule a revisit |
 | `consult_expert` | hand one narrow job to a temporary expert |
+
+## `solve_symbolically`
+
+`mcp_tools/symbolic_tools.py`, on sympy. JEE physics is algebra with numbers bolted on at
+the end, and a rearrangement the tutor did mentally is the one part of an answer a
+student cannot check for themselves.
+
+| operation | example |
+|---|---|
+| `solve` | `m a = m g \sin\theta - \mu m g \cos\theta` for `a` → `g(\sin\theta - \mu\cos\theta)` |
+| `differentiate` | `A\sin(\omega t)` → `A\omega\cos(\omega t)`; order 2 → `-A\omega^2\sin(\omega t)` |
+| `integrate` | `k x` from `0` to `d` → `\frac{k d^2}{2}` |
+| `approximate` | `\sin\theta` → `\theta - \frac{\theta^3}{6}`; relativistic KE → `\frac{mv^2}{2}` |
+| `limit` | `\frac{\sin x}{x}` as `x\to 0` → `1` |
+| `simplify` / `expand` / `factor` / `substitute` | with `substitutions` applied after any operation, giving the number too |
+
+Three decisions worth knowing:
+
+- **sympy never sees a raw string.** Input is parsed and whitelisted by
+  `utils/mathexpr.py`, then the *validated AST* is converted to sympy expressions node
+  by node. `sympify` on untrusted text executes code; this cannot.
+- **Symbols are positive by default**, which is right for masses, lengths, times and
+  coefficients of friction and lets `\sqrt{m^2}` simplify. The note in every `solve`
+  result says so, because it means a genuinely negative root can be dropped.
+- **Divergent limits are checked numerically.** At a point where an expression stops
+  being real, sympy's sign depends on the branch it picks and is not always the physics
+  (`v \to c` means from below). The samples are reported alongside, and a disagreement
+  between them and the symbolic sign is flagged rather than resolved silently.
 
 ## The physics reasoning tools
 
@@ -100,9 +129,6 @@ change a student's equation.
 
 ## Not here yet
 
-- **Symbolic algebra.** Solving, integrating and simplifying need a CAS. The tools above
-  were chosen because they need no dependency and cover the *checking* half of the
-  problem; deriving is next.
 - **Reading a photo of a student's work.** There is no image input anywhere in the
   stack, so `check_student_work` needs the steps transcribed. This is the biggest
   remaining gap for the "why is my answer wrong" case, since students photograph their
