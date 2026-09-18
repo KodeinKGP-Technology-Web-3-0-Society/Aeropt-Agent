@@ -1,0 +1,333 @@
+"""Derive the syllabus graph — units, chapters, concepts, prerequisites — from the sources.
+
+Nothing here is typed in by hand. The book's own structure supplies it:
+
+  collections/*.collection.xml   volume -> unit -> chapter -> module reading order
+  <glossary><definition>         concept atoms, each with a textbook definition
+  <section><title>               concept atoms for sections the glossary skips
+  <link document="mXXXXX"/>      prerequisite edges (a section citing an earlier one)
+
+Prerequisite direction is `concept REQUIRES earlier_concept`, and an edge is only
+kept when the target sits earlier in reading order. That single rule makes the
+graph acyclic by construction, so no cycle-breaking heuristic is needed.
+
+JEE scope comes from `jee_syllabus.py` (alias match on chapter titles), so every
+concept carries whether it is examinable — the tutor can then be honest about
+scope instead of guessing.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree as ET
+
+from local_ingest.cnxml import parse_module
+from local_ingest.jee_syllabus import OUT_OF_SCOPE_HINTS, alias_index
+
+ROOT = Path(__file__).resolve().parents[1]
+OPENSTAX = ROOT / ".local-run" / "sources" / "openstax"
+
+COL_NS = "http://cnx.rice.edu/collxml"
+MD_NS = "http://cnx.rice.edu/mdml"
+
+_STOP_TITLES = {
+    "introduction", "chapter review", "key terms", "summary", "key equations",
+    "conceptual questions", "problems", "additional problems", "challenge problems",
+    "answer key", "preface", "review", "problems & exercises",
+}
+
+
+def slug(text: str, limit: int = 60) -> str:
+    s = re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")
+    return s[:limit].strip("_")
+
+
+def norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+@dataclass
+class Chapter:
+    chapter_id: str
+    title: str
+    volume: str
+    unit: str
+    jee_unit: str
+    in_syllabus: bool
+    order: int
+    module_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Concept:
+    concept_id: str
+    name: str
+    definition: str
+    chapter_id: str
+    chapter: str
+    unit: str
+    in_syllabus: bool
+    module_id: str
+    order: int
+    aliases: list[str] = field(default_factory=list)
+    source: str = "glossary"
+
+
+def _collection_tree(path: Path) -> tuple[str, list[tuple[str, str, list[str]]]]:
+    """(volume title, [(unit, chapter, [module ids in order])])."""
+    root = ET.parse(path).getroot()
+    vol_title = ""
+    for el in root.iter(f"{{{MD_NS}}}title"):
+        vol_title = (el.text or "").strip()
+        break
+
+    out: list[tuple[str, str, list[str]]] = []
+
+    def title_of(sub: ET.Element) -> str:
+        t = sub.find(f"{{{MD_NS}}}title")
+        return (t.text or "").strip() if t is not None else ""
+
+    def modules_of(sub: ET.Element) -> list[str]:
+        content = sub.find(f"{{{COL_NS}}}content")
+        if content is None:
+            return []
+        return [
+            m.get("document", "")
+            for m in content.findall(f"{{{COL_NS}}}module")
+            if m.get("document")
+        ]
+
+    def walk(sub: ET.Element, unit: str) -> None:
+        content = sub.find(f"{{{COL_NS}}}content")
+        if content is None:
+            return
+        children = content.findall(f"{{{COL_NS}}}subcollection")
+        if not children:
+            return
+        for child in children:
+            title = title_of(child)
+            grandkids = child.find(f"{{{COL_NS}}}content")
+            has_sub = grandkids is not None and grandkids.findall(f"{{{COL_NS}}}subcollection")
+            if has_sub:
+                walk(child, title or unit)
+            else:
+                out.append((unit or vol_title, title, modules_of(child)))
+
+    top = root.find(f"{{{COL_NS}}}content")
+    if top is not None:
+        for sub in top.findall(f"{{{COL_NS}}}subcollection"):
+            title = title_of(sub)
+            inner = sub.find(f"{{{COL_NS}}}content")
+            if inner is not None and inner.findall(f"{{{COL_NS}}}subcollection"):
+                walk(sub, title)
+            else:
+                out.append((vol_title, title, modules_of(sub)))
+    return vol_title, out
+
+
+def _jee_scope(chapter_title: str, unit_title: str) -> tuple[str, bool]:
+    """Map an OpenStax chapter onto a JEE unit by whole-word alias match.
+
+    Token-sequence matching, not substring: "dynamics" must not claim
+    "The First Law of Thermodynamics", which is exactly what a naive `in` test did
+    (it put both thermodynamics chapters under Laws of Motion). Longest alias wins,
+    so a specific chapter name beats a one-word alias.
+    """
+    index = alias_index()
+    key_tokens = norm(chapter_title).split()
+    if not key_tokens:
+        return "", False
+    key = " ".join(key_tokens)
+    if key in index:
+        return index[key][1], True
+
+    best_unit = ""
+    best_len = 0
+    for alias, (_, unit) in index.items():
+        alias_tokens = alias.split()
+        if not alias_tokens:
+            continue
+        if len(alias_tokens) == 1:
+            # A single word only counts as an exact chapter name, never inside one.
+            matched = key_tokens == alias_tokens
+        else:
+            matched = _contains_sequence(key_tokens, alias_tokens) or _contains_sequence(
+                alias_tokens, key_tokens
+            )
+        if matched and len(alias_tokens) > best_len:
+            best_unit, best_len = unit, len(alias_tokens)
+    if best_unit:
+        return best_unit, True
+
+    lowered = chapter_title.lower()
+    if any(hint in lowered for hint in OUT_OF_SCOPE_HINTS):
+        return "", False
+    return "", False
+
+
+def _contains_sequence(haystack: list[str], needle: list[str]) -> bool:
+    n = len(needle)
+    return any(haystack[i : i + n] == needle for i in range(len(haystack) - n + 1))
+
+
+def build_chapters() -> list[Chapter]:
+    chapters: list[Chapter] = []
+    order = 0
+    for col in sorted((OPENSTAX / "collections").glob("*.xml")):
+        volume, entries = _collection_tree(col)
+        for unit, chapter_title, module_ids in entries:
+            if not chapter_title or not module_ids:
+                continue
+            jee_unit, in_syllabus = _jee_scope(chapter_title, unit)
+            order += 1
+            chapters.append(
+                Chapter(
+                    chapter_id=slug(chapter_title),
+                    title=chapter_title,
+                    volume=volume,
+                    unit=unit,
+                    jee_unit=jee_unit,
+                    in_syllabus=in_syllabus,
+                    order=order,
+                    module_ids=module_ids,
+                )
+            )
+    return chapters
+
+
+def build_concepts(
+    chapters: list[Chapter],
+) -> tuple[list[Concept], list[dict[str, str]], dict[str, Any]]:
+    """Concepts from glossary definitions, plus section titles the glossary misses."""
+    module_chapter: dict[str, Chapter] = {}
+    module_order: dict[str, int] = {}
+    ordinal = 0
+    for ch in chapters:
+        for mid in ch.module_ids:
+            module_chapter[mid] = ch
+            ordinal += 1
+            module_order[mid] = ordinal
+
+    parsed: dict[str, Any] = {}
+    by_name: dict[str, Concept] = {}
+    concepts: list[Concept] = []
+
+    def add(
+        name: str, definition: str, mid: str, ch: Chapter, source: str
+    ) -> Concept | None:
+        clean = re.sub(r"\s+", " ", name or "").strip(" .:;")
+        if not clean or len(clean) < 3 or norm(clean) in _STOP_TITLES:
+            return None
+        key = norm(clean)
+        existing = by_name.get(key)
+        if existing:
+            if definition and len(definition) > len(existing.definition):
+                existing.definition = definition
+            return existing
+        cid = slug(clean)
+        if not cid:
+            return None
+        n = 2
+        base = cid
+        while any(c.concept_id == cid for c in concepts):
+            cid = f"{base}_{n}"
+            n += 1
+        concept = Concept(
+            concept_id=cid,
+            name=clean,
+            definition=definition,
+            chapter_id=ch.chapter_id,
+            chapter=ch.title,
+            unit=ch.jee_unit or ch.unit,
+            in_syllabus=ch.in_syllabus,
+            module_id=mid,
+            order=module_order.get(mid, 0),
+            source=source,
+        )
+        by_name[key] = concept
+        concepts.append(concept)
+        return concept
+
+    module_concepts: dict[str, list[str]] = {}
+
+    for ch in chapters:
+        for mid in ch.module_ids:
+            path = OPENSTAX / "modules" / f"{mid}.cnxml"
+            if not path.exists():
+                continue
+            mod = parse_module(path)
+            parsed[mid] = mod
+            ids: list[str] = []
+            for entry in mod.glossary:
+                c = add(entry["term"], entry["meaning"], mid, ch, "glossary")
+                if c:
+                    ids.append(c.concept_id)
+            if not ids:
+                # No glossary in this module — the section titles are the atoms.
+                for sec in mod.sections:
+                    c = add(sec["title"], sec["text"][:400], mid, ch, "section")
+                    if c:
+                        ids.append(c.concept_id)
+                        break
+            # A module's own title is a useful alias for everything it teaches.
+            for cid in ids:
+                concept = next(c for c in concepts if c.concept_id == cid)
+                if mod.title and mod.title not in concept.aliases:
+                    concept.aliases.append(mod.title)
+            module_concepts[mid] = ids
+
+    # ── Prerequisite edges from cross-references, earlier-in-book only ─────────
+    edges: set[tuple[str, str]] = set()
+    for mid, mod in parsed.items():
+        here = module_concepts.get(mid, [])
+        if not here:
+            continue
+        for target in mod.links:
+            if module_order.get(target, 10**9) >= module_order.get(mid, 0):
+                continue  # forward reference: not a prerequisite
+            for src in here:
+                for dst in module_concepts.get(target, [])[:3]:
+                    if src != dst:
+                        edges.add((src, dst))
+
+    # Within a chapter, later concepts depend on the chapter's opening concept.
+    for ch in chapters:
+        chain = [cid for mid in ch.module_ids for cid in module_concepts.get(mid, [])]
+        if len(chain) > 1:
+            root_id = chain[0]
+            for cid in chain[1:]:
+                if cid != root_id:
+                    edges.add((cid, root_id))
+
+    requires = [{"concept_id": a, "requires": b} for a, b in sorted(edges)]
+    return concepts, requires, parsed
+
+
+def build() -> dict[str, Any]:
+    chapters = build_chapters()
+    concepts, requires, parsed = build_concepts(chapters)
+    return {
+        "chapters": chapters,
+        "concepts": concepts,
+        "requires": requires,
+        "modules": parsed,
+    }
+
+
+if __name__ == "__main__":
+    data = build()
+    chapters: list[Chapter] = data["chapters"]
+    concepts: list[Concept] = data["concepts"]
+    print(f"chapters {len(chapters)} ({sum(1 for c in chapters if c.in_syllabus)} in JEE scope)")
+    print(f"concepts {len(concepts)} ({sum(1 for c in concepts if c.in_syllabus)} in scope)")
+    print(f"requires {len(data['requires'])}")
+    print("\nout-of-scope chapters:")
+    for ch in chapters:
+        if not ch.in_syllabus:
+            print(f"  {ch.volume[-1]} | {ch.unit:34} | {ch.title}")
+    print("\nfirst 8 in-scope chapters:")
+    for ch in chapters[:8]:
+        print(f"  {ch.order:3} {ch.title:44} -> {ch.jee_unit or '(out)'} ({len(ch.module_ids)} modules)")

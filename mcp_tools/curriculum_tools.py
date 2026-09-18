@@ -65,18 +65,34 @@ class RetrieveContentArgs(BaseModel):
             "when you want to search for something more specific than they asked."
         ),
     )
+    avoid_repeats: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Skip material this student has already been served. On by default for "
+            "'practice' and 'pyq' — a question they have already attempted teaches "
+            "nothing. Set false only when they explicitly ask to revisit an item."
+        ),
+    )
 
 
 def _chunk_preview(chunk: Dict[str, Any]) -> Dict[str, Any]:
     """A chunk summarised down to what the agent needs to reason about it."""
     text = (chunk.get("core_text") or "").strip()
-    return {
+    preview: Dict[str, Any] = {
         "content_id": chunk.get("content_id"),
         "content_type": chunk.get("content_type"),
         "difficulty": chunk.get("difficulty"),
         "has_solution": bool(chunk.get("solution")),
         "preview": text[:_PREVIEW_CHARS] + ("…" if len(text) > _PREVIEW_CHARS else ""),
     }
+    # The citation is what makes a claim checkable. Quote material that has one and
+    # the student can go and read the source; quote something with none and you are
+    # speaking from memory, which is exactly the distinction to keep visible.
+    if chunk.get("citation"):
+        preview["cite"] = chunk["citation"]
+    if chunk.get("seen_before"):
+        preview["already_seen_by_student"] = True
+    return preview
 
 
 _TEACHING_MODE_ADVICE = {
@@ -207,6 +223,8 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
     # This tool is an explicit agent decision — never let the turn-level
     # skip-retrieval heuristic silently cancel a call the agent chose to make.
     state["_force_retrieval"] = True
+    if args.avoid_repeats is not None:
+        state["_exclude_seen"] = bool(args.avoid_repeats)
 
     result = graphrag_retriever_node(state)  # type: ignore[arg-type]
     if result.get("error"):
@@ -249,6 +267,7 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
         "retrieval_confidence": confidence,
         "chunks_found": len(chunks),
         "chunks": [_chunk_preview(c) for c in chunks[:5]],
+        "sources": list(dict.fromkeys(result.get("retrieval_citations") or []))[:5],
         "student_proficiency_on_concept": (
             round(float(target.get("proficiency_score")), 2)
             if target.get("proficiency_score") is not None
@@ -265,6 +284,18 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
     suggestion = _teaching_suggestion(result)
     if suggestion:
         payload["teaching_signal"] = suggestion
+
+    novelty = result.get("retrieval_novelty") or {}
+    if novelty.get("enforced"):
+        payload["novelty"] = {
+            "already_seen_filtered_out": novelty.get("filtered_already_seen", 0),
+            "pool_exhausted": bool(novelty.get("pool_exhausted")),
+        }
+    # Notes the retrieval layer wants honoured verbatim — out-of-syllabus, weak
+    # grounding, exhausted question pool. They are instructions about honesty, not
+    # decoration; the payload carries them so the composing model sees them.
+    for note in result.get("retrieval_notes") or []:
+        payload.setdefault("guidance", []).append(note)
 
     if confidence == "low":
         payload["note"] = (

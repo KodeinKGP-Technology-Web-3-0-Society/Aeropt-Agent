@@ -52,6 +52,7 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarning)
 
 import logging
+from contextlib import asynccontextmanager
 import threading
 from typing import Any, Dict, List, Optional
 import asyncio
@@ -95,7 +96,24 @@ logging.basicConfig(
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="JEE Tutor Agent API", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Load the local retrieval index before the first student turn, not during it."""
+    if config.local_retrieval():
+        try:
+            from retrieval import service as retrieval_service
+
+            result = retrieval_service.warm()
+            logging.getLogger("aeropt.startup").warning(
+                "local retrieval index: %s",
+                retrieval_service.status() if result.get("warmed") else result,
+            )
+        except Exception as exc:  # noqa: BLE001 — a cold index must not stop the server
+            logging.getLogger("aeropt.startup").warning("local retrieval warm-up failed: %s", exc)
+    yield
+
+
+app = FastAPI(title="JEE Tutor Agent API", version="1.0.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

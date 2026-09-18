@@ -1,0 +1,215 @@
+# Local retrieval pipeline
+
+Everything the tutor knows, derived from sources by a script, with a retrieval path
+that answers in single-digit milliseconds and refuses to invent grounding.
+
+Selected by `RETRIEVAL_BACKEND=local` in `.env.local`. The deployed service does not
+set it, so Neo4j Aura + Gemini embeddings remain exactly as they were.
+
+```bash
+make index            # derive syllabus + corpus, embed, write the index (~4 s)
+make index-fetch      # same, downloading any missing OpenStax modules first
+make retrieval-bench  # time a standard query set
+.venv/bin/python -m retrieval.cli "why does a rolling ball not slip"
+.venv/bin/python -m retrieval.cli --type practice --user u1 "friction questions"
+.venv/bin/python -m retrieval.cli --status
+```
+
+## What changed, in numbers
+
+| | before | now |
+|---|---|---|
+| Syllabus concepts | 33, hand-mapped | **1016 derived**, each with a textbook definition |
+| Chapters | 3 | **44** (42 mapped to JEE units, 2 flagged beyond syllabus) |
+| Retrievable items | 203 | **10,055** |
+| Questions with worked solutions | ~160 | **3,987** |
+| PYQs usable | 134 of 818 | **846** (the rest were dropped for want of concepts to map onto) |
+| In-scope concepts with no material | 20 | **0** |
+| Warm retrieval latency | ~1700 ms (Gemini embed + Aura) | **~6-11 ms** |
+| Query-time network calls | 2 | **0** |
+| Concept resolution | whole taxonomy in an LLM prompt | embeddings + aliases, **~0.3 ms**, no LLM |
+| Corpus rebuild | minutes (per-item embed API) | **~4 s** |
+
+## Sources
+
+Nothing is hand-extracted. `local_ingest/` downloads and parses:
+
+| Source | What it gives | Licence |
+|---|---|---|
+| OpenStax University Physics (322 CNXML modules) | 951 theory sections, 487 worked examples with solutions, 5001 exercises, 1024 glossary definitions, 270 chapter summaries, the chapter/section tree, cross-reference links | CC BY-NC-SA 4.0 |
+| HuggingFace JEE Main/Advanced PYQ sets | 818 past questions, 719 with solutions | past exam papers |
+| JEE-Bench | 515 JEE Advanced questions with verified gold answers (physics subset) | past exam papers |
+
+`ncert.nic.in` is unreachable from this machine (TLS handshake fails), which is why
+OpenStax is the theory source. **The licence is non-commercial**: fine for local
+development, not for a paid product. Swapping the source means writing one parser —
+every item carries `source_book`, `source_ref` and `license`, and the syllabus is
+derived from structure, so nothing downstream is hard-wired to OpenStax.
+
+## Exam level: Main and Advanced, not Advanced-only
+
+| | JEE Main | JEE Advanced | labelled for both |
+|---|---|---|---|
+| PYQs | 676 (all with solutions) | 170 (all with solutions) | — |
+| Practice questions | — | — | 4,967 |
+| Theory / worked examples | — | — | 3,756 / 486 |
+
+`target_exam` filters PYQs exactly (a Main request never returns an Advanced paper).
+The 4,967 textbook exercises carry no exam label, so what separates the two exams there
+is the **difficulty band**: `EXAM_DIFFICULTY_TARGET` aims Main at 3 and Advanced at 4,
+and `search._rank` keeps only questions within ±1 of that target whenever enough exist.
+Measured over 6 concepts × 5 results: Main `{2:7, 3:22, 4:1}`, Advanced `{3:25, 4:5}`.
+A learner-specific `difficulty_target` from the planner overrides the exam default.
+
+Advanced PYQ depth (170) is a **source** limit, not a pipeline one. The readily
+available Advanced sets — e.g. the MIT-licensed `Reja1/jee-neet-benchmark` — ship the
+papers as page scans, so adding them needs an OCR pass before ingest. The 348
+challenge-tier textbook problems are what currently carries Advanced-level practice.
+
+## The syllabus is derived, not typed
+
+`local_ingest/syllabus.py` builds the graph from the book's own structure:
+
+- **chapters and reading order** from `collections/*.collection.xml`;
+- **concepts** from `<glossary><definition>` — a real term with a real definition —
+  falling back to section titles where a module has no glossary;
+- **prerequisites** from `<link document="...">` cross-references, kept only when the
+  target sits *earlier* in reading order. That rule makes the graph acyclic by
+  construction rather than by cycle-breaking, and the test suite asserts it.
+- **JEE scope** from `local_ingest/jee_syllabus.py`, the one hand-written file:
+  20 units, 29 chapter names, 218 aliases. It is scope metadata, not content — it is
+  what lets the tutor say "that is beyond your syllabus" instead of guessing.
+
+Concept assignment for each chunk is embedding-based within the candidate set the
+book structure already implies (the module's concepts, then the chapter's). No keyword
+tables: the previous pipeline needed 33 hand-written keyword groups plus 16
+hand-written "gap cards" and still covered three chapters.
+
+## The retrieval path
+
+```
+query
+  ├─ gate        deterministic: retrieve | reuse | skip | clarify        ~0.1 ms
+  ├─ resolver    aliases → chapter → material vote → nearest concept     ~0.3-10 ms
+  ├─ scope       concept → +prerequisites → +chapter, widened until the
+  │              candidate pool is big enough to rank meaningfully
+  ├─ BM25        FTS5 over the candidate set only                        ~1-3 ms
+  ├─ dense       numpy dot over the candidates' vectors                  ~0.1 ms
+  ├─ fusion      reciprocal rank fusion, primary-concept boost, difficulty targeting
+  ├─ novelty     drop what this student has already been served, by id and fingerprint
+  └─ diversity   MMR, so five paraphrases of one paragraph don't fill the answer
+```
+
+Two files, two lifetimes: `.local-run/index/corpus.sqlite3` is rebuilt by every
+ingest, `.local-run/index/ledger.sqlite3` never is. That is why "don't show me that
+question again" survives a corpus rebuild.
+
+Embeddings are static (`minishlab/potion-base-8M`, 256-d, snapshotted into
+`.local-run/models` so a query never needs the network). A static model is weaker per
+vector than Gemini, which is why it is never asked to work alone — the concept graph
+and BM25 carry precision, dense similarity carries recall, and rank fusion combines
+them. `AEROPT_EMBED_BACKEND=gemini` switches the whole pipeline back to hosted
+embeddings if you want matched vectors; the index records which model built it.
+
+## How it avoids hallucinating
+
+1. **Unresolved stays unresolved.** A query nothing in the syllabus matches returns no
+   material and a note telling the tutor to say so. It never falls back to "the
+   nearest concept" and dresses an off-topic answer in real physics.
+2. **Grounding is graded, not binary.** Resolution returns `strong` / `weak` / `none`.
+   Calibration showed concept-name similarity *cannot* separate physics from other
+   subjects (physics 0.37-0.88, other subjects 0.16-0.42, overlapping); similarity to
+   the best-matching chunk separates far better (0.51-0.89 vs 0.22-0.52). `weak`
+   material reaches the tutor with an explicit "this may not be what they asked".
+3. **Every chunk is citable.** `citation` is book + chapter + section, or the exam
+   paper and question id. A claim with no citation behind it is visibly the model's
+   own recall.
+4. **Questions carry verified solutions.** 3,987 questions have stored solutions or
+   answer keys, and `require_solution` prefers them, so "practice" does not mean
+   "invent a question and hope the answer is right".
+5. **Out-of-syllabus content is flagged, not hidden.** Relativity and particle physics
+   stay in the corpus with `in_syllabus = 0` and come with a note.
+
+## How it avoids repeating a question
+
+`store.served` records every question shown to a student — content id, concept,
+fingerprint, timestamp, and a count. Retrieval excludes them **before** ranking, both
+by id and by a shingle fingerprint, so the same problem reworded by another source
+still cannot come back. The gate also detects "another one" / "next question" and
+marks the turn as novelty-required even for a theory request.
+
+When a concept runs dry the pipeline says so rather than quietly recycling:
+
+| field | meaning |
+|---|---|
+| `concept_unseen_remaining` / `concept_question_total` | the honest budget for this concept |
+| `concept_pool_exhausted` | every question on this concept has been served |
+| `borrowed_from_neighbours` | these came from sibling concepts in the chapter — tell the student |
+| `pool_exhausted` | even the wider pool is drained; the items are the least recently seen |
+
+`service.forget(user_id[, concept_id])` clears the ledger for a fresh revision cycle.
+
+## When retrieval is skipped
+
+`retrieval/gate.py` decides before any model call, and returns four outcomes rather
+than a yes/no:
+
+| turn | decision |
+|---|---|
+| "hi there", "thanks, that helped!", "ok got it" | `skip` — nothing to ground |
+| "what is 45*3", "calculate 12.5 / 4" | `skip` — the calculator answers it |
+| "(b)", "9.8 m/s^2" while a question is pending | `skip` — that is an answer being submitted |
+| "explain that again but shorter", "why was my answer wrong?" | `reuse` — the material in hand covers it |
+| "and this one?" | `reuse`, but re-checked after resolution: if the concept moved, it retrieves |
+| "give me another question" | `retrieve` with novelty enforced |
+| anything substantive | `retrieve` |
+
+The old gate asked an LLM "is this a meta turn?" on every doubt turn — a network round
+trip to save a network round trip. Rules decide here, and when they are unsure they
+default to retrieving, because a needless retrieval costs ~10 ms while a missed one
+costs grounding. `AEROPT_GATE_LLM=1` restores the classifier for the ambiguous middle.
+
+## Files
+
+| file | role |
+|---|---|
+| `local_ingest/fetch_openstax.py` | download the CNXML bundle |
+| `local_ingest/mathml.py` | MathML → LaTeX |
+| `local_ingest/cnxml.py` | one module → sections, examples, exercises, glossary |
+| `local_ingest/jee_syllabus.py` | JEE units, chapters, aliases (scope metadata) |
+| `local_ingest/syllabus.py` | chapters, concepts, prerequisite graph, JEE mapping |
+| `local_ingest/corpus.py` | every item from every source + concept mapping |
+| `local_ingest/build_index.py` | orchestration, SQLite + vectors, Postgres mirror, report |
+| `retrieval/embedder.py` | static (or Gemini) embeddings |
+| `retrieval/store.py` | SQLite schema, reads, the served ledger |
+| `retrieval/gate.py` | does this turn need retrieval |
+| `retrieval/resolver.py` | query → concept, with graded evidence |
+| `retrieval/search.py` | scope → BM25 + dense → fusion → novelty → MMR |
+| `retrieval/service.py` | the public API and the grounding pack |
+| `retrieval/bridge.py` | GraphRAG-shaped adapter for the existing graph |
+| `retrieval/local_graph.py` | Neo4j-shaped client over the index, for follow-ups, suggestions, quiz decomposition and `search_knowledge_graph` |
+| `retrieval/cli.py` | inspect, bench, clear a ledger |
+| `tests/test_retrieval_local.py` | the four guarantees, asserted |
+
+## The rest of the agent
+
+Four call sites talked to Neo4j directly — follow-up suggestions,
+`generate_suggestions`, quiz step decomposition and `search_knowledge_graph`. They now
+ask `retrieval.local_graph.graph_client()`, which hands back the Aura client when
+`RETRIEVAL_BACKEND=neo4j` and a SQLite-backed object with the same method names when
+it is `local`. So the local setup needs no Neo4j at all, and nothing in the agent had
+to learn a second data-access style.
+
+One contract does differ, deliberately: `vector_search` refuses a 3072-d Gemini vector
+against the 256-d local index instead of ranking noise, and `search_knowledge_graph`
+embeds with whichever model built the index it is querying.
+
+## Rebuilding after changing a source
+
+```bash
+make index            # ~4 s: re-derives the syllabus and the whole corpus
+.venv/bin/python -m pytest tests/test_retrieval_local.py
+```
+
+The build prints per-unit coverage, weak concept mappings and any in-scope concept
+left with no material — read that report, it is the quality signal.

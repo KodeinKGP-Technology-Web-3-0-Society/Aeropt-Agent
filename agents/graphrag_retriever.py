@@ -76,6 +76,15 @@ def _build_prereq_states(
 
 
 def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
+    # The local backend does its own resolution, gating, novelty filtering and
+    # hybrid search, and returns this node's exact output shape (retrieval/bridge.py).
+    # It is selected by RETRIEVAL_BACKEND=local in .env.local; the deployed service
+    # never sets it, so everything below is untouched for Aura.
+    if config.local_retrieval():
+        from retrieval.bridge import retrieve_for_state
+
+        return retrieve_for_state(dict(state))
+
     if not state.get("primary_concept_id"):
         # Concept Resolver couldn't match this query to anything in the syllabus
         # (in_scope=False) — there is nothing to retrieve, and reusing whatever

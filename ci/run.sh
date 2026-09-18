@@ -27,7 +27,8 @@ fi
 echo "==> [agent] syntax"
 "$PYTHON" -m compileall -q \
   -x '(Aeropt-backend-main|Aeropt-frontend-main|scratch|\.venv|venv)' \
-  agents graph mcp_tools models services utils db api_server.py config.py main.py
+  agents graph mcp_tools models services utils db retrieval local_ingest \
+  api_server.py config.py main.py
 
 echo "==> [agent] tests"
 "$PYTHON" -m pytest tests/

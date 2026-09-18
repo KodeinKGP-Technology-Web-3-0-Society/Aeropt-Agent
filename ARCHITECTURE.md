@@ -294,7 +294,7 @@ The LangGraph around this is only structural: `bootstrap → [button click?] →
 | Calculator | `calculate` | Connected. `mcp_tools/compute_tools.py` |
 | Mathematics tool | — | Slot only. Symbolic CAS is deliberately not in the calculator. |
 | Diagram tool | — | Not connected. Retrieved content can include stored figures; the agent cannot generate a diagram. |
-| Curriculum tool | `resolve_concept`, `retrieve_content`, `open_material`, `suggest_next_material` | Connected. Further than the generic plan assumed. |
+| Curriculum tool | `resolve_concept`, `retrieve_content`, `open_material`, `suggest_next_material` | Connected. Further than the generic plan assumed. Locally (`RETRIEVAL_BACKEND=local`) this runs on a derived 1016-concept syllabus and a 10k-item corpus with citations, novelty tracking and a deterministic retrieval gate — see `RETRIEVAL.md`. The deployed path is unchanged. |
 | Research tool | — | Not connected. |
 | Memory lookup | `get_learner_context` | Connected, but migration `006_learner_memory.sql` is not applied live, so recall degrades. |
 | Learner progress | `get_learner_context` (same call) | Connected. |

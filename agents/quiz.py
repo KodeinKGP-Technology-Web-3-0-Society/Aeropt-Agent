@@ -39,7 +39,7 @@ def _clean_output(raw: str) -> str:
 
 import config
 from db.supabase_client import db
-from db.neo4j_client import graph_db
+from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from models.state import TutorState
 # Reuse Solver's image + formulae helpers so quiz content renders identically.
 from agents.solver import _image_urls, _formulae_block, _render_math_text
@@ -233,7 +233,7 @@ def quiz_node(state: TutorState) -> Dict[str, Any]:
             return {"error": f"No concept state for {user_id}/{primary_id}"}
 
         # 2. Neo4j: get prerequisite chain for step decomposition
-        prereq_chain = graph_db.get_requires_chain_for_quiz(primary_id, max_depth=2)
+        prereq_chain = graph_client().get_requires_chain_for_quiz(primary_id, max_depth=2)
 
         prereq_text_lines = [
             f"  depth={p['depth']}: {p['concept_id']} ({p.get('concept_name', '')})"

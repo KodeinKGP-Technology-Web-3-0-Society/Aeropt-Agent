@@ -8,7 +8,11 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarning)
 
-load_dotenv()
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+load_dotenv(_ROOT / ".env")
+load_dotenv(_ROOT / ".env.local", override=True)
 
 # Fix SSL certificate verification for Neo4j Aura on Windows.
 # Must be set before the neo4j driver is imported anywhere.
@@ -96,13 +100,29 @@ EMBEDDING_MODEL = "gemini-embedding-2"
 # was unaffected, which is why the graph could look healthy while chat was not.
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 
+# ── Retrieval backend ─────────────────────────────────────────────────────────
+# "neo4j"  the deployed path: Neo4j Aura graph + Gemini query embeddings.
+# "local"  the local path: SQLite + FTS5 + static embeddings under .local-run/index,
+#          built by `python -m local_ingest.build_index`. No network per query
+#          (~6 ms warm vs ~1700 ms for embed + Aura vector search), and it carries
+#          the full derived syllabus rather than the three hand-mapped chapters.
+#
+# Set in .env.local so the deployed service keeps its own behaviour untouched.
+RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "neo4j").strip().lower()
+LOCAL_INDEX_DIR = os.getenv("AEROPT_INDEX_DIR", str(_ROOT / ".local-run" / "index"))
+
+
+def local_retrieval() -> bool:
+    return RETRIEVAL_BACKEND == "local"
+
+
 # ── Neo4j vector index ────────────────────────────────────────────────────────
 NEO4J_VECTOR_INDEX = "content_vector_index"
 NEO4J_VECTOR_TOP_K = 5
 NEO4J_PREREQ_DEPTH = 3
-# Must be >= total Content nodes (currently 639). Used as fetch_k when
-# candidate_ids filtering is active so no candidate is missed.
-NEO4J_CONTENT_CORPUS_SIZE = 700
+# Must be >= total Content nodes. Used as fetch_k when candidate_ids
+# filtering is active so no graph-filtered candidate is missed.
+NEO4J_CONTENT_CORPUS_SIZE = int(os.getenv("NEO4J_CONTENT_CORPUS_SIZE", "2000"))
 
 # ── Retrieval Confidence ──────────────────────────────────────────────────────
 # well-matched queries scored 0.7+, off-syllabus queries scored below 0.45 in calibration on 2026-09-09

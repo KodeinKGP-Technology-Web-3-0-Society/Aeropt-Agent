@@ -198,11 +198,61 @@ def _extract_json(text: str) -> Dict[str, Any]:
     raise json.JSONDecodeError("Could not parse resolver output", text, 0)
 
 
+def _resolve_local(args: ResolveConceptIdArgs) -> Dict[str, Any]:
+    """Local backend: embeddings + aliases + material voting, no LLM, ~1 ms.
+
+    The prompt-based path below lists every concept for the model to choose from.
+    That was fine at 33 concepts; the derived syllabus has over a thousand, where the
+    list alone would dominate the turn and the choice would get worse, not better.
+    """
+    from retrieval import resolver
+    from retrieval.gate import infer_content_type
+
+    valid_stages = {"theory", "example", "practice", "pyq"}
+    if args.roadmap_concept_id:
+        from retrieval import store
+
+        if store.concept(args.roadmap_concept_id):
+            stage = args.study_stage if args.study_stage in valid_stages else infer_content_type(args.query)
+            return {
+                "in_scope": True,
+                "primary_concept_id": args.roadmap_concept_id,
+                "secondary_concept_ids": [],
+                "content_type_requested": stage,
+            }
+
+    res = resolver.resolve(args.query, recent_turns=args.recent_turns)
+    if not res.in_scope:
+        return {
+            "in_scope": False,
+            "primary_concept_id": None,
+            "secondary_concept_ids": [],
+            "content_type_requested": infer_content_type(args.query),
+            "grounding_strength": res.strength,
+        }
+    stage = args.study_stage if args.study_stage in valid_stages else infer_content_type(args.query)
+    return {
+        "in_scope": True,
+        "primary_concept_id": res.concept_id,
+        "secondary_concept_ids": [
+            c["concept_id"] for c in res.candidates[1:3] if c.get("concept_id") != res.concept_id
+        ],
+        "content_type_requested": stage,
+        "concept_name": res.concept_name,
+        "chapter": res.chapter,
+        "in_jee_syllabus": res.in_syllabus,
+        "grounding_strength": res.strength,
+        "matched_by": res.how,
+    }
+
+
 def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
     """
     Maps a natural language query to the exact taxonomy concept IDs and content type.
     """
     try:
+        if config.local_retrieval():
+            return _resolve_local(args)
         concepts = db.read_concepts()
         if not concepts:
             raise ValueError("No concepts found in Supabase.")

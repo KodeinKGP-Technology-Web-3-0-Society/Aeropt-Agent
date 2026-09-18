@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 import config
 from db.supabase_client import db
-from db.neo4j_client import graph_db
+from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from google import genai
 
 _genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
@@ -28,6 +28,16 @@ class SearchKnowledgeGraphArgs(BaseModel):
 
 
 def _embed_query(text: str) -> List[float]:
+    """Embed with whichever model built the index in use.
+
+    Mixing the two is not a degradation, it is nonsense: a 3072-d Gemini vector has
+    no meaningful dot product with a 256-d static one, and the local client rejects
+    it rather than ranking noise.
+    """
+    if config.local_retrieval():
+        from retrieval import embedder
+
+        return [float(x) for x in embedder.encode_one(text)]
     result = _genai_client.models.embed_content(
         model=config.EMBEDDING_MODEL,
         contents=text,
@@ -45,7 +55,7 @@ def search_knowledge_graph(args: SearchKnowledgeGraphArgs) -> List[Dict[str, Any
         _EXAMPLE_CASCADE = ["example", "practice", "pyq"]
 
         def _get_for_type(ctype: Optional[str], cid: str, limit: int = 30) -> List[str]:
-            return graph_db.get_content_ids_for_concept(
+            return graph_client().get_content_ids_for_concept(
                 cid,
                 content_type=ctype,
                 target_exam=args.target_exam,
@@ -89,7 +99,7 @@ def search_knowledge_graph(args: SearchKnowledgeGraphArgs) -> List[Dict[str, Any
 
         # ── STAGE 3: Semantic Rank (Vector Search) ────────────────────────────
         query_vector = _embed_query(args.query)
-        vector_results = graph_db.vector_search(
+        vector_results = graph_client().vector_search(
             query_vector=query_vector,
             top_k=20,
             candidate_ids=candidate_ids if candidate_ids else None,

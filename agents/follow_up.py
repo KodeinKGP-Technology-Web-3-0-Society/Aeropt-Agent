@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 from db.supabase_client import db
-from db.neo4j_client import graph_db
+from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from models.state import TutorState
 # Image-URL construction (incl. comma-separated image_filename handling) lives
 # in solver.py so Solver, Follow-Up and Quiz stay in lock-step.
@@ -450,7 +450,7 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
         difficulty_max = max(1, min(4, int(proficiency * 4) + 1))
 
         # 3. Neo4j: find unseen, appropriately-difficult content for the concept
-        candidate_ids = graph_db.get_content_ids_for_follow_up(
+        candidate_ids = graph_client().get_content_ids_for_follow_up(
             concept_id=primary_id,
             seen_ids=list(all_excluded),
             difficulty_max=difficulty_max,
@@ -458,7 +458,7 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
         )
 
         if not candidate_ids:
-            candidate_ids = graph_db.get_content_ids_for_follow_up(
+            candidate_ids = graph_client().get_content_ids_for_follow_up(
                 concept_id=primary_id,
                 seen_ids=list(all_excluded),
                 difficulty_max=5,

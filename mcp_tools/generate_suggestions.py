@@ -10,7 +10,7 @@ import re
 
 import config
 from db.supabase_client import db
-from db.neo4j_client import graph_db
+from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from utils.llm import groq_complete
 from utils.presentation import filter_picker_suggestions
 from groq import Groq
@@ -59,7 +59,7 @@ def generate_suggestions(args: GenerateSuggestionsArgs) -> List[Dict[str, Any]]:
         difficulty_max = max(1, min(4, int(args.proficiency * 4) + 1))
 
         # 3. Neo4j candidate search
-        candidate_ids = graph_db.get_content_ids_for_follow_up(
+        candidate_ids = graph_client().get_content_ids_for_follow_up(
             concept_id=args.primary_concept_id,
             seen_ids=list(all_excluded),
             difficulty_max=difficulty_max,
@@ -67,7 +67,7 @@ def generate_suggestions(args: GenerateSuggestionsArgs) -> List[Dict[str, Any]]:
         )
 
         if not candidate_ids:
-            candidate_ids = graph_db.get_content_ids_for_follow_up(
+            candidate_ids = graph_client().get_content_ids_for_follow_up(
                 concept_id=args.primary_concept_id,
                 seen_ids=list(all_excluded),
                 difficulty_max=5,
