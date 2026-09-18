@@ -146,8 +146,11 @@ class ToolSpec:
     def schema(self) -> Dict[str, Any]:
         """OpenAI/Groq function-calling schema for this tool."""
         params = self.args_model.model_json_schema()
-        # Inline $defs: some providers reject $ref-bearing function schemas.
-        params.pop("$defs", None)
+        # Some providers reject $ref-bearing function schemas, so nested models are
+        # inlined. Dropping $defs without substituting the references it holds — which
+        # is what this did before — leaves a dangling $ref, and the tool is then either
+        # rejected outright or quietly never called.
+        params = _inline_refs(params, params.pop("$defs", {}) or {})
         params.pop("title", None)
         return {
             "type": "function",
@@ -157,6 +160,32 @@ class ToolSpec:
                 "parameters": params,
             },
         }
+
+
+def _inline_refs(node: Any, defs: Dict[str, Any], depth: int = 0) -> Any:
+    """Replace every {"$ref": "#/$defs/X"} with the definition of X, recursively.
+
+    Bounded depth so a self-referential model cannot spin forever; at the limit the
+    reference becomes a permissive object rather than a broken pointer.
+    """
+    if depth > 6:
+        return {"type": "object"}
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target = defs.get(ref.split("/")[-1])
+            if target is None:
+                return {"type": "object"}
+            merged = {**_inline_refs(target, defs, depth + 1)}
+            merged.pop("title", None)
+            for key, value in node.items():
+                if key != "$ref":
+                    merged[key] = _inline_refs(value, defs, depth + 1)
+            return merged
+        return {key: _inline_refs(value, defs, depth + 1) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_inline_refs(item, defs, depth + 1) for item in node]
+    return node
 
 
 # ── Decorator helper ──────────────────────────────────────────────────────────
