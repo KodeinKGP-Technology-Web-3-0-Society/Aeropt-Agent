@@ -58,22 +58,26 @@ DIAGNOSTIC_MODEL = "openai/gpt-oss-20b"
 CONTEXT_MANAGER_MODEL = "openai/gpt-oss-20b"
 
 # Generation agents → larger reasoning models
-# qwen/qwen3-32b was removed from Groq (Jul 2026); qwen3.6-27b is the replacement.
-SOLVER_MODEL = "qwen/qwen3.6-27b"
+# Catalog drift, checked live on 2026-09-18 (`client.models.list()`): qwen/qwen3.6-27b
+# is now gone too — the fourth removal on this account. It was SOLVER_MODEL, QUIZ_MODEL
+# and the first agent fallback, so every solver and quiz call spent a round trip failing
+# before the fallback chain rescued it. Live chat models on this account right now:
+# openai/gpt-oss-120b, openai/gpt-oss-20b, openai/gpt-oss-safeguard-20b, qwen/qwen3.8-27b.
+SOLVER_MODEL = "qwen/qwen3.8-27b"
 SOCRATIC_MODEL = "openai/gpt-oss-120b"
-QUIZ_MODEL = "qwen/qwen3.6-27b"
+QUIZ_MODEL = "qwen/qwen3.8-27b"
 
 # ── Fallback chains (used when primary model is over capacity / unavailable) ──
 # Listed in preference order — first available wins. Every entry below is
 # confirmed live (see note above); none of these repeat the model it's a
 # fallback for.
 SOLVER_FALLBACK_MODELS = [
-    "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
 ]
 QUIZ_FALLBACK_MODELS = [
-    "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
 ]
 SOCRATIC_FALLBACK_MODELS = [
     "qwen/qwen3.8-27b",
@@ -169,8 +173,8 @@ CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
 # degrades into a chatbot with no access to the syllabus.
 LEARNING_AGENT_MODEL = "openai/gpt-oss-120b"
 LEARNING_AGENT_FALLBACK_MODELS = [
-    "qwen/qwen3.6-27b",
     "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
 ]
 
 # Reasoning steps per turn. Enough for resolve -> retrieve -> verify -> compose,
