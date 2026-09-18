@@ -232,19 +232,17 @@ class Neo4jClient:
                 "candidate_ids": candidate_ids,
                 "top_k": top_k,
             })
-        else:
-            # No candidate filter — standard top-k global search.
-            cypher = """
-            CALL db.index.vector.queryNodes($index_name, $top_k, $query_vector)
-            YIELD node, score
-            RETURN node.content_id AS content_id, score
-            ORDER BY score DESC
-            """
-            return self._run(cypher, {
-                "index_name": config.NEO4J_VECTOR_INDEX,
-                "top_k": top_k,
-                "query_vector": query_vector,
-            })
+        cypher = """
+        CALL db.index.vector.queryNodes($index_name, $top_k, $query_vector)
+        YIELD node, score
+        RETURN node.content_id AS content_id, score
+        ORDER BY score DESC
+        """
+        return self._run(cypher, {
+            "index_name": config.NEO4J_VECTOR_INDEX,
+            "top_k": top_k,
+            "query_vector": query_vector,
+        })
 
     # ─────────────────────── Health check ─────────────────────────────────────
 
