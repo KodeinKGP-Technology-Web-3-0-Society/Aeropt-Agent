@@ -60,6 +60,7 @@ def _import_tools() -> None:
     import mcp_tools.compute_tools      # noqa: F401
     import mcp_tools.curriculum_tools   # noqa: F401
     import mcp_tools.learner_tools      # noqa: F401
+    import mcp_tools.physics_tools      # noqa: F401
     import mcp_tools.handoff            # noqa: F401
 
 
