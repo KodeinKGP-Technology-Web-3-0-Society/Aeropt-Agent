@@ -1,4 +1,4 @@
-.PHONY: ci test deploy ingest-local index index-fetch retrieval-bench
+.PHONY: ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture
 
 ci:
 	bash ci/run.sh
@@ -24,3 +24,8 @@ index-fetch:
 
 retrieval-bench:
 	.venv/bin/python -m retrieval.cli --bench
+
+# Dump corpus text (as the student would see it) into the frontend's KaTeX fixture,
+# then run the contract there:  cd ../Aeropt-frontend && npm run test:latex
+latex-fixture:
+	.venv/bin/python -m local_ingest.latex_fixture --limit 1200

@@ -191,6 +191,38 @@ costs grounding. `AEROPT_GATE_LLM=1` restores the classifier for the ambiguous m
 | `retrieval/cli.py` | inspect, bench, clear a ledger |
 | `tests/test_retrieval_local.py` | the four guarantees, asserted |
 
+## LaTeX that renders
+
+Corpus text and model output both reach the same renderer, so both are held to one
+contract: **every math span must parse, and no valid maths may be lost.**
+
+| stage | where | what it does |
+|---|---|---|
+| ingest | `local_ingest/corpus.latex_safe` | fixes source quirks (`\mathcal{l}`, `^\circC`, `\mspace`, double subscripts, `½`, `ℏ`), converts `\(…\)`/`\[…\]`, delimits bare TeX in prose, escapes prices, balances delimiters — and strips delimiters from the few chunks that cannot be repaired |
+| outbound | `agents/solver.prepare_student_markdown` | the same rules on model output, plus `harden_math_spans`: a span that will not parse ships as text, not as a red error |
+| render | `Aeropt-frontend/src/lib/mathHarden.ts` | KaTeX itself vetoes each span, and the preprocessing pipeline that scores worse is discarded |
+| guarantee | `Aeropt-frontend/src/lib/rehypeKatexSafe.ts` | runs after rehype-katex: any error node left becomes the formula as `code`, so a red error cannot reach a student |
+
+Measured with real KaTeX over 1,900 corpus samples and 24 adversarial agent outputs
+(`cd ../Aeropt-frontend && npm run test:latex`):
+
+| | failures |
+|---|---|
+| before | 386 broken spans, 219 documents with a swallowed paragraph |
+| after (span audit) | **0 of ~5,400 spans**, 0 unbalanced documents |
+| after (real remark-math → rehype-katex render) | **0 error nodes** in 1,504 documents / 5,359 rendered formulas |
+
+The classes that were breaking: a price in prose (`$0.0900 per kWh`) opening a math
+span and eating the paragraph; `^\circC` parsing as one undefined macro (every
+temperature in the corpus); `\text{log}` losing operator spacing (1,253 spans); braces
+from MathML fences left unbalanced (54 piecewise definitions); `\mathcal{l}` for ℓ (116
+spans); and `$1036$` in a table of values being mistaken for money.
+
+Two rules earn their keep. **Escapes are not braces** — counting `\{` as a group
+reported every valid `\left\{ … \right.` as broken. And **preprocessing may not make
+a message worse** — the wrapping heuristics have to guess where maths starts in prose,
+so both pipelines run and KaTeX picks the winner.
+
 ## The rest of the agent
 
 Four call sites talked to Neo4j directly — follow-up suggestions,

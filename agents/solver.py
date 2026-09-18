@@ -34,7 +34,9 @@ from models.state import TutorState
 from utils.latex_guidelines import (
     LATEX_OUTPUT_RULES,
     balance_dollar_delimiters,
+    escape_currency_dollars,
     find_latex_issues,
+    harden_math_spans,
     sanitize_chunk_text_for_prompt,
 )
 from utils.llm import groq_complete
@@ -435,8 +437,14 @@ def prepare_student_markdown(text: str) -> str:
     """
     if not text:
         return text
-    out = _render_math_text(_normalize_latex_output(text))
+    # Currency first: an unescaped "$5" opens a math span that eats the sentence,
+    # and every later step would then treat that prose as maths.
+    out = escape_currency_dollars(text)
+    out = _render_math_text(_normalize_latex_output(out))
     out = balance_dollar_delimiters(out)
+    # Last line of defence: anything that still will not parse is shown as plain
+    # text rather than as a red KaTeX error in front of the student.
+    out = harden_math_spans(out)
     issues = find_latex_issues(out)
     if issues:
         logger.warning("[Solver] Possible malformed LaTeX in outbound text: %s", issues)

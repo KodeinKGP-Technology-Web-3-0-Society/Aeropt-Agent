@@ -164,6 +164,162 @@ def balance_dollar_delimiters(text: str) -> str:
 _MATH_SPAN_RE = re.compile(r"\$\$([\s\S]*?)\$\$|\$([^$\n]+)\$")
 
 
+_ESCAPED_RE = re.compile(r"\\[\\{}$&%#_]")
+
+
+def strip_escapes(span: str) -> str:
+    r"""Remove escaped characters so brace counting sees only real grouping braces.
+
+    `\{`, `\}` and `\\` are delimiters and line breaks, not groups. Counting them
+    as groups reported perfectly valid LaTeX — every `\left\{ … \right.` piecewise
+    definition — as unbalanced, which is why the corpus looked broken in 54 places
+    that in fact render.
+    """
+    return _ESCAPED_RE.sub("", span or "")
+
+
+def braces_balanced(span: str) -> bool:
+    depth = 0
+    for ch in strip_escapes(span):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+# ── currency ($) vs math ($) ──────────────────────────────────────────────────
+# "the cost of electricity is $0.0900 per kWh" — a real sentence from the corpus.
+# Left alone that `$` opens a math span which swallows the prose until the next `$`,
+# so the paragraph vanishes into a KaTeX error.
+#
+# Telling the two apart needs the *span*, not the character. A first attempt escaped
+# any `$` followed by a digit, which broke 219 chunks containing perfectly good maths
+# like "a square surface of area $2\,\text{cm}^{2}$" — the opening delimiter of a real
+# span starts with a digit too. So: pair the delimiters first, and only escape a pair
+# whose content is money (a bare amount, no macros, no operators) or a `$` that has no
+# partner at all.
+
+_MONEY_BODY_RE = re.compile(
+    r"^\s*\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:per\s+\w+|each|a\s+\w+|an\s+\w+|billion|million|thousand|[kKmMbB])?\s*$"
+)
+_MATH_EVIDENCE_RE = re.compile(r"[\\^_={}]|\\[a-zA-Z]+")
+# Money needs a positive cue, not merely the absence of maths.
+_MONEY_CUE_RE = re.compile(
+    r"\b(?:per|each|a\s+\w+|an\s+\w+|billion|million|thousand|dollars?|cents?)\b|\.\d{2}\b",
+    re.IGNORECASE,
+)
+_PAIRED_SPAN_RE = re.compile(r"(?<!\\)\$([^$\n]{1,120}?)(?<!\\)\$")
+_LONE_MONEY_RE = re.compile(r"(?<!\\)\$(?=\d)")
+
+
+def escape_currency_dollars(text: str) -> str:
+    """Escape `$` that introduces an amount of money rather than a math span."""
+    if not text or "$" not in text:
+        return text
+
+    def repl(match: "re.Match[str]") -> str:
+        body = match.group(1)
+        if _MATH_EVIDENCE_RE.search(body):
+            return match.group(0)  # real maths — leave the delimiters alone
+        if _MONEY_CUE_RE.search(body) and _MONEY_BODY_RE.match(body):
+            # "$5 per hour$" is not a span anyone wrote on purpose: two amounts in
+            # one sentence got paired with each other. A bare number is NOT enough
+            # evidence — "$1036$" in a table of lattice energies is ordinary maths,
+            # and escaping those broke 21 spans of a perfectly good data table.
+            return "\\$" + body + "\\$"
+        # "a $5 note and a $10 note" pairs the two amounts into one "span" of prose.
+        # No macro, no operator, several English words *and* it starts at an amount.
+        # Without the leading-digit test this also matched the prose sitting between
+        # two legitimate formulas and escaped their delimiters.
+        if body.strip()[:1].isdigit() and len(re.findall(r"[A-Za-z]{2,}", body)) >= 2:
+            return "\\$" + body + "\\$"
+        return match.group(0)
+
+    out = _PAIRED_SPAN_RE.sub(repl, text)
+
+    # Whatever is left unpaired: a `$` directly before a number, with no closing
+    # partner on its line, is money.
+    lines = []
+    for line in out.split("\n"):
+        if line.count("$") - line.count("\\$") * 0 == 0:
+            lines.append(line)
+            continue
+        unescaped = len(re.findall(r"(?<!\\)\$", line))
+        if unescaped % 2 == 1:
+            line = _LONE_MONEY_RE.sub("\\$", line, count=1)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ── last-resort degradation ───────────────────────────────────────────────────
+# KaTeX with throwOnError:false shows red error text rather than breaking the
+# page, which protects the app but not the student: they see a red blob where the
+# formula should be. A span that cannot parse is better shown as plain monospace
+# text — still readable, still the real formula, and never visibly broken.
+
+_UNPARSEABLE_MACRO_RE = re.compile(r"\\(?:begin|end)\{(\w+)\}")
+_BALANCED_ENVIRONMENTS = ("matrix", "pmatrix", "bmatrix", "cases", "aligned", "array", "split")
+
+
+def _span_is_safe(span: str) -> bool:
+    body = (span or "").strip()
+    if not body:
+        return False
+    if not braces_balanced(body):
+        return False
+    begins = re.findall(r"\\begin\{(\w+)\}", body)
+    ends = re.findall(r"\\end\{(\w+)\}", body)
+    if sorted(begins) != sorted(ends):
+        return False
+    if any(env not in _BALANCED_ENVIRONMENTS for env in begins):
+        return False
+    # An odd number of \left without \right (or vice versa) aborts the parse.
+    if len(re.findall(r"\\left\b", body)) != len(re.findall(r"\\right\b", body)):
+        return False
+    # A dangling backslash is a control sequence with no name — KaTeX stops there.
+    if re.search(r"(?<!\\)\\\s*$", body) or re.fullmatch(r"\s*\\+\s*", body):
+        return False
+    return True
+
+
+def harden_math_spans(text: str, mode: str = "code") -> str:
+    """Downgrade any math span that will not parse into plain text.
+
+    `mode="code"` (outbound to the student) marks the fragment as code, which reads
+    clearly in chat. `mode="plain"` (ingest) only removes the delimiters: inserting
+    fences into stored prose interleaves code markers with the surrounding maths and
+    makes the chunk worse than the defect it was fixing.
+
+    This is a structural check, not a parse. The authoritative check runs in the
+    frontend (`src/lib/mathHarden.ts`), where KaTeX itself is the oracle.
+    """
+    if not text or "$" not in text:
+        return text
+    plain = mode == "plain"
+
+    def repl_display(match: "re.Match[str]") -> str:
+        body = match.group(1)
+        if _span_is_safe(body):
+            return match.group(0)
+        logger.warning("LaTeX degraded to text (display): %r", body[:80])
+        return body.strip() if plain else "\n```\n" + body.strip() + "\n```\n"
+
+    def repl_inline(match: "re.Match[str]") -> str:
+        body = match.group(1)
+        if _span_is_safe(body):
+            return match.group(0)
+        logger.warning("LaTeX degraded to text (inline): %r", body[:80])
+        return body.strip() if plain else "`" + body.strip() + "`"
+
+    out = re.sub(r"\$\$(.+?)\$\$", repl_display, text, flags=re.DOTALL)
+    out = re.sub(r"(?<![\\$])\$([^$\n]+?)\$(?!\$)", repl_inline, out)
+    return out
+
+
 def find_latex_issues(text: str) -> List[str]:
     """
     Best-effort detector for malformed LaTeX in a finished response, for
@@ -181,18 +337,8 @@ def find_latex_issues(text: str) -> List[str]:
 
     for match in _MATH_SPAN_RE.finditer(text):
         span = match.group(1) if match.group(1) is not None else match.group(2)
-        depth = 0
-        for ch in span:
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth < 0:
-                    issues.append(f"unbalanced braces in math span: {span[:60]!r}")
-                    break
-        else:
-            if depth != 0:
-                issues.append(f"unbalanced braces in math span: {span[:60]!r}")
+        if not braces_balanced(span):
+            issues.append(f"unbalanced braces in math span: {span[:60]!r}")
 
     if "\\(" in text or "\\)" in text or "\\[" in text or "\\]" in text:
         issues.append("unconverted \\( \\) / \\[ \\] delimiter found")
