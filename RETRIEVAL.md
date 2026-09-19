@@ -200,8 +200,8 @@ contract: **every math span must parse, and no valid maths may be lost.**
 |---|---|---|
 | ingest | `local_ingest/corpus.latex_safe` | fixes source quirks (`\mathcal{l}`, `^\circC`, `\mspace`, double subscripts, `½`, `ℏ`), converts `\(…\)`/`\[…\]`, delimits bare TeX in prose, escapes prices, balances delimiters — and strips delimiters from the few chunks that cannot be repaired |
 | outbound | `agents/solver.prepare_student_markdown` | the same rules on model output, plus `harden_math_spans`: a span that will not parse ships as text, not as a red error |
-| render | `Aeropt-frontend/src/lib/mathHarden.ts` | KaTeX itself vetoes each span, and the preprocessing pipeline that scores worse is discarded |
-| guarantee | `Aeropt-frontend/src/lib/rehypeKatexSafe.ts` | runs after rehype-katex: any error node left becomes the formula as `code`, so a red error cannot reach a student |
+| render | `Aeropt-frontend/src/lib/math/mathHarden.ts` | KaTeX itself vetoes each span, and the preprocessing pipeline that scores worse is discarded |
+| guarantee | `Aeropt-frontend/src/lib/math/rehypeKatexSafe.ts` | runs after rehype-katex: any error node left becomes the formula as `code`, so a red error cannot reach a student |
 
 Measured with real KaTeX over 1,900 corpus samples and 24 adversarial agent outputs
 (`cd ../Aeropt-frontend && npm run test:latex`):
