@@ -183,7 +183,9 @@ LEARNING_AGENT_MAX_STEPS = 6
 
 # Wall-clock ceiling for one turn's reasoning, in seconds. On overrun the agent
 # is forced to answer with what it has rather than being cut off mid-thought.
-LEARNING_AGENT_TIME_BUDGET_S = 45.0
+# Overridable because a slower model provider needs longer: on Cursor models (see
+# cursor_gateway/README.md) one tool step takes 10-25 s, against ~2 s on Groq.
+LEARNING_AGENT_TIME_BUDGET_S = float(os.environ.get("LEARNING_AGENT_TIME_BUDGET_S", "45"))
 
 LEARNING_AGENT_TEMPERATURE = 0.3
 

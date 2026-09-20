@@ -1,4 +1,4 @@
-.PHONY: ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture
+.PHONY: cursor-gateway cursor-gateway-test run-cursor ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture
 
 ci:
 	bash ci/run.sh
@@ -29,3 +29,13 @@ retrieval-bench:
 # then run the contract there:  cd ../Aeropt-frontend && npm run test:latex
 latex-fixture:
 	.venv/bin/python -m local_ingest.latex_fixture --limit 1200
+
+# --- Run the tutor on Cursor models instead of Groq (opt-in; see cursor_gateway/README.md) ---
+cursor-gateway-test:
+	cd cursor_gateway && npm test
+
+cursor-gateway:
+	bash cursor_gateway/run.sh gateway
+
+run-cursor:
+	bash cursor_gateway/run.sh agent

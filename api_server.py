@@ -56,6 +56,7 @@ from contextlib import asynccontextmanager
 import threading
 from typing import Any, Dict, List, Optional
 import asyncio
+import os
 import json
 
 # ── config must be imported first — calls load_dotenv() and sets SSL cert ─────
@@ -708,6 +709,29 @@ def agents_status(
     return AgentStatusResponse(agents=agents, active_agent=payload.get("active_agent"))
 
 
+# A turn can be silent for a long time: nothing streams until the answer checker has
+# passed, and on a slower model provider a tool-using turn runs for a minute or more.
+# Without traffic, the browser client's stall timer (and any idle-timeout proxy in
+# front of this service) reads that silence as a dead connection. An SSE comment line
+# is ignored by every client and resets all of those timers.
+SSE_KEEPALIVE_S = float(os.environ.get("SSE_KEEPALIVE_S", "15"))
+
+
+async def _sse_frames(queue: "asyncio.Queue", keepalive_s: float = SSE_KEEPALIVE_S):
+    """Turn the worker's message queue into SSE frames, ending after the result."""
+    while True:
+        try:
+            msg = await asyncio.wait_for(queue.get(), timeout=keepalive_s)
+        except asyncio.TimeoutError:
+            yield ": keepalive\n\n"
+            continue
+        if msg["type"] == "token":
+            yield f"event: token\ndata: {json.dumps(msg['data'])}\n\n"
+        elif msg["type"] == "result":
+            yield f"event: result\ndata: {msg['data']}\n\n"
+            return
+
+
 @app.post("/api/v1/chat/message")
 async def chat_message(req: ChatMessageRequest):
     """Process one student message through the LangGraph pipeline with SSE streaming."""
@@ -829,16 +853,7 @@ async def chat_message(req: ChatMessageRequest):
 
     asyncio.create_task(asyncio.to_thread(sync_worker))
 
-    async def sse_generator():
-        while True:
-            msg = await queue.get()
-            if msg["type"] == "token":
-                yield f"event: token\ndata: {json.dumps(msg['data'])}\n\n"
-            elif msg["type"] == "result":
-                yield f"event: result\ndata: {msg['data']}\n\n"
-                break
-                
-    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    return StreamingResponse(_sse_frames(queue), media_type="text/event-stream")
 
 
 @app.post("/api/v1/sandbox/execute", response_model=ChatMessageResponse)

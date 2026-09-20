@@ -1,0 +1,15 @@
+{
+  "name": "prepwise-cursor-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local OpenAI/Groq-protocol gateway that runs the tutor's LLM calls on Cursor models",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.0.31"
+  }
+}
