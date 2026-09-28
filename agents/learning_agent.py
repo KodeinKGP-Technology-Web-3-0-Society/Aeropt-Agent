@@ -273,6 +273,11 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
 
     answer = _resolve_final_text(result.text, ctx)
 
+    if answer:
+        from agents.runtime.proof import ensure_proof
+
+        answer = ensure_proof(answer, trace)
+
     if not answer:
         logger.error(
             "Agent turn produced no answer (stop_reason=%s, error=%s)",
