@@ -63,7 +63,7 @@ import json
 import config  # noqa: F401
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -75,6 +75,7 @@ from graph.workflow import tutor_graph
 from models.state import TutorState
 
 # ── Session-management helpers — imported from services.turn_service ───────────
+from services.classroom_evidence import post_turn_evidence, resolve_learner_token
 from services.turn_service import (
     build_initial_state as _build_initial_state,
     clear_stale_practice_carry,
@@ -147,6 +148,9 @@ class ChatMessageRequest(BaseModel):
     journey_type: Optional[str] = None
     focus_chapters: Optional[List[str]] = None
     flagged_step_id: Optional[str] = None
+    # Learner's Django JWT. Used only to post classroom evidence. The chat
+    # reply still returns when this is missing.
+    classroom_token: Optional[str] = None
 
 
 class FlashcardsPayload(BaseModel):
@@ -733,9 +737,13 @@ async def _sse_frames(queue: "asyncio.Queue", keepalive_s: float = SSE_KEEPALIVE
 
 
 @app.post("/api/v1/chat/message")
-async def chat_message(req: ChatMessageRequest):
+async def chat_message(
+    req: ChatMessageRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """Process one student message through the LangGraph pipeline with SSE streaming."""
     user_id = req.user_id
+    learner_token = resolve_learner_token(req.classroom_token, authorization)
     raw_input = req.query.strip()
     create_reason = "roadmap" if req.roadmap_node_id else "free"
     # _resolve_session and get_carry are DB calls but short, running in main thread for simplicity before stream starts
@@ -783,7 +791,6 @@ async def chat_message(req: ChatMessageRequest):
             stage_overrides: Dict[str, Any] = {}
             
             # Check prefetch cache for next_query fast-forward
-            import json
             from db.supabase_client import db
             if db.redis:
                 try:
@@ -836,6 +843,15 @@ async def chat_message(req: ChatMessageRequest):
                 queue.put_nowait,
                 {"type": "result", "data": chat_response.model_dump_json()},
             )
+            # Off until Django exposes POST /classroom/evidence/. A missing
+            # route must not be called on every turn.
+            if _classroom_evidence_enabled():
+                post_turn_evidence(
+                    result=result,
+                    was_graded=was_graded,
+                    study_stage=req.study_stage,
+                    token=learner_token,
+                )
 
             def prefetch_bg():
                 from utils.stream import stream_callback_var
@@ -1084,3 +1100,17 @@ def run_coach(req: CoachRunRequest) -> CoachRunResponse:
         trace_path=result.get("trace_path") or [],
         error=result.get("error"),
     )
+
+
+def _classroom_evidence_enabled() -> bool:
+    """True only when CLASSROOM_EVIDENCE is explicitly on.
+
+    The helper itself fails open, but the chat path stays quiet until the
+    Django evidence route exists.
+    """
+    return os.environ.get("CLASSROOM_EVIDENCE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

@@ -262,7 +262,15 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
         # ── 8. Score summary message for incorrect answers ────────────────────
         # Only when the student was wrong — the Follow-Up "Well done!" covers
         # the correct path.  All data comes from state; no new Supabase reads.
-        result: Dict[str, Any] = {"trigger_quiz": trigger_quiz, "error": None}
+        result: Dict[str, Any] = {
+            "trigger_quiz": trigger_quiz,
+            "error": None,
+            # 0–100 score for the classroom tracker. The public concept row
+            # written above is not the learner-facing number.
+            "attempt_recorded": True,
+            "recorded_concept_id": primary_id,
+            "mastery_pct": max(0, min(100, round(new_score * 100))),
+        }
 
         if not is_correct:
             prereq_states     = state.get("prereq_concept_states") or []

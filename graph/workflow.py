@@ -91,8 +91,10 @@ def graded_fast_path_node(state: TutorState) -> Dict[str, Any]:
     graded = diagnostic_node(state)
     if graded.get("error"):
         # Grading failed, but the student still pressed a button and is waiting.
-        # Fall through to follow-up so they get a reply, and keep the reason.
+        # Fall through to follow-up so they get a reply. Keep a flag so the
+        # evidence hook can see the write did not land.
         logger.warning("Fast-path grading failed: %s", graded["error"])
+        updates["attempt_record_failed"] = True
         graded.pop("error", None)
     updates.update(graded)
 

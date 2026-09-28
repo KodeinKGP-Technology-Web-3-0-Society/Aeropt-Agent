@@ -225,6 +225,7 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
 
     result = diagnostic_node(state)  # type: ignore[arg-type]
     if result.get("error"):
+        ctx.stage(attempt_record_failed=True)
         return {"error": result["error"]}
 
     ctx.stage(
@@ -235,6 +236,9 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
         score_summary=result.get("score_summary"),
         remediation_flashcards=result.get("remediation_flashcards") or [],
         awaiting_graded_response=False,
+        attempt_recorded=True,
+        recorded_concept_id=concept_id,
+        mastery_pct=result.get("mastery_pct"),
     )
     ctx.state.update(ctx.updates)
 
