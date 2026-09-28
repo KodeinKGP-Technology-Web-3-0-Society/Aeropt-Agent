@@ -55,24 +55,27 @@ def events_for_turn(
     stage = study_stage or result.get("study_stage") or result.get("content_type_requested")
     surface = "assess" if stage == "practice" else "lesson"
     specialist = "evaluation" if button else "tutor"
+    payload: Dict[str, Any] = {"correct": bool(result.get("is_correct"))}
+    mastery = result.get("mastery_pct")
+    if isinstance(mastery, int) and not isinstance(mastery, bool) and 0 <= mastery <= 100:
+        payload["mastery"] = mastery
     events: List[Dict[str, Any]] = [
         {
             "concept_id": concept_id,
             "surface": surface,
             "specialist": specialist,
             "kind": "attempt",
-            "payload": {"correct": bool(result.get("is_correct"))},
+            "payload": payload,
         }
     ]
-    mastery = result.get("mastery_pct")
-    if not button and recorded and isinstance(mastery, int) and 0 <= mastery <= 100:
+    if not button and recorded and "mastery" in payload:
         events.append(
             {
                 "concept_id": concept_id,
                 "surface": surface,
                 "specialist": "tutor",
                 "kind": "mastery",
-                "payload": {"mastery": mastery},
+                "payload": {"mastery": payload["mastery"]},
             }
         )
     return events

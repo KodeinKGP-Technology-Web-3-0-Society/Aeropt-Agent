@@ -843,15 +843,14 @@ async def chat_message(
                 queue.put_nowait,
                 {"type": "result", "data": chat_response.model_dump_json()},
             )
-            # Off until Django exposes POST /classroom/evidence/. A missing
-            # route must not be called on every turn.
-            if _classroom_evidence_enabled():
-                post_turn_evidence(
-                    result=result,
-                    was_graded=was_graded,
-                    study_stage=req.study_stage,
-                    token=learner_token,
-                )
+            # After the reply is queued. A down Django process is logged and
+            # does not replace the chat reply.
+            post_turn_evidence(
+                result=result,
+                was_graded=was_graded,
+                study_stage=req.study_stage,
+                token=learner_token,
+            )
 
             def prefetch_bg():
                 from utils.stream import stream_callback_var
@@ -1100,17 +1099,3 @@ def run_coach(req: CoachRunRequest) -> CoachRunResponse:
         trace_path=result.get("trace_path") or [],
         error=result.get("error"),
     )
-
-
-def _classroom_evidence_enabled() -> bool:
-    """True only when CLASSROOM_EVIDENCE is explicitly on.
-
-    The helper itself fails open, but the chat path stays quiet until the
-    Django evidence route exists.
-    """
-    return os.environ.get("CLASSROOM_EVIDENCE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }

@@ -27,7 +27,7 @@ class EventsForTurnTests(unittest.TestCase):
         self.assertEqual(events[0]["kind"], "attempt")
         self.assertEqual(events[0]["specialist"], "evaluation")
         self.assertEqual(events[0]["surface"], "assess")
-        self.assertEqual(events[0]["payload"], {"correct": True})
+        self.assertEqual(events[0]["payload"], {"correct": True, "mastery": 72})
 
     def test_lesson_record_posts_attempt_and_mastery(self):
         events = events_for_turn(
