@@ -1099,3 +1099,39 @@ def run_coach(req: CoachRunRequest) -> CoachRunResponse:
         trace_path=result.get("trace_path") or [],
         error=result.get("error"),
     )
+
+
+# ── Classroom day specialists ─────────────────────────────────────────────────
+# Pure JSON. No chat, no stream, no model. Django stores the field it asked for.
+
+
+@app.post("/api/v1/classroom/plan")
+def classroom_plan(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Week plan from the catalog Django sent."""
+    from services.classroom_specialists import load_learner, plan_specialist
+
+    return plan_specialist(load_learner(body))
+
+
+@app.post("/api/v1/classroom/daily")
+def classroom_daily(body: Dict[str, Any]) -> Dict[str, Any]:
+    """One today block for for_date. Skips concept ids the learner already decided."""
+    from services.classroom_specialists import daily_specialist, load_learner
+
+    return daily_specialist(load_learner(body))
+
+
+@app.post("/api/v1/classroom/revise")
+def classroom_revise(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Revision queue from weak trackers, else the home revise list."""
+    from services.classroom_specialists import load_learner, revise_specialist
+
+    return revise_specialist(load_learner(body))
+
+
+@app.post("/api/v1/classroom/readiness")
+def classroom_readiness(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Mean mastery of attempted trackers."""
+    from services.classroom_specialists import load_learner, readiness_specialist
+
+    return readiness_specialist(load_learner(body))
