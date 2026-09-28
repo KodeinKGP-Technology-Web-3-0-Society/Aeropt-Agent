@@ -93,3 +93,8 @@ CREATE INDEX IF NOT EXISTS agent_trace_session_idx
 
 COMMENT ON TABLE public.agent_trace IS
   'Per-turn decision trace for the autonomous Learning Agent: tools called, handoffs, checker verdict.';
+
+-- The tutor reaches these tables through the Supabase service role.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.learner_memory TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.review_schedule TO service_role;
+GRANT SELECT, INSERT ON TABLE public.agent_trace TO service_role;

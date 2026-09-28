@@ -297,11 +297,11 @@ The LangGraph around this is only structural: `bootstrap → [button click?] →
 | Diagram tool | — | Not connected. Retrieved content can include stored figures; the agent cannot generate a diagram. |
 | Curriculum tool | `resolve_concept`, `retrieve_content`, `open_material`, `suggest_next_material` | Connected. Further than the generic plan assumed. Locally (`RETRIEVAL_BACKEND=local`) this runs on a derived 1016-concept syllabus and a 10k-item corpus with citations, novelty tracking and a deterministic retrieval gate — see `RETRIEVAL.md`. The deployed path is unchanged. |
 | Research tool | — | Not connected. |
-| Memory lookup | `get_learner_context` | Connected, but migration `006_learner_memory.sql` is not applied live, so recall degrades. |
+| Memory lookup | `get_learner_context` | Connected. Migration `006_learner_memory.sql` is applied, and `service_role` can read and write `learner_memory`. |
 | Learner progress | `get_learner_context` (same call) | Connected. |
-| Save memory | `remember_about_learner` | Connected; same migration 006 caveat. |
+| Save memory | `remember_about_learner` | Connected. Writes `learner_memory`. |
 | Progress update | `record_attempt` | Connected. Proficiency maths stays deterministic. |
-| Review scheduler | `schedule_review` | Connected; same migration 006 caveat. |
+| Review scheduler | `schedule_review` | Connected. Writes `review_schedule`. |
 | Permission request | toolbelt `consequential` flag | Connected as a mechanism, not a named tool the model calls. |
 
 Experts: composers `worked_solution`, `socratic_guide`, `practice_set`, `quiz_builder`; analysts `verifier`, `error_locator`, `alt_explainer`, `comparer`. Depth ≥ 1 cannot spawn experts, write memory, schedule, or talk to the student (`EXPERT_SCOPES`).
@@ -319,4 +319,3 @@ Experts: composers `worked_solution`, `socratic_guide`, `practice_set`, `quiz_bu
 - Platform Content Worker
 - Coach actions: change study plan, suggest an activity, start a new conversation
 - Checker loop where the Main Tutor corrects and the checker runs again. The checker rewrites once and returns that text. It does not send the draft back for another tutor pass.
-- Apply `db/migrations/006_learner_memory.sql` on the live database
