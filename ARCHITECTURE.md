@@ -291,8 +291,9 @@ The LangGraph around this is only structural: `bootstrap → [button click?] →
 | Overview tool | Live tool | Status |
 |---|---|---|
 | Material reader | — | Not connected. Chat is text-only; no photo/PDF/voice/audio ingest. |
-| Calculator | `calculate` | Connected. `mcp_tools/compute_tools.py` |
-| Mathematics tool | — | Slot only. Symbolic CAS is deliberately not in the calculator. |
+| Calculator | `calculate` | Connected. `mcp_tools/compute_tools.py`. Arithmetic only. |
+| Mathematics tool | `solve_symbolically` | Connected. `mcp_tools/symbolic_tools.py`. Sympy algebra (solve, differentiate, integrate, simplify). Separate from `calculate`. |
+| Physics tools | `check_dimensions`, `verify_result`, `check_student_work`, `convert_units` | Connected. `mcp_tools/physics_tools.py`. Dimensional consistency, substitution checks, first broken step, and unit conversion. |
 | Diagram tool | — | Not connected. Retrieved content can include stored figures; the agent cannot generate a diagram. |
 | Curriculum tool | `resolve_concept`, `retrieve_content`, `open_material`, `suggest_next_material` | Connected. Further than the generic plan assumed. Locally (`RETRIEVAL_BACKEND=local`) this runs on a derived 1016-concept syllabus and a 10k-item corpus with citations, novelty tracking and a deterministic retrieval gate — see `RETRIEVAL.md`. The deployed path is unchanged. |
 | Research tool | — | Not connected. |
@@ -314,8 +315,8 @@ Experts: composers `worked_solution`, `socratic_guide`, `practice_set`, `quiz_bu
 ### Not yet built (do not pretend they are live)
 
 - Voice, photo, PDF, audio student input
-- Material reader, symbolic mathematics, diagram generation, research
+- Material reader, diagram generation, research
 - Platform Content Worker
 - Coach actions: change study plan, suggest an activity, start a new conversation
-- Checker loop where the Main Tutor corrects and the checker runs again (current checker returns a corrected answer itself, matching the role text in this file)
+- Checker loop where the Main Tutor corrects and the checker runs again. The checker rewrites once and returns that text. It does not send the draft back for another tutor pass.
 - Apply `db/migrations/006_learner_memory.sql` on the live database
