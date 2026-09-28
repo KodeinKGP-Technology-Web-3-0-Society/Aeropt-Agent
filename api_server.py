@@ -151,6 +151,11 @@ class ChatMessageRequest(BaseModel):
     # Learner's Django JWT. Used only to post classroom evidence. The chat
     # reply still returns when this is missing.
     classroom_token: Optional[str] = None
+    # Room shape. lesson | doubt | assess. Absent means the ordinary tutor turn.
+    surface: Optional[str] = None
+    student_work: Optional[str] = None
+    assess_action: Optional[str] = None  # build | grade
+    submissions: Optional[List[Dict[str, Any]]] = None
 
 
 class FlashcardsPayload(BaseModel):
@@ -809,6 +814,20 @@ async def chat_message(
                     "study_stage": req.study_stage,
                     "content_type_requested": req.study_stage,
                 })
+            from services.classroom_rooms import handoff_events, prepare_room
+
+            room = prepare_room(
+                surface=req.surface,
+                concept_id=req.roadmap_concept_id,
+                student_work=req.student_work,
+                assess_action=req.assess_action,
+                submissions=req.submissions,
+                user_id=user_id,
+                session_id=session_id,
+                token=learner_token,
+            )
+            if room:
+                stage_overrides.update(room["state_overrides"])
             result = _invoke_tutor(
                 user_id=user_id,
                 session_id=session_id,
@@ -851,6 +870,16 @@ async def chat_message(
                 study_stage=req.study_stage,
                 token=learner_token,
             )
+            if (req.surface or "").strip().lower() == "doubt":
+                from services.classroom_evidence import post_events
+
+                post_events(
+                    handoff_events(
+                        req.roadmap_concept_id or "",
+                        result.get("agent_trace_path"),
+                    ),
+                    token=learner_token,
+                )
 
             def prefetch_bg():
                 from utils.stream import stream_callback_var
@@ -1135,3 +1164,52 @@ def classroom_readiness(body: Dict[str, Any]) -> Dict[str, Any]:
     from services.classroom_specialists import load_learner, readiness_specialist
 
     return readiness_specialist(load_learner(body))
+
+
+class AssessBuildRequest(BaseModel):
+    concept_id: str = ""
+
+
+class AssessSubmission(BaseModel):
+    item_id: str = ""
+    answer: str = ""
+
+
+class AssessGradeRequest(BaseModel):
+    concept_id: str = ""
+    answers: List[AssessSubmission] = []
+    user_id: str = ""
+    session_id: str = ""
+    classroom_token: Optional[str] = None
+
+
+@app.post("/api/v1/classroom/assess/build")
+def classroom_assess_build(body: AssessBuildRequest) -> Dict[str, Any]:
+    """Retrieved practice items for one concept. The tutor still presents them in chat."""
+    from services.classroom_rooms import build_assessment
+
+    concept_id = (body.concept_id or "").strip()
+    if not concept_id:
+        raise HTTPException(status_code=400, detail="concept_id is required")
+    return build_assessment(concept_id)
+
+
+@app.post("/api/v1/classroom/assess/grade")
+def classroom_assess_grade(
+    body: AssessGradeRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """Grade submitted answers against the stored solution, then the proficiency maths."""
+    from services.classroom_rooms import grade_submissions
+
+    if not body.answers:
+        raise HTTPException(status_code=400, detail="answers must be a non-empty list")
+    token = resolve_learner_token(body.classroom_token, authorization)
+    submissions = [{"item_id": row.item_id, "answer": row.answer} for row in body.answers]
+    return grade_submissions(
+        (body.concept_id or "").strip(),
+        submissions,
+        user_id=body.user_id,
+        session_id=body.session_id,
+        token=token,
+    )

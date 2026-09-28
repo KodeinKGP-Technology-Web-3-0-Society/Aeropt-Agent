@@ -171,6 +171,9 @@ def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]]) -> s
     }
     for token, value in replacements.items():
         prompt = prompt.replace(token, value)
+    job = (state.get("classroom_job") or "").strip()
+    if job:
+        prompt = f"{prompt}\n\n{job}"
     return prompt
 
 
@@ -260,7 +263,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         model=config.LEARNING_AGENT_MODEL,
         fallback_models=config.LEARNING_AGENT_FALLBACK_MODELS,
         priming_messages=_priming_messages(state),
-        max_steps=config.LEARNING_AGENT_MAX_STEPS,
+        max_steps=int(state.get("classroom_max_steps") or config.LEARNING_AGENT_MAX_STEPS),
         time_budget_s=config.LEARNING_AGENT_TIME_BUDGET_S,
         temperature=config.LEARNING_AGENT_TEMPERATURE,
         client=_groq,

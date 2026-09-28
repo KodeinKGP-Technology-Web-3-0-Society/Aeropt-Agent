@@ -31,6 +31,7 @@ from typing import Any, Dict
 from db.supabase_client import db
 from mcp_tools.resolve_concept_id import ResolveConceptIdArgs, resolve_concept_id
 from models.state import TutorState
+from services.classroom_rooms import prerequisite_ids
 
 
 def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
@@ -38,6 +39,17 @@ def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
     recent_turns = state.get("recent_turns", [])
     roadmap_concept_id = state.get("roadmap_concept_id") or None
     study_stage = state.get("study_stage") or None
+
+    locked = (state.get("locked_concept_id") or "").strip()
+    if locked:
+        # The room fixed the concept. Stay on it, and keep its prerequisites
+        # in scope. Do not re-resolve the student's words onto another topic.
+        return {
+            "primary_concept_id": locked,
+            "secondary_concept_ids": prerequisite_ids(locked),
+            "content_type_requested": study_stage or "theory",
+            "error": None,
+        }
 
     # Fail loudly here (not silently) if the taxonomy itself is missing/empty — that's
     # a data/ingestion problem, distinct from "this one query is off-syllabus" below.

@@ -50,6 +50,11 @@ class TutorState(TypedDict, total=False):
     roadmap_node_id: Optional[str]     # UUID from Django PathNode
     roadmap_concept_id: Optional[str]    # concept_id hint when continuing from roadmap
     study_stage: Optional[str]       # theory | example | practice | pyq — roadmap session hint
+    # Classroom room. A surface is an input shape, like a button click.
+    classroom_surface: Optional[str]   # lesson | doubt | assess
+    locked_concept_id: Optional[str]
+    classroom_job: Optional[str]
+    classroom_max_steps: Optional[int]
 
     # ── Concept Resolver output ───────────────────────────────────────────────
     primary_concept_id: str
