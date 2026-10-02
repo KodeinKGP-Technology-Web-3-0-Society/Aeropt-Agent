@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from agents.runtime.toolbelt import Toolbelt
@@ -63,6 +63,9 @@ class LoopResult:
 
 def _serialise_assistant(message: Any) -> Dict[str, Any]:
     """Convert an SDK assistant message back into request-shaped JSON."""
+    if hasattr(message, "model_dump"):
+        return message.model_dump(exclude_unset=True)
+    
     payload: Dict[str, Any] = {
         "role": "assistant",
         "content": getattr(message, "content", None) or "",
@@ -105,7 +108,7 @@ def run_agent_loop(
     message — recalled memory, session summary, retrieved evidence the caller
     already has. They are context, not instructions.
     """
-    groq = client or Groq(api_key=config.GROQ_API_KEY)
+    groq = client or OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
     trace = trace or toolbelt.ctx.trace
     deadline = time.time() + time_budget_s
 
@@ -119,7 +122,19 @@ def run_agent_loop(
     model_used = model
     steps = 0
 
+    from services import progress
+
     while steps < max_steps:
+        if progress.is_cancelled():
+            # The student pressed Stop: end now, with nothing to send.
+            return LoopResult(
+                text="",
+                model_used=model_used,
+                steps_taken=steps,
+                stop_reason="cancelled",
+                messages=messages,
+                tool_calls_made=tool_names_called,
+            )
         out_of_time = time.time() >= deadline
         final_pass = out_of_time or steps == max_steps - 1
 

@@ -21,16 +21,17 @@ Everything above that line is the agent's call.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from agents.answer_checker import VERDICT_SKIPPED, check_answer, check_answer_streaming
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
-from agents.runtime.trace import AgentTrace
+from agents.runtime.trace import AgentTrace, TraceStep
 from db.supabase_client import db
 from models.state import TutorState
 from utils.skills import load_skill
@@ -38,7 +39,7 @@ from utils.stream import stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 #: The tutor's reply when it accepts an expert's draft verbatim.
 _USE_DRAFT_TOKEN = "USE_DRAFT"
@@ -47,6 +48,19 @@ _FALLBACK_REPLY = (
     "I hit a problem working through that one. Could you send it again, or "
     "rephrase it slightly? If you can include your own working, I can show you "
     "exactly where it goes off track."
+)
+
+# Another school subject. This is not a guess about a physics question; it is
+# the syllabus boundary. The tutor still owns the reply, and it does not retrieve.
+_OUTSIDE_PHYSICS = re.compile(
+    r"\b(sn1|sn2|carbocation|organic chemistry|alkyl halide|nucleophilic substitution|"
+    r"grignard|benzene|stoichiometry)\b",
+    re.IGNORECASE,
+)
+_PHYSICS_ONLY_REPLY = (
+    "I only teach physics for JEE. I won't invent a chemistry mechanism or a "
+    "reaction scheme. Ask a physics problem — rotation, electrostatics, or the "
+    "step you're stuck on — and I'll work that properly."
 )
 
 
@@ -63,6 +77,7 @@ def _import_tools() -> None:
     import mcp_tools.physics_tools      # noqa: F401
     import mcp_tools.symbolic_tools     # noqa: F401
     import mcp_tools.handoff            # noqa: F401
+    import mcp_tools.diagram_tools      # noqa: F401
 
 
 
@@ -142,7 +157,57 @@ def _format_pending_suggestions(state: TutorState) -> str:
     return "\n".join(lines)
 
 
-def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]]) -> str:
+def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int]:
+    query_lower = query.lower()
+    escalate = any(ph in query_lower for ph in ["give up", "show me", "tell me", "don't know", "answer", "stuck"])
+    
+    reveal = 0
+    move = "Withhold answer. Probe for their thoughts or confirm success."
+    
+    recent_turns = state.get("recent_turns") or []
+    prior_escalations = sum(
+        1 for t in recent_turns 
+        if t.get("role") == "user" and any(ph in (t.get("content") or "").lower() for ph in ["give up", "show me", "tell me", "don't know", "answer", "stuck"])
+    )
+
+    if escalate:
+        if prior_escalations >= 1:
+            reveal = 4
+            move = "Student explicitly requested answer again. Tell them the full solution."
+        else:
+            reveal = 3
+            move = "Student requested help/answer. Escalate: show up to sticking point, ask one question."
+    else:
+        turn = int(state.get("interaction_count") or 1)
+        if turn == 1:
+            reveal = 0
+            move = "First turn. Confirm understanding or probe. Do not reveal answer."
+        elif turn == 2:
+            reveal = 1
+            move = "Nudge them based on their attempt."
+        elif turn == 3:
+            reveal = 2
+            move = "Hint at the core principle they are missing."
+        else:
+            reveal = 3
+            move = "They are stuck. Show solution up to the sticking point and ask a question."
+            
+    return move, reveal
+
+
+def _with_progress(memory_text: str, user_id: str) -> str:
+    """Memories say who the student is; the digest says how they are doing —
+    weak and mastered concepts, mistake pattern, reviews due — so a question
+    in chat is answered knowing what the student has already practised."""
+    from services.progress_report import progress_digest
+
+    digest = progress_digest(user_id) if user_id else ""
+    if not digest:
+        return memory_text
+    return f"{memory_text}\n\nProgress so far (from their practice record):\n{digest}"
+
+
+def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaffolding_move: str, scaffolding_reveal: int) -> str:
     skill = load_skill("learning_agent") or {}
     prompt = skill.get("system_prompt") or ""
     if not prompt:
@@ -165,9 +230,11 @@ def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]]) -> s
         "{{preferred_depth}}": str(state.get("preferred_depth") or "standard"),
         "{{interaction_count}}": str(state.get("interaction_count") or 1),
         "{{roadmap_hint}}": _format_roadmap_hint(state),
-        "{{learner_memory}}": _format_memory(memories),
+        "{{learner_memory}}": _with_progress(_format_memory(memories), state.get("user_id") or ""),
         "{{session_summary}}": session_text,
         "{{pending_suggestions}}": _format_pending_suggestions(state),
+        "{{scaffolding_move}}": scaffolding_move,
+        "{{scaffolding_reveal}}": str(scaffolding_reveal),
     }
     for token, value in replacements.items():
         prompt = prompt.replace(token, value)
@@ -230,6 +297,29 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         turn_index=state.get("interaction_count"),
         route="agent_loop",
     )
+    # The doubt room already ran check_student_work before this loop. Record it
+    # on the trace so the turn shows the check that the student is about to hear.
+    if "Working check:" in (state.get("classroom_job") or ""):
+        trace.add(
+            TraceStep(
+                kind="tool",
+                name="check_student_work",
+                ok=True,
+                result_preview="checked the handed working before the reply",
+            )
+        )
+
+    if _OUTSIDE_PHYSICS.search(query):
+        trace.note("outside physics syllabus")
+        trace.checker_verdict = "skipped"
+        trace.persist()
+        return {
+            "response": _PHYSICS_ONLY_REPLY,
+            "agent_used": "learning_agent",
+            "error": None,
+            "agent_trace_path": trace.path(),
+            "primary_concept_id": "",
+        }
 
     # Recall before reasoning: the agent should start the turn already knowing
     # who it is talking to, rather than having to spend a tool call to find out.
@@ -250,8 +340,11 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     )
     toolbelt = Toolbelt(registry().values(), ctx, allowed_scopes=TUTOR_SCOPES)
 
+    move, reveal = _decide_move_and_reveal(query, working_state)
+    trace.note(f"move={move}, reveal={reveal}")
+
     try:
-        system_prompt = _build_system_prompt(state, memories)
+        system_prompt = _build_system_prompt(state, memories, move, reveal)
     except RuntimeError as exc:
         logger.error("%s", exc)
         return {"error": str(exc)}

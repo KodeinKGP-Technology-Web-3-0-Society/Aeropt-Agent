@@ -26,7 +26,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from db.supabase_client import db
@@ -161,7 +161,7 @@ def _extract_md_image_urls(text: str) -> List[str]:
     return re.findall(r"!\[[^\]]*\]\((https?://[^)\s]+)(?:\s+\"[^\"]*\")?\)", text)
 
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 logger = logging.getLogger("jee_tutor.solver")
 
 MIN_RESPONSE_CHARS = 80   # below this we treat the generation as empty

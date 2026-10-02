@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarnin
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
+# Force uvicorn reload (retry 3)
 load_dotenv(_ROOT / ".env")
 load_dotenv(_ROOT / ".env.local", override=True)
 
@@ -30,64 +31,34 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "physics-diagrams")
 
 # ── LLM APIs ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# Comma-separated in .env (GEMINI_KEYS). Never put keys in source: this file is
+# committed. utils/groq_pool.py rotates through them and retires rejected ones.
+from utils.groq_pool import load_gemini_api_keys  # noqa: E402
 
-# All Groq keys (GROQ_API_KEYS comma-list, or GROQ_API_KEY + GROQ_API_KEY_2..7).
-# Consumed by utils/groq_pool.get_pool() so groq_complete() can rotate off a
-# rate-limited key instead of only falling back to a weaker model. Previously
-# this constant didn't exist at all — get_pool() referenced it but nothing ever
-# called get_pool(), so the whole pool module was dead code (see utils/llm.py).
-from utils.groq_pool import load_groq_api_keys as _load_groq_api_keys  # noqa: E402
-
-GROQ_API_KEYS = _load_groq_api_keys()
+GEMINI_API_KEYS = load_gemini_api_keys()
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # ── Model assignments per agent ───────────────────────────────────────────────
-# Verified against this account's live Groq catalog on 2026-09-11
-# (`client.models.list()`): llama-3.1-8b-instant and llama-3.3-70b-versatile —
-# both used below until this fix — are decommissioned and 404 on every call.
-# The only confirmed-live chat models on this account right now are
-# qwen/qwen3.6-27b, qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b.
-# Re-run that same models.list() check before relying on any of the four names
-# below again — Groq's catalog on this account has now drifted three times.
-#
-# Orchestrator + lightweight classifiers → smallest fast model
-ORCHESTRATOR_MODEL = "openai/gpt-oss-20b"
-CONCEPT_RESOLVER_MODEL = "openai/gpt-oss-20b"
-DIAGNOSTIC_MODEL = "openai/gpt-oss-20b"
-CONTEXT_MANAGER_MODEL = "openai/gpt-oss-20b"
+ORCHESTRATOR_MODEL = "gemini-3-flash-preview"
+CONCEPT_RESOLVER_MODEL = "gemini-3-flash-preview"
+DIAGNOSTIC_MODEL = "gemini-3-flash-preview"
+CONTEXT_MANAGER_MODEL = "gemini-3-flash-preview"
 
-# Generation agents → larger reasoning models
-# Catalog drift, checked live on 2026-09-18 (`client.models.list()`): qwen/qwen3.6-27b
-# is now gone too — the fourth removal on this account. It was SOLVER_MODEL, QUIZ_MODEL
-# and the first agent fallback, so every solver and quiz call spent a round trip failing
-# before the fallback chain rescued it. Live chat models on this account right now:
-# openai/gpt-oss-120b, openai/gpt-oss-20b, openai/gpt-oss-safeguard-20b, qwen/qwen3.8-27b.
-SOLVER_MODEL = "qwen/qwen3.8-27b"
-SOCRATIC_MODEL = "openai/gpt-oss-120b"
-QUIZ_MODEL = "qwen/qwen3.8-27b"
+SOLVER_MODEL = "gemini-3-flash-preview"
+SOCRATIC_MODEL = "gemini-3-flash-preview"
+QUIZ_MODEL = "gemini-3-flash-preview"
 
-# ── Fallback chains (used when primary model is over capacity / unavailable) ──
-# Listed in preference order — first available wins. Every entry below is
-# confirmed live (see note above); none of these repeat the model it's a
-# fallback for.
-SOLVER_FALLBACK_MODELS = [
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-]
-QUIZ_FALLBACK_MODELS = [
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-]
-SOCRATIC_FALLBACK_MODELS = [
-    "qwen/qwen3.8-27b",
-    "openai/gpt-oss-20b",
-]
-# Lightweight agents share a simpler fallback
-SMALL_MODEL_FALLBACK = [
-    "openai/gpt-oss-120b",
-    "qwen/qwen3.8-27b",
-]
+# ── Fallback chains ──
+# Free-tier Gemini quotas are per model AND per day (gemini-3-flash: 20 requests
+# a day per key, measured 2026-10-02 when all 12 keys ran out). Each fallback has
+# its own quota, so the chain multiplies daily capacity. Verified on 2026-10-02
+# with models.list() + a tool call: both answer tool calls correctly.
+# (gemini-2.5-* are retired for this account; 3.7/3.8-flash returned 503.)
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+SOLVER_FALLBACK_MODELS = FALLBACK_MODELS
+QUIZ_FALLBACK_MODELS = FALLBACK_MODELS
+SOCRATIC_FALLBACK_MODELS = FALLBACK_MODELS
+SMALL_MODEL_FALLBACK = FALLBACK_MODELS
 
 # Embedding (GraphRAG Retriever only) — no chat LLM
 EMBEDDING_MODEL = "gemini-embedding-2"
@@ -162,20 +133,8 @@ STRUGGLE_STREAK_QUIZ_TRIGGER = 3
 CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
 
 # ── Autonomous Learning Agent ─────────────────────────────────────────────────
-# The Main Tutor reasons in a tool-calling loop rather than following fixed graph
-# edges, so its cost and latency are bounded here rather than by the shape of a
-# flowchart. See agents/learning_agent.py and agents/runtime/loop.py.
-#
-# The model must support function calling. Verified live on this account
-# (2026-09-11): openai/gpt-oss-120b, openai/gpt-oss-20b and qwen/qwen3.6-27b all
-# return well-formed tool calls. Re-check before changing this — a model without
-# tool support does not error, it just silently stops calling tools and the agent
-# degrades into a chatbot with no access to the syllabus.
-LEARNING_AGENT_MODEL = "openai/gpt-oss-120b"
-LEARNING_AGENT_FALLBACK_MODELS = [
-    "qwen/qwen3.8-27b",
-    "openai/gpt-oss-20b",
-]
+LEARNING_AGENT_MODEL = "gemini-3-flash-preview"
+LEARNING_AGENT_FALLBACK_MODELS = FALLBACK_MODELS
 
 # Reasoning steps per turn. Enough for resolve -> retrieve -> verify -> compose,
 # with room for one recovery, and no more.
@@ -194,11 +153,15 @@ LEARNING_AGENT_TEMPERATURE = 0.3
 # Fail-open: if the checker is unavailable the draft is sent unchanged, and the
 # turn trace records the skip.
 ANSWER_CHECKER_ENABLED = os.getenv("ANSWER_CHECKER_ENABLED", "true").lower() != "false"
-ANSWER_CHECKER_MODEL = "openai/gpt-oss-120b"
+ANSWER_CHECKER_MODEL = "gemini-3-flash-preview"
+# Gemini 3 thinks before answering; on the checker's review prompt that took
+# ~12 s at default effort vs ~1.5 s at "low" (2026-10-02), and "low" still
+# caught and fixed a planted ω = √(LC) error. Empty string = provider default.
+ANSWER_CHECKER_REASONING = os.getenv("ANSWER_CHECKER_REASONING", "low").strip()
 
 # ── Background Learning Coach ─────────────────────────────────────────────────
 # The same agent, run after platform events rather than in a live conversation.
 # It decides for itself whether any action is warranted — doing nothing is a
 # valid and common outcome, so there is no "N wrong answers triggers X" rule.
-LEARNING_COACH_MODEL = "openai/gpt-oss-120b"
+LEARNING_COACH_MODEL = "gemini-3-flash-preview"
 LEARNING_COACH_MAX_STEPS = 4

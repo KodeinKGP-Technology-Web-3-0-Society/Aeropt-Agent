@@ -28,7 +28,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from agents.solver import prepare_student_markdown
@@ -37,7 +37,7 @@ from models.state import TutorState
 from utils.llm import groq_complete
 from utils.presentation import build_mistake_brief, build_remediation_cards
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 _ERROR_CLASSIFY_PROMPT = """\
 Classify the student's error when solving a JEE Physics problem.
@@ -122,6 +122,13 @@ def _check_consecutive_correct(user_id: str, concept_id: str) -> int:
     return count
 
 
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def diagnostic_node(state: TutorState) -> Dict[str, Any]:
     if not state.get("has_graded_outcome"):
         # Nothing to grade — skip silently
@@ -142,7 +149,9 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
     try:
         # ── 1. Classify error if not already provided ─────────────────────────
         # Use `or ""` (not `.get(key, "")`) so DB null values become "" instead of None.
-        if not is_correct and not error_type:
+        # An answer graded from the key (POST /study/answer) has no working to
+        # classify, and that path promises no model call: leave it unclassified.
+        if not is_correct and not error_type and not state.get("skip_error_classification"):
             correct_answer = (chunks[0].get("solution") or "") if chunks else ""
             error_type = _classify_error_type(
                 question=state.get("query") or "",
@@ -232,6 +241,11 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             time_taken_sec=time_taken,
             student_answer=student_answer,
             root_cause_concept_id=root_cause_concept_id,
+            source=state.get("attempt_source") or ("study" if state.get("study_session_id") else "chat"),
+            proficiency_before=old_score,
+            proficiency_after=new_score,
+            difficulty=_as_int(chunks[0].get("difficulty")) if chunks else None,
+            study_session_id=state.get("study_session_id"),
         )
 
         # ── 6. Write outcome summary to chat_turns ────────────────────────────

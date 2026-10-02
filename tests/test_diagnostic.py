@@ -43,5 +43,11 @@ def test_diagnostic_incorrect_with_weak_prereq(mock_db):
         error_type="conceptual",
         time_taken_sec=30,
         student_answer="42",
-        root_cause_concept_id="concept_B"
+        root_cause_concept_id="concept_B",
+        # learning ledger (migration 012): where it came from and the score change
+        source="chat",
+        proficiency_before=0.5,
+        proficiency_after=0.35,
+        difficulty=None,
+        study_session_id=None,
     )

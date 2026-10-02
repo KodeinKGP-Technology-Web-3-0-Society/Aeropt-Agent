@@ -88,7 +88,7 @@ def graded_fast_path_node(state: TutorState) -> Dict[str, Any]:
     """
     updates: Dict[str, Any] = {}
 
-    graded = diagnostic_node(state)
+    graded = diagnostic_node({**state, "attempt_source": state.get("attempt_source") or "practice"})  # type: ignore[arg-type]
     if graded.get("error"):
         # Grading failed, but the student still pressed a button and is waiting.
         # Fall through to follow-up so they get a reply. Keep a flag so the

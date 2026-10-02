@@ -24,7 +24,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from agents.runtime.loop import run_agent_loop
@@ -42,7 +42,7 @@ from utils.skills import load_skill
 
 logger = logging.getLogger("jee_tutor.learning_coach")
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 #: The coach may learn and remember, and may schedule. It may not compose
 #: anything a student will read, and it may not grade an attempt that did not

@@ -74,10 +74,10 @@ class SupabaseClient:
             self.client.table("user_learning_profile")
             .select("*")
             .eq("user_id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
-        return res.data
+        return res.data if res else None
 
     def create_user(
         self,
@@ -528,8 +528,16 @@ class SupabaseClient:
         is_correct: bool,
         error_type: Optional[str],
         time_taken_sec: Optional[int],
-        student_answer: Optional[str],
+        # Optional: two graders (evaluate_student_proficiency, practice_analyzer)
+        # never passed it, so their attempts raised TypeError and were lost.
+        student_answer: Optional[str] = None,
         root_cause_concept_id: Optional[str] = None,
+        *,
+        source: Optional[str] = None,
+        proficiency_before: Optional[float] = None,
+        proficiency_after: Optional[float] = None,
+        difficulty: Optional[int] = None,
+        study_session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         row: Dict[str, Any] = {
             "user_id": user_id,
@@ -548,7 +556,84 @@ class SupabaseClient:
         if student_answer:
             row["student_answer"] = student_answer
         res = self.client.table("user_attempts").insert(row).execute()
+        # Every graded path ends here, so this is where the ledger hears about it.
+        self.insert_learning_event(
+            user_id,
+            "attempt",
+            source=source or ("study" if study_session_id else "chat"),
+            concept_id=concept_id,
+            content_id=content_id,
+            session_id=session_id,
+            study_session_id=study_session_id,
+            outcome="correct" if is_correct else "wrong",
+            error_type=None if is_correct else error_type,
+            difficulty=difficulty,
+            time_taken_sec=time_taken_sec,
+            proficiency_before=proficiency_before,
+            proficiency_after=proficiency_after,
+            payload={"student_answer": (student_answer or "")[:500]} if student_answer else None,
+        )
         return res.data[0]
+
+    # ─────────────────────────── learning ledger (migration 012) ──────────────
+
+    def insert_learning_event(
+        self,
+        user_id: str,
+        kind: str,
+        *,
+        source: str = "chat",
+        concept_id: Optional[str] = None,
+        content_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        study_session_id: Optional[str] = None,
+        outcome: Optional[str] = None,
+        error_type: Optional[str] = None,
+        difficulty: Optional[int] = None,
+        time_taken_sec: Optional[int] = None,
+        proficiency_before: Optional[float] = None,
+        proficiency_after: Optional[float] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append one row to learning_events. Never raises — progress tracking
+        must not cost the student their turn."""
+        row: Dict[str, Any] = {"user_id": str(user_id), "kind": kind, "source": source}
+        optional = {
+            "concept_id": concept_id,
+            "content_id": content_id,
+            "session_id": session_id,
+            "study_session_id": study_session_id,
+            "outcome": outcome,
+            "error_type": error_type,
+            "difficulty": difficulty,
+            "time_taken_sec": time_taken_sec,
+            "proficiency_before": None if proficiency_before is None else round(float(proficiency_before), 4),
+            "proficiency_after": None if proficiency_after is None else round(float(proficiency_after), 4),
+            "payload": payload,
+        }
+        row.update({k: v for k, v in optional.items() if v is not None})
+        try:
+            self.client.table("learning_events").insert(row).execute()
+        except Exception:
+            logging.getLogger("jee_tutor.db").debug("learning event insert failed", exc_info=True)
+
+    def read_learning_events(
+        self, user_id: str, *, since_iso: Optional[str] = None, limit: int = 5000
+    ) -> List[Dict[str, Any]]:
+        try:
+            q = (
+                self.client.table("learning_events")
+                .select("*")
+                .eq("user_id", str(user_id))
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if since_iso:
+                q = q.gte("created_at", since_iso)
+            return q.execute().data or []
+        except Exception:
+            logging.getLogger("jee_tutor.db").debug("learning events read failed", exc_info=True)
+            return []
 
     def read_seen_content_ids(
         self, user_id: str, session_id: Optional[str] = None
@@ -632,22 +717,48 @@ class SupabaseClient:
                     return False
         return self._memory_enabled
 
+    #: Memory kinds ranked by how much they should influence teaching.
+    #: Misconceptions must never fall out of the recall window just because
+    #: newer context notes were written.  Within each kind, confidence desc.
+    _MEMORY_KIND_PRIORITY = {
+        "misconception": 0,
+        "strength": 1,
+        "goal": 2,
+        "plan": 3,
+        "preference": 4,
+        "context": 5,
+    }
+
     def read_learner_memories(
         self,
         user_id: str,
         *,
+        query: Optional[str] = None,
         subject_key: Optional[str] = None,
         kinds: Optional[List[str]] = None,
         limit: int = 12,
         min_confidence: float = 0.3,
     ) -> List[Dict[str, Any]]:
-        """Active learner memories, strongest first. Empty list if memory is off."""
+        """Active learner memories, ranked by kind priority then confidence.
+
+        Kind priority: misconception > strength > goal > plan > preference > context.
+        Within each kind, highest confidence first.  This ensures critical
+        learning insights (misconceptions, strengths) survive as the table
+        grows past ~50 entries per student, instead of being pushed out by
+        more recent but less actionable context notes.
+
+        Empty list if memory is off.
+        """
         if not self.memory_enabled():
             return []
         try:
+            # Fetch more than `limit` so we can re-rank client-side by kind
+            # priority.  The DB sorts by confidence desc, which is the tiebreaker
+            # within each kind after we re-rank.
+            fetch_limit = max(limit * 3, 36)
             q = (
                 self.client.table("learner_memory")
-                .select("memory_id, kind, subject_key, fact, evidence, confidence, created_at")
+                .select("memory_id, kind, subject_key, fact, evidence, confidence, created_at, embedding")
                 .eq("user_id", user_id)
                 .is_("superseded_by", "null")
                 .gte("confidence", min_confidence)
@@ -656,8 +767,43 @@ class SupabaseClient:
                 q = q.eq("subject_key", subject_key)
             if kinds:
                 q = q.in_("kind", kinds)
-            res = q.order("confidence", desc=True).limit(limit).execute()
-            return res.data or []
+            res = q.order("confidence", desc=True).limit(fetch_limit).execute()
+            rows = res.data or []
+            if not rows:
+                return []
+
+            # Re-rank: kind priority first, then confidence desc within kind.
+            fallback_priority = len(self._MEMORY_KIND_PRIORITY)
+            
+            query_vec = None
+            if query:
+                try:
+                    from retrieval import embedder
+                    query_vec = embedder.encode_one(query)
+                except Exception:
+                    pass
+
+            def _similarity(vec1, vec2):
+                if not vec1 or not vec2 or len(vec1) != len(vec2):
+                    return 0.0
+                dot = sum(a * b for a, b in zip(vec1, vec2))
+                norm1 = sum(a * a for a in vec1) ** 0.5
+                norm2 = sum(b * b for b in vec2) ** 0.5
+                if norm1 == 0 or norm2 == 0:
+                    return 0.0
+                return dot / (norm1 * norm2)
+
+            rows.sort(
+                key=lambda m: (
+                    self._MEMORY_KIND_PRIORITY.get(m.get("kind", ""), fallback_priority),
+                    -_similarity(query_vec, m.get("embedding")) if query_vec and m.get("embedding") else 0,
+                    -(float(m.get("confidence") or 0)),
+                )
+            )
+            # Remove embedding from output to save memory
+            for r in rows:
+                r.pop("embedding", None)
+            return rows[:limit]
         except Exception:
             return []
 
@@ -686,6 +832,13 @@ class SupabaseClient:
             "source": source,
             "session_id": session_id,
         }
+        try:
+            from retrieval import embedder
+            vec = embedder.encode_one(fact)
+            if vec:
+                row["embedding"] = list(vec)
+        except Exception:
+            pass
         try:
             res = self.client.table("learner_memory").insert(row).execute()
             return (res.data or [None])[0]
@@ -805,6 +958,283 @@ class SupabaseClient:
             self.client.table("agent_trace").insert(trace).execute()
         except Exception:
             pass
+
+    # ─────────────────────── study sessions (migration 010) ─────────────────
+
+    def create_study_session(
+        self,
+        user_id: str,
+        concept_id: str,
+        concept_name: Optional[str] = None,
+        chapter: Optional[str] = None,
+        agent_session_id: Optional[str] = None,
+        *,
+        mode: str = "learn",
+        question_source: str = "any",
+        difficulty_level: int = 1,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a new Study Room session. A 'practice' session starts in practice."""
+        row: Dict[str, Any] = {
+            "user_id": user_id,
+            "concept_id": concept_id,
+            "current_phase": "practice" if mode == "practice" else "learn",
+            "difficulty_level": max(1, min(5, int(difficulty_level or 1))),
+        }
+        if mode == "practice":
+            row["mode"] = "practice"
+        if question_source == "pyq":
+            row["question_source"] = "pyq"
+        if concept_name:
+            row["concept_name"] = concept_name
+        if chapter:
+            row["chapter"] = chapter
+        if agent_session_id:
+            row["agent_session_id"] = agent_session_id
+        try:
+            res = self.client.table("study_sessions").insert(row).execute()
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    def read_study_session(self, study_session_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            res = (
+                self.client.table("study_sessions")
+                .select("*")
+                .eq("study_session_id", study_session_id)
+                .single()
+                .execute()
+            )
+            return res.data
+        except Exception:
+            return None
+
+    def update_study_session_phase(
+        self, study_session_id: str, phase: str, phase_summary: Optional[str] = None
+    ) -> None:
+        # A new phase starts its own outline position and turn count (migration 011).
+        updates: Dict[str, Any] = {"current_phase": phase, "phase_step": 0, "phase_turns": 0}
+        try:
+            # Append to phase_history
+            session = self.read_study_session(study_session_id)
+            if session:
+                history = session.get("phase_history") or []
+                history.append({
+                    "phase": phase,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "summary": phase_summary,
+                })
+                updates["phase_history"] = history
+            self.client.table("study_sessions").update(updates).eq(
+                "study_session_id", study_session_id
+            ).execute()
+        except Exception:
+            pass
+
+    def update_study_session_fields(self, study_session_id: str, fields: Dict[str, Any]) -> None:
+        """Pacing fields from migration 011: lesson_plan, phase_step, phase_turns."""
+        try:
+            self.client.table("study_sessions").update(fields).eq(
+                "study_session_id", study_session_id
+            ).execute()
+        except Exception:
+            logging.getLogger("jee_tutor.db").debug("study session field update failed", exc_info=True)
+
+    def update_study_session_stats(
+        self, study_session_id: str, questions_served: int, questions_correct: int,
+        difficulty_level: int
+    ) -> None:
+        try:
+            self.client.table("study_sessions").update({
+                "questions_served": questions_served,
+                "questions_correct": questions_correct,
+                "difficulty_level": difficulty_level,
+            }).eq("study_session_id", study_session_id).execute()
+        except Exception:
+            pass
+
+    def complete_study_session(self, study_session_id: str, outcome: str) -> None:
+        try:
+            self.client.table("study_sessions").update({
+                "current_phase": "completed",
+                "outcome": outcome,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("study_session_id", study_session_id).execute()
+        except Exception:
+            pass
+
+    def list_user_study_sessions(
+        self, user_id: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        try:
+            res = (
+                self.client.table("study_sessions")
+                .select("study_session_id, concept_id, concept_name, chapter, "
+                        "current_phase, questions_served, questions_correct, "
+                        "difficulty_level, outcome, started_at, completed_at")
+                .eq("user_id", user_id)
+                .order("started_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return res.data or []
+        except Exception:
+            return []
+
+    def read_study_sessions_for_concept(
+        self, user_id: str, concept_id: str
+    ) -> List[Dict[str, Any]]:
+        try:
+            res = (
+                self.client.table("study_sessions")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("concept_id", concept_id)
+                .order("started_at", desc=True)
+                .execute()
+            )
+            return res.data or []
+        except Exception:
+            return []
+
+    # ─────────────────────── study session events ─────────────────────────────
+
+    def insert_study_event(
+        self,
+        study_session_id: str,
+        user_id: str,
+        event_type: str,
+        *,
+        concept_id: Optional[str] = None,
+        content_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        row: Dict[str, Any] = {
+            "study_session_id": study_session_id,
+            "user_id": user_id,
+            "event_type": event_type,
+        }
+        if concept_id:
+            row["concept_id"] = concept_id
+        if content_id:
+            row["content_id"] = content_id
+        if payload:
+            row["payload"] = payload
+        try:
+            res = self.client.table("study_session_events").insert(row).execute()
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    def read_study_events(
+        self, study_session_id: str, event_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        try:
+            q = (
+                self.client.table("study_session_events")
+                .select("*")
+                .eq("study_session_id", study_session_id)
+                .order("created_at")
+            )
+            if event_type:
+                q = q.eq("event_type", event_type)
+            res = q.execute()
+            return res.data or []
+        except Exception:
+            return []
+
+    def count_study_events(self, study_session_id: str, event_type: str) -> int:
+        try:
+            res = (
+                self.client.table("study_session_events")
+                .select("event_id")
+                .eq("study_session_id", study_session_id)
+                .eq("event_type", event_type)
+                .execute()
+            )
+            return len(res.data or [])
+        except Exception:
+            return 0
+
+    def read_questions_attempted(
+        self, study_session_id: str
+    ) -> List[Dict[str, Any]]:
+        """Return all question_attempted events for a study session."""
+        return self.read_study_events(study_session_id, "question_attempted")
+
+    # ─────────────────────── learner readiness scores ─────────────────────────
+
+    def upsert_readiness_score(
+        self,
+        user_id: str,
+        concept_id: Optional[str],
+        score: float,
+        confidence: float = 0.5,
+        factors: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        score = max(0.0, min(100.0, float(score)))
+        confidence = max(0.0, min(1.0, float(confidence)))
+        try:
+            # Check if row exists
+            q = (
+                self.client.table("learner_readiness_scores")
+                .select("score_id")
+                .eq("user_id", user_id)
+            )
+            if concept_id:
+                q = q.eq("concept_id", concept_id)
+            else:
+                q = q.is_("concept_id", "null")
+            existing = q.execute()
+
+            row = {
+                "user_id": user_id,
+                "concept_id": concept_id,
+                "score": score,
+                "confidence": confidence,
+                "factors": factors or {},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if existing.data:
+                sid = existing.data[0]["score_id"]
+                self.client.table("learner_readiness_scores").update(row).eq(
+                    "score_id", sid
+                ).execute()
+                row["score_id"] = sid
+                return row
+            res = self.client.table("learner_readiness_scores").insert(row).execute()
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    def read_readiness_scores(self, user_id: str) -> List[Dict[str, Any]]:
+        try:
+            res = (
+                self.client.table("learner_readiness_scores")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("updated_at", desc=True)
+                .execute()
+            )
+            return res.data or []
+        except Exception:
+            return []
+
+    def read_concept_readiness(
+        self, user_id: str, concept_id: str
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            res = (
+                self.client.table("learner_readiness_scores")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("concept_id", concept_id)
+                .single()
+                .execute()
+            )
+            return res.data
+        except Exception:
+            return None
 
     # ─────────────────────────── registration helper ──────────────────────────
 

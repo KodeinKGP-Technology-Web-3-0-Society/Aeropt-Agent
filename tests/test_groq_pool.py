@@ -1,4 +1,4 @@
-"""Groq key pool: env parsing, 429 rotation, model fallback."""
+"""Gemini key pool: env parsing, 429 rotation, dead-key retirement, model fallback."""
 
 from __future__ import annotations
 
@@ -6,19 +6,23 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from groq import RateLimitError
+from openai import RateLimitError
 
-from utils.groq_pool import GroqKeyPool, load_groq_api_keys, reset_pool_for_tests
+from utils.groq_pool import GeminiKeyPool, load_gemini_api_keys, reset_pool_for_tests
 from utils.llm import groq_complete
 
 
 def _rate_limit() -> RateLimitError:
-    try:
-        return RateLimitError("Rate limit reached")
-    except TypeError:
-        err = RateLimitError.__new__(RateLimitError)
-        Exception.__init__(err, "Rate limit reached")
-        return err
+    err = RateLimitError.__new__(RateLimitError)
+    Exception.__init__(err, "Error code: 429 - RESOURCE_EXHAUSTED")
+    return err
+
+
+class _BadKey(Exception):
+    status_code = 400
+
+    def __init__(self):
+        super().__init__("Error code: 400 - API key not valid. Please pass a valid API key.")
 
 
 def _completion(text: str):
@@ -45,34 +49,25 @@ class FakeGroq:
             return _completion(outcome)
         if self.api_key in self._fail_keys:
             raise _rate_limit()
+        if self.api_key.startswith("bad"):
+            raise _BadKey()
         return _completion(f"ok:{self.api_key}")
 
 
 class TestLoadKeys(unittest.TestCase):
-    def test_numbered_keys(self):
-        keys = load_groq_api_keys(
-            {
-                "GROQ_API_KEY": "gsk_a",
-                "GROQ_API_KEY_2": "gsk_b",
-                "GROQ_API_KEY_3": "gsk_c",
-            }
-        )
-        self.assertEqual(keys, ["gsk_a", "gsk_b", "gsk_c"])
+    def test_comma_and_semicolon_list(self):
+        keys = load_gemini_api_keys({"GEMINI_KEYS": "k1, k2 ; k3"})
+        self.assertEqual(keys, ["k1", "k2", "k3"])
 
-    def test_comma_list_wins(self):
-        keys = load_groq_api_keys(
-            {
-                "GROQ_API_KEYS": "gsk_1, gsk_2 ; gsk_3",
-                "GROQ_API_KEY": "ignored",
-            }
-        )
-        self.assertEqual(keys, ["gsk_1", "gsk_2", "gsk_3"])
+    def test_single_key_fallback(self):
+        self.assertEqual(load_gemini_api_keys({"GEMINI_API_KEY": "solo"}), ["solo"])
 
     def test_dedupes(self):
-        keys = load_groq_api_keys(
-            {"GROQ_API_KEY": "gsk_a", "GROQ_API_KEY_2": "gsk_a", "GROQ_API_KEY_3": "gsk_b"}
-        )
-        self.assertEqual(keys, ["gsk_a", "gsk_b"])
+        keys = load_gemini_api_keys({"GEMINI_KEYS": "k1,k2,k1,k3,k2"})
+        self.assertEqual(keys, ["k1", "k2", "k3"])
+
+    def test_empty(self):
+        self.assertEqual(load_gemini_api_keys({}), [])
 
 
 class TestKeyRotation(unittest.TestCase):
@@ -83,7 +78,7 @@ class TestKeyRotation(unittest.TestCase):
         def factory(api_key):
             return FakeGroq(api_key, fail_keys={"k1"})
 
-        pool = GroqKeyPool(["k1", "k2"], client_factory=factory)
+        pool = GeminiKeyPool(["k1", "k2"], client_factory=factory)
         reset_pool_for_tests(pool)
         text, model = groq_complete(
             client=MagicMock(),
@@ -93,6 +88,29 @@ class TestKeyRotation(unittest.TestCase):
         self.assertEqual(text, "ok:k2")
         self.assertEqual(model, "llama-3.1-8b-instant")
 
+    def test_rotates_past_more_keys_than_model_retries(self):
+        """Six hot keys then a cool one: rotation must not stop at MAX_RETRIES."""
+        hot = {f"k{i}" for i in range(6)}
+        pool = GeminiKeyPool(
+            [f"k{i}" for i in range(7)],
+            client_factory=lambda k: FakeGroq(k, fail_keys=hot),
+        )
+        reset_pool_for_tests(pool)
+        text, _ = groq_complete(
+            client=MagicMock(), model="m", messages=[{"role": "user", "content": "hi"}]
+        )
+        self.assertEqual(text, "ok:k6")
+
+    def test_rejected_key_is_retired_not_fatal(self):
+        pool = GeminiKeyPool(["bad1", "good"], client_factory=FakeGroq)
+        reset_pool_for_tests(pool)
+        for _ in range(3):
+            text, _ = groq_complete(
+                client=MagicMock(), model="m", messages=[{"role": "user", "content": "hi"}]
+            )
+            self.assertEqual(text, "ok:good")
+        self.assertEqual(pool.live_count, 1)
+
     def test_next_model_when_every_key_429s(self):
         def factory(api_key):
             return FakeGroq(
@@ -100,7 +118,7 @@ class TestKeyRotation(unittest.TestCase):
                 by_model={"hot-model": "429", "cool-model": f"ok:{api_key}"},
             )
 
-        pool = GroqKeyPool(["k1", "k2"], client_factory=factory)
+        pool = GeminiKeyPool(["k1", "k2"], client_factory=factory)
         reset_pool_for_tests(pool)
         text, model = groq_complete(
             client=MagicMock(),
@@ -124,7 +142,7 @@ class TestKeyRotation(unittest.TestCase):
                     )
                 return _completion("ok-clamped")
 
-        pool = GroqKeyPool(["k1", "k2"], client_factory=TpmFake)
+        pool = GeminiKeyPool(["k1", "k2"], client_factory=TpmFake)
         reset_pool_for_tests(pool)
         text, model = groq_complete(
             client=MagicMock(),
@@ -146,7 +164,7 @@ class TestKeyRotation(unittest.TestCase):
                     )
                 return _completion("ok-fallback")
 
-        pool = GroqKeyPool(["k1", "k2"], client_factory=Always413ThenOk)
+        pool = GeminiKeyPool(["k1", "k2"], client_factory=Always413ThenOk)
         reset_pool_for_tests(pool)
         text, model = groq_complete(
             client=MagicMock(),

@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from db.supabase_client import db
@@ -22,7 +22,7 @@ from utils.llm import groq_complete
 from utils.stream import stream_callback_var
 
 logger = logging.getLogger("jee_tutor.practice_generator")
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 _QUESTION_TYPES = frozenset({"mcq", "numerical"})
 

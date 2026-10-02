@@ -45,34 +45,47 @@ def load_learner(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def plan_specialist(learner: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the week plan from catalog order, skipping high-mastery concepts."""
+    """Build the week plan using the LLM study planner agent."""
+    from agents.study_planner import generate_study_plan
+    from db.supabase_client import db
+    
     catalog = learner["catalog"]
     if not catalog:
-        return {"plan": list(learner["home"]["plan"])}
+        return {"plan": list(learner.get("home", {}).get("plan", []))}
 
-    mastery_by_id = _mastery_index(learner)
-    plan: List[Dict[str, str]] = []
-    for row in catalog:
-        concept_id = _concept_id(row)
-        if not concept_id:
-            continue
-        if mastery_by_id.get(concept_id, 0) >= 80:
-            continue
-        title = _title_of(row) or _title_lookup(learner, concept_id)
-        if not title:
-            continue
-        if not plan:
-            status, when = "in_progress", "today"
-        else:
-            status, when = "pending", "this_week"
-        plan.append(
-            {
-                "concept_id": concept_id,
-                "title": title,
-                "status": status,
-                "when": when,
-            }
-        )
+    user_id = learner.get("user_id")
+    user_profile = {}
+    if user_id:
+        user_profile = db.read_user(user_id) or {}
+        
+    trackers = learner.get("trackers", [])
+    
+    plan = generate_study_plan(user_profile, trackers, catalog)
+    if not plan:
+        # Fallback to static plan logic
+        mastery_by_id = _mastery_index(learner)
+        plan = []
+        for row in catalog:
+            concept_id = _concept_id(row)
+            if not concept_id:
+                continue
+            if mastery_by_id.get(concept_id, 0) >= 80:
+                continue
+            title = _title_of(row) or _title_lookup(learner, concept_id)
+            if not title:
+                continue
+            if not plan:
+                status, when = "in_progress", "today"
+            else:
+                status, when = "pending", "this_week"
+            plan.append(
+                {
+                    "concept_id": concept_id,
+                    "title": title,
+                    "status": status,
+                    "when": when,
+                }
+            )
     return {"plan": plan}
 
 

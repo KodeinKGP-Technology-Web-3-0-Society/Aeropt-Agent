@@ -24,9 +24,9 @@ _SKIP_REASON = "set RUN_LIVE_GROQ_CHECKS=1 to run live Groq model-availability c
 @unittest.skipUnless(os.environ.get("RUN_LIVE_GROQ_CHECKS"), _SKIP_REASON)
 class TestConfiguredModelsAreLive(unittest.TestCase):
     def test_every_configured_model_is_available(self):
-        from groq import Groq
+        from openai import OpenAI
 
-        client = Groq(api_key=config.GROQ_API_KEY)
+        client = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
         configured = {
             config.ORCHESTRATOR_MODEL,

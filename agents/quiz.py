@@ -24,7 +24,7 @@ import json
 import re
 from typing import Any, Dict, List
 
-from groq import Groq
+from openai import OpenAI
 
 from utils.llm import groq_complete
 
@@ -44,7 +44,7 @@ from models.state import TutorState
 # Reuse Solver's image + formulae helpers so quiz content renders identically.
 from agents.solver import _image_urls, _formulae_block, _render_math_text
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 # ── On-demand quiz batch (intent=quiz_request) ────────────────────────────────
 

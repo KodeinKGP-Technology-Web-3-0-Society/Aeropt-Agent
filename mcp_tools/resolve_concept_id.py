@@ -12,9 +12,9 @@ import re
 import config
 from db.supabase_client import db
 from utils.llm import groq_complete
-from groq import Groq
+from openai import OpenAI
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 
 class ResolveConceptIdArgs(BaseModel):

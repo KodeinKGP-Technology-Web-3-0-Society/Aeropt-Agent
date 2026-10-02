@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from utils.latex_guidelines import sanitize_chunk_text_for_prompt
@@ -20,7 +20,7 @@ from utils.llm import groq_complete
 
 logger = logging.getLogger("jee_tutor.content_summarizer")
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 CARD_TYPES = frozenset({"concept", "formula", "example", "takeaway"})
 MIN_INPUT_FOR_THREE_CARDS = 500

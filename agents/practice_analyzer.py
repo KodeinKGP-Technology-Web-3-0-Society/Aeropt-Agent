@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any, Dict
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from db.supabase_client import db
@@ -19,7 +19,7 @@ from models.state import TutorState
 from utils.llm import groq_complete
 
 logger = logging.getLogger("jee_tutor.practice_analyzer")
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 _PROMPT = """\
 You are an expert JEE physics tutor. The student just submitted a practice batch.
@@ -65,7 +65,8 @@ def practice_analyzer_node(state: TutorState) -> Dict[str, Any]:
             is_correct=is_correct,
             error_type="calculation" if not is_correct else None,
             time_taken_sec=res.get("time_taken", 60),
-            session_id=session_id
+            session_id=session_id,
+            source="practice",
         )
         
         db.update_user_concept_state(

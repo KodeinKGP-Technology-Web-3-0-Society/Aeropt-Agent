@@ -24,7 +24,7 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 import config
 from agents.runtime.trace import AgentTrace, TraceStep
@@ -32,7 +32,7 @@ from utils.llm import groq_complete, groq_stream
 
 logger = logging.getLogger("jee_tutor.answer_checker")
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 #: Below this length a reply is an acknowledgement, not an explanation worth
 #: paying a second model call to review.
@@ -53,14 +53,12 @@ Check it against these, in this order of importance:
 presented confidently is the worst failure here.
 2. RESPONSIVE — does it answer what this student actually asked, rather than a \
 nearby question?
-3. GROUNDED — where it leans on the course material below, does it use it \
-faithfully? Where it goes beyond that material, does it say so?
+3. GROUNDED (FAIL-CLOSED FORMULAS) — CRITICAL: Any formula or numeric value in the draft MUST be strictly traceable to the course material below or explicitly derived using exact symbolic tools. If a formula or number is uncited, hallucinated, or improvised, you MUST issue a verdict of "revise" and strip the unsupported formula. If stripping it ruins the answer, rewrite the answer to abstain or fall back to a qualitative explanation.
 4. HONEST — is uncertainty stated plainly, rather than smoothed over?
 5. TEACHING — does it explain the reasoning rather than only stating a result?
 6. PITCHED — is the language right for this student's level?
 
-Be specific and be sparing. Rewrite only what is actually wrong. A draft that is \
-merely not how you would have phrased it is a pass.
+Be specific and be sparing. Rewrite only what is actually wrong. A draft that is merely not how you would have phrased it is a pass, EXCEPT for formula violations which must always be revised.
 
 Preserve exactly, when you revise:
   - all LaTeX and mathematical notation, unchanged in form;
@@ -122,14 +120,14 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         lines = [ln for ln in text.splitlines() if not ln.strip().startswith("```")]
         text = "\n".join(lines).strip()
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         pass
     match = _JSON_BLOCK_RE.search(text)
     if not match:
         return None
     try:
-        return json.loads(match.group(0))
+        return json.loads(match.group(0), strict=False)
     except json.JSONDecodeError:
         return None
 
@@ -160,6 +158,11 @@ def _format_learner_context(state: Dict[str, Any]) -> str:
         if fact:
             bits.append(f"Remembered: {fact}")
     return "\n".join(bits) if bits else "(nothing specific known)"
+
+
+def _reasoning_kwargs() -> Dict[str, Any]:
+    effort = getattr(config, "ANSWER_CHECKER_REASONING", "")
+    return {"reasoning_effort": effort} if effort else {}
 
 
 def check_answer(
@@ -201,6 +204,8 @@ def check_answer(
             fallback_models=config.SMALL_MODEL_FALLBACK,
             temperature=0.1,
             max_tokens=2400,
+            response_format={"type": "json_object"},
+            **_reasoning_kwargs(),
         )
     except Exception as exc:  # noqa: BLE001 — fail open, deliberately
         logger.warning("Answer checker unavailable: %s", exc)
@@ -214,7 +219,7 @@ def check_answer(
 
     parsed = _extract_json(raw)
     if not parsed:
-        logger.warning("Answer checker returned unparseable output — passing draft through.")
+        logger.info("Answer checker returned unparseable output (JSON incomplete): %r — passing draft through.", raw)
         step.ok = False
         step.error = "unparseable checker output"
         step.result_preview = VERDICT_SKIPPED
@@ -263,7 +268,7 @@ def check_answer(
 def _unescape_json_string(s: str) -> str:
     if not s: return ""
     try:
-        return json.loads('"' + s + '"')
+        return json.loads('"' + s + '"', strict=False)
     except json.JSONDecodeError:
         return s
 
@@ -308,6 +313,8 @@ def check_answer_streaming(
             fallback_models=config.SMALL_MODEL_FALLBACK,
             temperature=0.1,
             max_tokens=2400,
+            response_format={"type": "json_object"},
+            **_reasoning_kwargs(),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Answer checker stream unavailable: %s", exc)
@@ -413,7 +420,7 @@ def check_answer_streaming(
 
     parsed = _extract_json(full_response)
     if not parsed:
-        logger.warning("Answer checker returned unparseable output — passing draft through.")
+        logger.info("Answer checker returned unparseable output (JSON incomplete): %r — passing draft through.", full_response)
         step.ok = False
         step.error = "unparseable checker output"
         step.result_preview = VERDICT_SKIPPED

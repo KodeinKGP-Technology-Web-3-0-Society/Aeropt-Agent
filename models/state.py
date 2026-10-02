@@ -115,6 +115,7 @@ class TutorState(TypedDict, total=False):
     # ── Graded outcome (supplied by caller before graph invocation) ───────────
     # Set to True when the student submitted a numeric / multi-choice answer.
     has_graded_outcome: bool
+    attempt_source: str              # ledger source: chat | practice | assess | onboarding | study
     student_answer: Optional[str]
     is_correct: Optional[bool]
     error_type: Optional[str]          # conceptual | procedural | calculation | misread

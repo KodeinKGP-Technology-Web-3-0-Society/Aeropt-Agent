@@ -288,15 +288,41 @@ def test_prerequisite_graph_is_acyclic():
 
 
 def test_every_in_syllabus_concept_has_material():
+    """Every textbook concept has content. JEE syllabus topics the textbook never
+    teaches (local_ingest/syllabus_topics.py: lab experiments, logic gates) are
+    the one allowed exception, and only when recorded as such."""
     conn = store.corpus()
     bare = conn.execute(
         """
         SELECT count(*) AS n FROM concepts k
-        WHERE k.in_syllabus = 1
+        WHERE k.in_syllabus = 1 AND k.source <> 'syllabus'
           AND NOT EXISTS (SELECT 1 FROM chunk_concepts cc WHERE cc.concept_id = k.concept_id)
         """
     ).fetchone()["n"]
     assert bare == 0, f"{bare} in-syllabus concepts have no content at all"
+    unrecorded = conn.execute(
+        """
+        SELECT count(*) AS n FROM concepts k
+        WHERE k.source = 'syllabus'
+          AND NOT EXISTS (SELECT 1 FROM chunk_concepts cc WHERE cc.concept_id = k.concept_id)
+          AND NOT EXISTS (SELECT 1 FROM syllabus_topics t WHERE t.concept_id = k.concept_id AND t.material < 3)
+        """
+    ).fetchone()["n"]
+    assert unrecorded == 0, f"{unrecorded} syllabus topics have no material and are not marked tutor-taught"
+
+
+def test_syllabus_topics_cover_the_jee_main_units():
+    """All 20 JEE Main units (NTA 2026-27) are present, each topic resolvable."""
+    from local_ingest.jee_topics import JEE_TOPICS
+
+    conn = store.corpus()
+    units = [r["unit"] for r in conn.execute("SELECT DISTINCT unit FROM syllabus_topics ORDER BY unit_ord")]
+    assert units == [u for u, _ in JEE_TOPICS]
+    missing = conn.execute(
+        "SELECT count(*) AS n FROM syllabus_topics t LEFT JOIN concepts k ON k.concept_id = t.concept_id "
+        "WHERE k.concept_id IS NULL"
+    ).fetchone()["n"]
+    assert missing == 0
 
 
 def test_retrieval_is_fast():

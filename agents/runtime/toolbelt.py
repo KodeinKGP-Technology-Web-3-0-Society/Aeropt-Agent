@@ -279,7 +279,21 @@ class Toolbelt:
     # ── dispatch ─────────────────────────────────────────────────────────────
 
     def call(self, name: str, raw_args: Any) -> ToolResult:
-        """Validate and run one tool call. Never raises."""
+        """Validate and run one tool call. Never raises.
+
+        Reports start/finish to services.progress so a streaming turn can show
+        the student what the tutor is doing right now.
+        """
+        from services import progress
+
+        if progress.is_cancelled():
+            return ToolResult(ok=False, error="The student stopped this turn. Do not continue.")
+        progress.report("tool", name, "start")
+        result = self._call(name, raw_args)
+        progress.report("tool", name, "done" if result.ok else "error")
+        return result
+
+    def _call(self, name: str, raw_args: Any) -> ToolResult:
         started = time.time()
         spec = self._specs.get(name)
 

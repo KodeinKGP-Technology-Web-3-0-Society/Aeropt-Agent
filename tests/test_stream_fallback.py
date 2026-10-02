@@ -1,5 +1,5 @@
 import pytest
-from groq import InternalServerError
+from openai import InternalServerError
 from utils.llm import groq_stream
 
 class MockDelta:
@@ -69,7 +69,7 @@ def test_stream_fallback_mid_stream(monkeypatch):
     monkeypatch.setattr(utils.llm, "BACKOFF_BASE", 0.001)
     monkeypatch.setattr("utils.groq_pool.get_pool", lambda: None)
 
-    from groq import APIConnectionError
+    from openai import APIConnectionError
     import httpx
     exc = APIConnectionError(request=httpx.Request("GET", "http://test"))
 

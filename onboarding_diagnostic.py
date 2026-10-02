@@ -145,6 +145,7 @@ def grade_placement_answer(
         "query": "onboarding diagnostic",
         "primary_concept_id": concept_id,
         "has_graded_outcome": True,
+        "attempt_source": "onboarding",
         "student_answer": "1" if is_correct else "0",
         "is_correct": is_correct,
         "error_type": None,

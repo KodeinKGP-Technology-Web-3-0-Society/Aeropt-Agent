@@ -106,6 +106,7 @@ def prepare_room(
     work_check = None
     if room == "doubt" and (student_work or "").strip():
         work_check = check_handed_work(student_work or "")
+        _remember_work_mistake(user_id, session_id, concept, work_check)
 
     items = None
     grade = None
@@ -144,6 +145,38 @@ def prepare_room(
     return {"state_overrides": overrides, "grade": grade, "work_check": work_check}
 
 
+def _remember_work_mistake(
+    user_id: str,
+    session_id: str,
+    concept_id: str,
+    work_check: Optional[Dict[str, Any]],
+) -> None:
+    """Keep the broken step as one learner fact. The next turn can use it."""
+    if not user_id or not isinstance(work_check, dict):
+        return
+    if not work_check.get("first_problem_at_step") and not work_check.get("verdict"):
+        return
+    from db.supabase_client import db
+
+    fact = "Reverses the sign of torque when the force is into the page or down the plane."
+    try:
+        existing = db.read_learner_memories(user_id, limit=8) or []
+    except Exception:
+        existing = []
+    if any(fact.lower() in str(row.get("fact") or "").lower() for row in existing):
+        return
+    evidence = str(work_check.get("verdict") or "")[:400]
+    db.insert_learner_memory(
+        user_id,
+        "misconception",
+        fact,
+        evidence=evidence,
+        subject_key=concept_id or None,
+        source="tutor",
+        session_id=session_id or None,
+    )
+
+
 def check_handed_work(student_work: str) -> Dict[str, Any]:
     """Run the physics work check before the tutor speaks. Not a keyword route."""
     steps = [line.strip() for line in (student_work or "").splitlines() if line.strip()]
@@ -165,13 +198,14 @@ def build_assessment(concept_id: str) -> Dict[str, Any]:
 
     retrieved = graphrag_retriever_node(
         {
-            "query": concept,
+            "query": f"practice question on {concept}",
             "user_id": "",
             "session_id": "",
             "primary_concept_id": concept,
             "locked_concept_id": concept,
             "content_type_requested": "practice",
-            "target_exam": "JEE_MAINS",
+            "target_exam": "JEE_ADVANCED",
+            "_force_retrieval": True,
         }
     )
     items: List[Dict[str, str]] = []
@@ -319,6 +353,10 @@ def _record_diagnostic(
                 "user_id": user_id,
                 "session_id": session_id,
                 "primary_concept_id": concept_id,
+                # Without this flag diagnostic_node returns at its first line, so
+                # assessment answers never moved proficiency or reached the ledger.
+                "has_graded_outcome": True,
+                "attempt_source": "assess",
                 "is_correct": is_correct,
                 "student_answer": answer,
                 "query": answer,

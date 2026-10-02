@@ -28,8 +28,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple, Generator
 
-from groq import (
-    Groq,
+from openai import (
+    OpenAI,
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
@@ -84,7 +84,70 @@ def _tpm_limit_from_error(exc: Exception) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _pick_client(pool, override_client: Groq, model: str) -> Tuple[Optional[int], Groq]:
+_DEAD_KEY_MARKERS = (
+    "api key not valid",
+    "valid api key",
+    "api_key_invalid",
+    "api key expired",
+    "permission_denied",
+    "has been suspended",
+    "service_disabled",
+    "billing",
+)
+
+
+def _key_failure(exc: Exception) -> Optional[str]:
+    """'limited' / 'dead' when the failure belongs to the key, not the model.
+
+    A 429 (RESOURCE_EXHAUSTED) means this key's quota is spent — another key can
+    serve the same request right now. A 400/401/403 naming the key means Google
+    will never accept it. Either way the request itself is fine, so it should
+    move to the next key rather than burn a model retry or fail the turn.
+    """
+    if isinstance(exc, RateLimitError):
+        return "limited"
+    msg = str(exc).lower()
+    if "resource_exhausted" in msg or "429" in msg[:40]:
+        return "limited"
+    status = getattr(exc, "status_code", None)
+    if status in (400, 401, 403) and any(m in msg for m in _DEAD_KEY_MARKERS):
+        return "dead"
+    return None
+
+
+_RETRY_HINT_RE = re.compile(r"retry in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?", re.IGNORECASE)
+_RETRY_DELAY_RE = re.compile(r"retryDelay'?\"?\s*:\s*'?\"?(\d+)s")
+
+
+def _retry_seconds(exc: Exception) -> Optional[float]:
+    """Google's own wait: "Please retry in 11h10m14s" or retryDelay: '40214s'."""
+    msg = str(exc)
+    m = _RETRY_DELAY_RE.search(msg)
+    if m:
+        return float(m.group(1))
+    m = _RETRY_HINT_RE.search(msg)
+    if m and any(m.groups()):
+        h, mi, se = (float(g) if g else 0.0 for g in m.groups())
+        return h * 3600 + mi * 60 + se
+    return None
+
+
+def is_quota_exhausted(exc: Exception) -> bool:
+    """A spent daily quota (not a per-minute burst)."""
+    secs = _retry_seconds(exc)
+    return "quota" in str(exc).lower() and (secs or 0) > 600
+
+
+def _note_key_failure(pool, key_idx: Optional[int], kind: str, exc: Exception, model: str = "") -> None:
+    if pool is None or key_idx is None:
+        return
+    if kind == "dead":
+        pool.mark_dead(key_idx, str(exc))
+    else:
+        pool.mark_limited(key_idx, model, _retry_seconds(exc))
+
+
+def _pick_client(pool, override_client: OpenAI, model: str) -> Tuple[Optional[int], OpenAI]:
     """Return (key_index_or_None, client) for one attempt against `model`."""
     if pool is None:
         return None, override_client
@@ -94,7 +157,7 @@ def _pick_client(pool, override_client: Groq, model: str) -> Tuple[Optional[int]
 
 
 def _run_chain(
-    client: Groq,
+    client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
     fallback_models: Optional[List[str]] = None,
@@ -142,8 +205,15 @@ def _run_chain(
             )
 
         call_kwargs = dict(kwargs)
+        attempt = -1
+        key_switches = 0
+        if pool is not None and pool.exhausted(current_model):
+            logger.warning("[LLM] %s: daily quota spent on every key — skipping to fallback.", current_model)
+            last_exc = RuntimeError(f"Daily quota exhausted for {current_model} on every key")
+            continue
 
-        for attempt in range(MAX_RETRIES + 1):
+        while attempt < MAX_RETRIES:
+            attempt += 1
             key_idx, active_client = _pick_client(pool, client, current_model)
             if pool is not None and key_idx is not None:
                 pool.note_attempt(key_idx, current_model)
@@ -180,6 +250,21 @@ def _run_chain(
             except Exception as exc:
                 last_exc = exc
 
+                key_kind = _key_failure(exc)
+                if key_kind and pool is not None and key_idx is not None:
+                    _note_key_failure(pool, key_idx, key_kind, exc, current_model)
+                    key_switches += 1
+                    if pool.live_count == 0:
+                        break  # nothing left to rotate to
+                    if key_switches < pool.size:
+                        # Same request, different key: not a model failure, so it
+                        # neither waits nor spends one of this model's retries.
+                        attempt -= 1
+                        continue
+                    # Every key is hot. Fall through to the backoff below so the
+                    # earliest cooldown has a moment to clear.
+                    key_switches = 0
+
                 if _is_model_unavailable(exc):
                     logger.warning("[LLM] %s unavailable, skipping.", current_model)
                     break  # skip retries, go to next model
@@ -211,33 +296,17 @@ def _run_chain(
                     # Non-recoverable (bad request, auth, etc.) — re-raise immediately
                     raise
 
-                if isinstance(exc, RateLimitError) and pool is not None and key_idx is not None:
-                    pool.mark_limited(key_idx)
-
                 if attempt < MAX_RETRIES:
-                    # A rate limit on a multi-key pool rotates to a different key on
-                    # the next attempt automatically (see _pick_client) — no need to
-                    # sit out a backoff for that case. Single-key pools (or every
-                    # other transient error) still back off as before.
-                    skip_backoff = (
-                        isinstance(exc, RateLimitError) and pool is not None and pool.size > 1
+                    wait = BACKOFF_BASE ** (attempt + 1)
+                    logger.warning(
+                        "[LLM] %s transient error (attempt %d/%d): %s — retrying in %.1fs",
+                        current_model,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        str(exc)[:120],
+                        wait,
                     )
-                    if skip_backoff:
-                        logger.warning(
-                            "[LLM] %s key #%s rate-limited (attempt %d/%d) — rotating key, no wait.",
-                            current_model, key_idx, attempt + 1, MAX_RETRIES + 1,
-                        )
-                    else:
-                        wait = BACKOFF_BASE ** (attempt + 1)
-                        logger.warning(
-                            "[LLM] %s transient error (attempt %d/%d): %s — retrying in %.1fs",
-                            current_model,
-                            attempt + 1,
-                            MAX_RETRIES + 1,
-                            str(exc)[:120],
-                            wait,
-                        )
-                        time.sleep(wait)
+                    time.sleep(wait)
                 else:
                     logger.warning(
                         "[LLM] %s exhausted %d retries: %s",
@@ -254,7 +323,7 @@ def _run_chain(
 
 
 def groq_complete(
-    client: Groq,
+    client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
     fallback_models: Optional[List[str]] = None,
@@ -301,7 +370,7 @@ def groq_complete(
 
 
 def groq_chat(
-    client: Groq,
+    client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
     fallback_models: Optional[List[str]] = None,
@@ -348,7 +417,7 @@ def groq_chat(
 
 
 def groq_stream(
-    client: Groq,
+    client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
     fallback_models: Optional[List[str]] = None,
@@ -378,8 +447,15 @@ def groq_stream(
             )
 
         call_kwargs = dict(kwargs)
+        attempt = -1
+        key_switches = 0
+        if pool is not None and pool.exhausted(current_model):
+            logger.warning("[LLM] %s: daily quota spent on every key — skipping to fallback.", current_model)
+            last_exc = RuntimeError(f"Daily quota exhausted for {current_model} on every key")
+            continue
 
-        for attempt in range(MAX_RETRIES + 1):
+        while attempt < MAX_RETRIES:
+            attempt += 1
             key_idx, active_client = _pick_client(pool, client, current_model)
             if pool is not None and key_idx is not None:
                 pool.note_attempt(key_idx, current_model)
@@ -413,6 +489,21 @@ def groq_stream(
             except Exception as exc:
                 last_exc = exc
 
+                key_kind = _key_failure(exc)
+                if key_kind and pool is not None and key_idx is not None:
+                    _note_key_failure(pool, key_idx, key_kind, exc, current_model)
+                    key_switches += 1
+                    if pool.live_count == 0:
+                        break  # nothing left to rotate to
+                    if key_switches < pool.size:
+                        # Same request, different key: not a model failure, so it
+                        # neither waits nor spends one of this model's retries.
+                        attempt -= 1
+                        continue
+                    # Every key is hot. Fall through to the backoff below so the
+                    # earliest cooldown has a moment to clear.
+                    key_switches = 0
+
                 if _is_model_unavailable(exc):
                     logger.warning("[LLM] %s unavailable, skipping.", current_model)
                     break  # skip retries, go to next model
@@ -438,29 +529,17 @@ def groq_stream(
                 if not is_transient:
                     raise
 
-                if isinstance(exc, RateLimitError) and pool is not None and key_idx is not None:
-                    pool.mark_limited(key_idx)
-
                 if attempt < MAX_RETRIES:
-                    skip_backoff = (
-                        isinstance(exc, RateLimitError) and pool is not None and pool.size > 1
+                    wait = BACKOFF_BASE ** (attempt + 1)
+                    logger.warning(
+                        "[LLM] %s transient error in stream (attempt %d/%d): %s — retrying in %.1fs",
+                        current_model,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        str(exc)[:120],
+                        wait,
                     )
-                    if skip_backoff:
-                        logger.warning(
-                            "[LLM] %s key #%s rate-limited (attempt %d/%d) — rotating key, no wait.",
-                            current_model, key_idx, attempt + 1, MAX_RETRIES + 1,
-                        )
-                    else:
-                        wait = BACKOFF_BASE ** (attempt + 1)
-                        logger.warning(
-                            "[LLM] %s transient error in stream (attempt %d/%d): %s — retrying in %.1fs",
-                            current_model,
-                            attempt + 1,
-                            MAX_RETRIES + 1,
-                            str(exc)[:120],
-                            wait,
-                        )
-                        time.sleep(wait)
+                    time.sleep(wait)
                 else:
                     logger.warning(
                         "[LLM] %s exhausted %d retries for stream: %s",

@@ -6,13 +6,13 @@ or if it can safely skip retrieval (saving time, Neo4j, and Gemini embed calls).
 import logging
 from typing import Dict, Any
 
-from groq import Groq
+from openai import OpenAI
 import config
 from utils.llm import groq_complete
 
 logger = logging.getLogger(__name__)
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 _META_PROMPT = """\
 You are a classifying agent for a tutoring system.

@@ -13,9 +13,9 @@ from db.supabase_client import db
 from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from utils.llm import groq_complete
 from utils.presentation import filter_picker_suggestions
-from groq import Groq
+from openai import OpenAI
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 
 class GenerateSuggestionsArgs(BaseModel):

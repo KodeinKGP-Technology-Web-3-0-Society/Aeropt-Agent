@@ -257,6 +257,11 @@ def main() -> int:
     print(f"  {len(items)} items embedded in {time.time() - t1:.1f}s")
 
     write_sqlite(syllabus, items, item_vecs, concept_vecs)
+    # JEE syllabus topics (jee_topics.py) as studyable concepts; after the write
+    # because it searches the finished full-text index.
+    from local_ingest.syllabus_topics import apply as apply_syllabus_topics
+
+    apply_syllabus_topics()
     if not args.no_postgres:
         try:
             mirror_postgres(syllabus, items)

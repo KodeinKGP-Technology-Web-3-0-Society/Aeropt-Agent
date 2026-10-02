@@ -40,3 +40,6 @@ scripts/
 tests/fixtures/routing_baseline*.json
 .local-run/
 .pytest_cache/
+
+# compiled tutor diagrams (services/diagrams.py)
+var/

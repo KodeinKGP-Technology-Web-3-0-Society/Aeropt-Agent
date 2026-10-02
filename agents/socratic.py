@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from groq import Groq
+from openai import OpenAI
 
 from agents.solver import prepare_student_markdown
 
@@ -26,16 +26,15 @@ from models.state import TutorState
 from utils.latex_guidelines import LATEX_OUTPUT_RULES, sanitize_chunk_text_for_prompt
 from utils.llm import groq_complete
 
-_groq = Groq(api_key=config.GROQ_API_KEY)
+_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 _SOCRATIC_PROMPT = """\
-You are a Socratic tutor for JEE Physics. Your job is to guide the student to
-the answer through targeted questions, NOT to give the answer directly.
+You are an elite, world-class Socratic tutor for JEE Physics, modeled after the best educators in the world. Your ultimate goal is to lead the student to their own "aha!" moment, NEVER to simply hand them the answer.
 
 ── Context ──────────────────────────────────────────────────────────────────
 Concept being studied: {concept_name}
-Student proficiency:   {proficiency:.2f} / 1.0  (they know the prerequisites well)
-Pedagogical framing:   {framing}
+Student proficiency:   {proficiency} / 1.0  (they know the prerequisites well)
+Pedagogical framing:   {framing_desc}
 
 ── Retrieved content (use only to frame your question, do NOT quote it) ─────
 {chunks_summary}
@@ -50,12 +49,11 @@ Pedagogical framing:   {framing}
 {query}
 
 ── Instructions ─────────────────────────────────────────────────────────────
-• Ask exactly ONE focused question that nudges the student one step closer to
-  the answer.
-• The question should connect to something the student already knows
-  (they have strong prerequisites).
-• Keep it short (1-3 sentences).
-• ESCALATION RULE: If the student is showing a lack of progress (e.g., their proficiency score is dropping in recent diagnostic turns, or they are clearly frustrated), you MUST escalate. End your question with: "If you're unsure, tell me and I'll explain directly."
+1. DO NOT give away the answer, the formula, or the final step.
+2. Ask exactly ONE highly focused, probing question that bridges what they already know to what they need to realize.
+3. Keep your response extremely concise (1-3 sentences max). Long paragraphs lose the student's attention.
+4. Validate their effort if they showed working, pointing out exactly what they did right before asking the question.
+5. ESCALATION RULE: If the student is showing a lack of progress (e.g. repeated wrong attempts, frustration), you MUST escalate softly by ending your question with: "If you're unsure, tell me and I'll explain directly."
 """
 
 
@@ -123,14 +121,14 @@ def socratic_node(state: TutorState) -> Dict[str, Any]:
         framing = state.get("framing", "deepen")
         framing_desc = skill.get("framing_hints", {}).get(framing, "Guide the student through the concept.")
 
-        prompt = skill["system_prompt"]
-        prompt = prompt.replace("{{concept_name}}", str(concept_name))
-        prompt = prompt.replace("{{proficiency}}", f"{target_state.get('proficiency_score', 0.5):.2f}")
-        prompt = prompt.replace("{{framing_desc}}", str(framing_desc))
-        prompt = prompt.replace("{{chunks_summary}}", str(_chunks_summary(chunks)))
-        prompt = prompt.replace("{{recent_turns}}", str(_format_recent_turns(recent_turns)))
-        prompt = prompt.replace("{{previous_socratic_questions}}", str(prior_q_text))
-        prompt = prompt.replace("{{query}}", str(state["query"]))
+        prompt = skill.get("system_prompt", _SOCRATIC_PROMPT)
+        prompt = prompt.replace("{concept_name}", str(concept_name))
+        prompt = prompt.replace("{proficiency}", f"{target_state.get('proficiency_score', 0.5):.2f}")
+        prompt = prompt.replace("{framing_desc}", str(framing_desc))
+        prompt = prompt.replace("{chunks_summary}", str(_chunks_summary(chunks)))
+        prompt = prompt.replace("{recent_turns}", str(_format_recent_turns(recent_turns)))
+        prompt = prompt.replace("{previous_socratic_questions}", str(prior_q_text))
+        prompt = prompt.replace("{query}", str(state["query"]))
         
         prompt = f"{prompt}\n\n{LATEX_OUTPUT_RULES}"
 

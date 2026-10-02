@@ -61,10 +61,13 @@ class LearnerContextArgs(BaseModel):
     name="get_learner_context",
     description=(
         "Recall what is known about this student: remembered facts about how they "
-        "learn, their current goals, which concepts they are weak on, and how "
-        "recent attempts have gone. Call this when the way you teach should depend "
-        "on who you are teaching — a first explanation, a repeated mistake, or a "
-        "choice about difficulty. Skip it for a purely factual one-off question."
+        "learn, their current goals, which concepts they are weak on, how recent "
+        "attempts have gone, and their full progress record — every concept they "
+        "have practised with its status and trend, recent mistakes, reviews due, "
+        "and what to work on next. Call it when the way you teach should depend on "
+        "who you are teaching, and ALWAYS when the student asks about their own "
+        "progress, what to revise, or what they have done. Answer such questions "
+        "only from this record; never guess topics they have not practised."
     ),
     args_model=LearnerContextArgs,
     scopes=(SCOPE_READ,),
@@ -73,9 +76,9 @@ def get_learner_context(args: LearnerContextArgs, ctx: ToolContext) -> Dict[str,
     user_id = ctx.user_id
     out: Dict[str, Any] = {}
 
-    memories = db.read_learner_memories(user_id, subject_key=args.concept_id) or []
+    memories = db.read_learner_memories(user_id, query=ctx.state.get("query"), subject_key=args.concept_id) or []
     if not memories and args.concept_id:
-        memories = db.read_learner_memories(user_id) or []
+        memories = db.read_learner_memories(user_id, query=ctx.state.get("query")) or []
 
     out["remembered_facts"] = [
         {
@@ -156,7 +159,60 @@ def get_learner_context(args: LearnerContextArgs, ctx: ToolContext) -> Dict[str,
             {"concept_id": r.get("concept_id"), "reason": r.get("reason")} for r in due[:4]
         ]
 
+    out["progress"] = _progress_summary(user_id)
     return out
+
+
+def _progress_summary(user_id: str) -> Dict[str, Any]:
+    """The learning ledger, condensed for the model (services/progress_report.py)."""
+    from services.progress_report import build_report
+
+    try:
+        r = build_report(user_id, days=14)
+    except Exception:
+        logger.debug("progress summary failed", exc_info=True)
+        return {"status": "unavailable"}
+    o = r["overview"]
+    if not o["questions_attempted"] and not r["concepts"] and not r["timeline"]:
+        return {"status": "no practice recorded yet"}
+    return {
+        "overall": {
+            "questions_right": f"{o['questions_correct']}/{o['questions_attempted']}",
+            "accuracy_this_week": o["accuracy_7d"],
+            "accuracy_last_week": o["accuracy_prev_7d"],
+            "streak_days": o["streak_days"],
+            "concepts_mastered": o["concepts_mastered"],
+            "study_sessions_completed": o["study_sessions_completed"],
+        },
+        "concepts_practised": [
+            {
+                "concept_id": c["concept_id"],
+                "name": c["name"],
+                "chapter": c["chapter"],
+                "status": c["status"],
+                "proficiency": c["proficiency"],
+                "attempts": c["attempts"],
+                "trend_14d": c["trend"],
+                "days_since_practised": c["days_since"],
+                "review_due": c["review_due"],
+            }
+            for c in r["concepts"][:15]
+        ],
+        "recent_mistakes": [
+            {
+                "concept": m["concept_name"],
+                "error_type": m["error_type"],
+                "question": (m["question"] or "")[:160],
+                "their_answer": m["student_answer"][:120],
+                "since_fixed": m["fixed"],
+            }
+            for m in r["mistakes"]["notebook"][:5]
+        ],
+        "mistake_types": r["mistakes"]["by_type"],
+        "reviews_pending": [{"name": x["name"], "due_at": x["due_at"], "overdue": x["overdue"]} for x in r["reviews"]],
+        "suggestions": [i["text"] for i in r["insights"]],
+        "recent_activity": [t["text"] for t in r["timeline"][:8]],
+    }
 
 
 # ── Progress write ────────────────────────────────────────────────────────────
