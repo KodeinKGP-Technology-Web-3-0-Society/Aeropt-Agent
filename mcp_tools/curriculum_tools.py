@@ -55,7 +55,16 @@ class RetrieveContentArgs(BaseModel):
         description=(
             "'theory' for explanation material, 'example' for worked examples, "
             "'practice' for practice questions, 'pyq' for past-year questions. "
-            "Calling this with 'practice' or 'pyq' allows the agent to serve verified questions verbatim instead of inventing them."
+            "Calling this with 'practice' or 'pyq' allows the agent to serve verified questions verbatim instead of inventing them. "
+            "For one specific official question ('JEE Advanced 2019 Paper 1 Q5'), use 'pyq' and put that "
+            "reference in `query`: the exact stored question comes back, or a note that it is not available."
+        ),
+    )
+    exam: Optional[str] = Field(
+        default=None,
+        description=(
+            "'JEE_ADVANCED' or 'JEE_MAINS' to override the student's target exam for this call — "
+            "use it when they explicitly ask for the other exam's past-year questions."
         ),
     )
     query: Optional[str] = Field(
@@ -225,6 +234,8 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
     state["_force_retrieval"] = True
     if args.avoid_repeats is not None:
         state["_exclude_seen"] = bool(args.avoid_repeats)
+    if args.exam and args.exam.upper() in {"JEE_ADVANCED", "JEE_MAINS"}:
+        state["target_exam"] = args.exam.upper()
 
     result = graphrag_retriever_node(state)  # type: ignore[arg-type]
     if result.get("error"):

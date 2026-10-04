@@ -102,12 +102,13 @@ def write_sqlite(syllabus, items, item_vecs, concept_vecs) -> None:
                     it["question_type"], it["target_exam"], int(bool(it["in_syllabus"])),
                     int(bool(it["has_solution"])), int(bool(it["is_question"])), it["heading"],
                     it["core_text"], it["solution"], it["fingerprint"], it["token_len"],
+                    json.dumps(it["structured"], ensure_ascii=False) if it.get("structured") else None,
                 )
             )
             fts_rows.append(
                 (
                     i + 1,
-                    it["core_text"] + "\n" + it["solution"][:2000],
+                    corpus_builder.match_text(it["core_text"]) + "\n" + corpus_builder.match_text(it["solution"][:2000]),
                     it["heading"],
                     f"{concept_name.get(it['concept_id'], '')} {it['chapter']} {it['unit']}",
                 )
@@ -119,8 +120,8 @@ def write_sqlite(syllabus, items, item_vecs, concept_vecs) -> None:
             "INSERT INTO chunks (content_id, vec_row, content_type, subject, chapter_id, chapter,"
             " unit, concept_id, secondary, source_book, source_ref, license, difficulty,"
             " question_type, target_exam, in_syllabus, has_solution, is_question, heading,"
-            " core_text, solution, fingerprint, token_len)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " core_text, solution, fingerprint, token_len, structured)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
         conn.executemany(

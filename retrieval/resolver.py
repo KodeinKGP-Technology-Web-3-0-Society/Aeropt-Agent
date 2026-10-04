@@ -43,7 +43,11 @@ from retrieval import embedder, store
 MIN_DENSE = 0.30
 STRONG_DENSE = 0.42
 PROBE_STRONG = 0.50
-PROBE_MIN = 0.36
+# 0.36 -> 0.40 (2026-10-04): NCERT's cricket-ball exercise put "who won the cricket world cup"
+# at 0.379. Measured over 17 physics / 13 off-topic queries: lowest physics 0.412 ("why is the
+# sky blue"), highest everyday off-topic 0.405 (sport, cooking). Narrow — this guard separates
+# physics from everyday chat, not from chemistry/biology (photosynthesis scores 0.62).
+PROBE_MIN = 0.40
 AMBIGUOUS_MARGIN = 0.04
 
 _lock = threading.Lock()
@@ -205,9 +209,10 @@ def resolve(
     ]
 
     # 1. The query names a concept outright — the most trustworthy signal there is.
-    lexical = _lexical_hits(text, lex)
-    if lexical:
-        cid, length = lexical[0]
+    # Every named concept is tried in order: "half deflection method galvanometer
+    # resistance" names "resistance" first, and rejecting that one-word match must
+    # fall through to the galvanometer topic it also names, not to a vote.
+    for cid, _length in _lexical_hits(text, lex):
         concept = lex["by_id"][cid]
         dense = float(sims[lex["rows"][cid]])
         # A one-word name is a trap: "gauss law problems" contains the magnetic-field

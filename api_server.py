@@ -1722,8 +1722,10 @@ def study_session_get(study_session_id: str, user_id: Optional[str] = None) -> D
 class StudyAnswerRequest(BaseModel):
     user_id: str
     study_session_id: str
-    # Option labels as shown — ["2"] or ["A", "C"] for multiple correct.
-    choice: List[str]
+    # Option labels as shown — ["2"] or ["A", "C"] for multiple correct …
+    choice: List[str] = []
+    # … or a numerical answer as typed ("2.35", "5 x 10^3"), graded against the official range.
+    value: Optional[str] = None
 
 
 @app.post("/api/v1/study/answer")
@@ -1747,11 +1749,18 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
     question = runtime.get("current_question")
     if not question:
         raise HTTPException(status_code=409, detail="No question is open")
-    result = grade_choice(question.get("solution") or "", body.choice)
+    # The structured official answer first (letters or a numeric range); the old text key only
+    # for choice questions ingested before structure existed.
+    from services.answer_key import grade_structured
+
+    result = grade_structured(question, body.choice, body.value)
+    if result is None and body.choice:
+        result = grade_choice(question.get("solution") or "", body.choice)
     if result is None:
         return {"graded": False}
 
-    labels = ", ".join(f"({c.strip().strip('()')})" for c in body.choice)
+    labels = (", ".join(f"({c.strip().strip('()')})" for c in body.choice) if body.choice
+              else (body.value or "").strip())
     agent_session = session.get("agent_session_id") or ""
     state: Dict[str, Any] = {
         "user_id": user_id,
@@ -1778,7 +1787,7 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
         db.update_session_interaction_count(agent_session, n)
         db.insert_chat_turn(session_id=agent_session, role="user", content=f"My answer: {labels}",
                             turn_index=n * 2 - 1, agent_used="student")
-        key_text = ", ".join(f"({k})" for k in result["key"])
+        key_text = result.get("answer_text") or ", ".join(f"({k})" for k in result["key"])
         db.insert_chat_turn(
             session_id=agent_session, role="assistant", agent_used="tutor", turn_index=n * 2,
             content=(f"✓ Correct — the answer is {key_text}." if result["correct"]
@@ -1788,7 +1797,56 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
         logging.debug("could not record the graded answer in the transcript", exc_info=True)
 
     fresh = db.read_study_session(ssid) or session
-    return {"graded": True, **result, "study": _study_state_payload(fresh)}
+    # The stored solution goes back with the grade, so the pane can show it at once instead of
+    # waiting ~20 s for the tutor to write one. Every stored solution is verified (official
+    # answer, or a worked solution checked against it, or the book's own).
+    return {"graded": True, **result, "solution": question.get("solution") or "",
+            "study": _study_state_payload(fresh)}
+
+
+class StudyNextRequest(BaseModel):
+    user_id: str
+    study_session_id: str
+
+
+@app.post("/api/v1/study/next")
+def study_next(body: StudyNextRequest) -> Dict[str, Any]:
+    """Serve the next practice question directly — retrieval only, no model turn.
+
+    "Next question" used to be a chat message the tutor answered by calling
+    serve_practice_question (~20 s). This runs the same tool with the same session state, so
+    difficulty, the no-repeat ledger and the event log behave exactly as before.
+    """
+    from agents.runtime.toolbelt import ToolContext
+    from agents.runtime.trace import AgentTrace
+    from mcp_tools.study_tools import ServePracticeArgs, serve_practice_question
+    from services.study_context import session_runtime
+
+    user_id = body.user_id.strip()
+    session = db.read_study_session(body.study_session_id.strip())
+    if not session or session.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Study session not found")
+    ssid = session["study_session_id"]
+    runtime = session_runtime(ssid)
+    if runtime.get("current_question") and runtime.get("awaiting_answer"):
+        fresh = db.read_study_session(ssid) or session
+        return {"served": False, "reason": "a question is already open", "study": _study_state_payload(fresh, runtime)}
+    agent_session = session.get("agent_session_id") or ""
+    state: Dict[str, Any] = {
+        "user_id": user_id, "session_id": agent_session, "study_session_id": ssid,
+        "concept_id": session["concept_id"], "concept_name": session.get("concept_name") or session["concept_id"],
+        "current_phase": session.get("current_phase") or "practice",
+        "difficulty_level": int(session.get("difficulty_level") or 1),
+        "question_source": session.get("question_source") or "any",
+        "target_exam": session.get("target_exam") or "JEE_ADVANCED",
+        **runtime, "current_question": None, "awaiting_answer": False,
+    }
+    ctx = ToolContext(user_id=user_id, session_id=agent_session, state=state,
+                      trace=AgentTrace(user_id=user_id, session_id=agent_session))
+    result = serve_practice_question(ServePracticeArgs(), ctx)
+    fresh = db.read_study_session(ssid) or session
+    return {"served": "error" not in result, "revisit": bool(result.get("revisit")),
+            "reason": result.get("error"), "study": _study_state_payload(fresh, session_runtime(ssid))}
 
 
 class StudyAdvanceRequest(BaseModel):

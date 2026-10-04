@@ -64,6 +64,8 @@ Preserve exactly, when you revise:
   - all LaTeX and mathematical notation, unchanged in form;
   - all markdown image links and figure references;
   - any question put to the student at the end.
+When you do revise, write plainly: no em dashes (use a full stop, comma or colon), no \
+stock openers such as "Great question". Never revise a correct answer only for style.
 
 ── The student asked ────────────────────────────────────────────────────────
 {query}

@@ -585,11 +585,28 @@ def practice_question_view(q: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
         difficulty = int(float(q.get("difficulty") or 1))
     except (TypeError, ValueError):
         difficulty = 1
+    from services.answer_key import structured_of
+
+    s = structured_of(q) or {}
+    answer = s.get("answer") or {}
     return {
         "content_id": q.get("content_id"),
         "question_text": q.get("core_text") or "",
-        "question_type": q.get("question_type"),
+        "question_type": s.get("qtype") or q.get("question_type"),
         "difficulty": max(1, min(5, difficulty)),
         "has_solution": bool(q.get("solution")),
-        "source": q.get("citation") or q.get("source_book"),
+        "source": q.get("citation") or q.get("source_book")
+        or (f"{q.get('source_book')} — {q.get('source_ref')}" if q.get("source_ref") else None),
+        # The structured layout (local_ingest/structure.py): the pane renders these instead of
+        # re-parsing question_text. The answer itself is never sent — only its form, so the
+        # pane knows whether to show option buttons or a number box.
+        "stem": s.get("stem") or None,
+        "figure": s.get("figure") or None,
+        "options": s.get("options") or None,
+        "parts": s.get("parts") or None,
+        "answer_kind": ("multiple" if answer.get("kind") == "letters" and len(answer.get("letters", "")) > 1
+                        else "choice" if answer.get("kind") == "letters"
+                        else "number" if answer.get("kind") in {"integer", "range"}
+                        else "choice_or_number" if answer.get("kind") == "any_of" else None),
+        "instant_grading": bool(answer),
     }

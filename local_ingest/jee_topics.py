@@ -87,7 +87,8 @@ JEE_TOPICS: list[tuple[str, list[Topic]]] = [
     ("Gravitation", [
         ("Universal law of gravitation", "Newton's law of gravitation", "law of universal gravitation"),
         ("Acceleration due to gravity", "free-fall acceleration"),
-        ("Variation of g with altitude and depth", "variation of gravity", "gravity inside the Earth"),
+        ("Variation of g with altitude and depth", "variation of gravity", "gravity inside the Earth",
+         "variation of g", "acceleration due to gravity with height", "acceleration due to gravity with depth"),
         ("Kepler's laws of planetary motion", "Kepler's laws", "Kepler"),
         ("Gravitational potential energy",),
         ("Gravitational potential",),

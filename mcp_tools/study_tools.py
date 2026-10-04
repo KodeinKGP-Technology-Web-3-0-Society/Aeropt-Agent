@@ -409,15 +409,14 @@ def serve_practice_question(args: ServePracticeArgs, ctx: ToolContext) -> Dict[s
             ("PYQ",) if pyq_only else ("Practice Question", "PYQ"),
         ) or (off_concept if off_concept and _same_area(off_concept, concept_id) else None)
 
+    revisit = False
     if not question:
-        return {
-            "error": (
-                "No unseen past-year (PYQ) questions left for this concept. Tell the student, and offer "
-                "to switch to all questions (they can choose that in the room) or to finish."
-                if pyq_only else "No unseen practice questions left for this concept."
-            ),
-            "exhausted": True,
-        }
+        # Never a dead end: when nothing unseen is left nearby, bring back a question the
+        # student has already met — one they got wrong first — and say it is a revisit.
+        question = _revisit_question(concept_id, ssid, ("PYQ",) if pyq_only else ("Practice Question", "PYQ"))
+        revisit = question is not None
+    if not question:
+        return {"error": "This concept has no questions in the index at all.", "exhausted": True}
 
     content_id = question.get("content_id", "")
     try:
@@ -456,6 +455,7 @@ def serve_practice_question(args: ServePracticeArgs, ctx: ToolContext) -> Dict[s
         "difficulty": question.get("difficulty"),
         "opening_words": " ".join(words[:10]) + (" …" if len(words) > 10 else ""),
         "source": question.get("citation"),
+        "revisit": revisit,
         "note": (
             "The student sees the full question in the practice pane. Reply with one or "
             "two lines that set it up (e.g. 'A numerical one on maximum range — watch the "
@@ -477,6 +477,28 @@ def _concept_area(concept_id: str) -> tuple:
 def _same_area(chunk: Dict[str, Any], concept_id: str) -> bool:
     chapter_id, unit = _concept_area(concept_id)
     return bool(chapter_id and chunk.get("chapter_id") == chapter_id) or bool(unit and chunk.get("unit") == unit)
+
+
+def _revisit_question(concept_id: str, ssid: str, types: tuple) -> Optional[Dict[str, Any]]:
+    """A question the student has met before, for when nothing unseen is left: one they got
+    wrong in this session first, else the one seen longest ago, else any in the chapter."""
+    from retrieval import store
+
+    try:
+        served = [e.get("content_id") for e in db.read_study_events(ssid, "question_served")] if ssid else []
+        wrong = [e.get("content_id") for e in db.read_study_events(ssid, "question_attempted")
+                 if not (e.get("payload") or {}).get("is_correct")] if ssid else []
+    except Exception:
+        served, wrong = [], []
+    last = served[-1] if served else None
+    order = [c for c in dict.fromkeys(wrong + served) if c and c != last]
+    for cid in order:
+        rows = store.chunks_by_ids([cid])
+        if rows and rows[0]["content_type"] in types:
+            row = dict(rows[0])
+            row.setdefault("citation", f"{row.get('source_book')} — {row.get('source_ref')}")
+            return row
+    return _nearby_question(concept_id, {last} if last else set(), 3, types)
 
 
 def _nearby_question(concept_id: str, served: set, difficulty: int, types: tuple) -> Optional[Dict[str, Any]]:

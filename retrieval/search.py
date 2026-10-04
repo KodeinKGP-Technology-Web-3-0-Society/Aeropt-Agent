@@ -93,6 +93,7 @@ class Hit:
             "fingerprint": row["fingerprint"],
             "in_syllabus": bool(row["in_syllabus"]),
             "has_solution": bool(row["has_solution"]),
+            "structured": _loads(row["structured"]) if "structured" in row.keys() and row["structured"] else None,
             "citation": f"{row['source_book']} — {row['source_ref']}".strip(" —"),
             "retrieval_score": round(self.score, 4),
             "seen_before": self.seen_before,
@@ -379,6 +380,20 @@ def search(
     return best or SearchResult()
 
 
+# Source authority, as a ranking preference rather than a filter: an official paper with
+# its official key beats a coaching test-paper question on the same concept, but a
+# concept with no official question still gets the coaching one.
+SOURCE_WEIGHT = {
+    "official exam paper (jeeadv.ac.in) with official final answer key": 1.30,
+    "past exam paper": 1.30,          # JEE-Bench: official papers, official answers
+    "coaching test paper": 0.85,
+    # NCERT is what JEE is set from (and uses the JEE sign conventions); OpenStax is 1.0.
+    "NCERT textbook (© NCERT); local development use": 1.20,
+    # Verified against the book (local_ingest/hcverma.py); JEE-level worked examples.
+    "H.C. Verma, Concepts of Physics (Bharati Bhawan); sponsor material": 1.10,
+}
+
+
 def _rank(
     query: str,
     rows: list[dict[str, Any]],
@@ -414,6 +429,7 @@ def _rank(
         # Chunks that are *about* the concept beat chunks that merely mention it.
         if rows[i].get("concept_role") == "primary":
             score *= 1.15
+        score *= SOURCE_WEIGHT.get(rows[i].get("license") or "", 1.0)
         if difficulty_target and rows[i].get("difficulty"):
             # 0.12 per rung was too gentle to move the mean: fusion scores differ by
             # more than that between neighbouring ranks, so an easy-but-well-matched
@@ -466,6 +482,15 @@ def _rank(
         if diversify and len(shortlist) > 1
         else shortlist[:top_k]
     )
+    # Theory leads with NCERT when NCERT has a strong candidate: it is what JEE is set from
+    # and uses JEE notation and sign conventions. A weight could not do this — OpenStax
+    # passages titled exactly like the query out-scored NCERT's section on the same idea.
+    if chosen and rows[chosen[0]].get("content_type") == "Theory":
+        ncert = [i for i in shortlist if str(rows[i].get("license") or "").startswith("NCERT")
+                 and rows[i].get("content_type") == "Theory"]
+        if ncert and not str(rows[chosen[0]].get("license") or "").startswith("NCERT"):
+            lead = ncert[0]
+            chosen = [lead] + [i for i in chosen if i != lead][: top_k - 1]
 
     hits = [
         Hit(

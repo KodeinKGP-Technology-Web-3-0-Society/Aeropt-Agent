@@ -60,6 +60,14 @@ def _text_of(el: ET.Element, *, keep_titles: bool = True) -> str:
 
     def walk(node: ET.Element) -> None:
         tag = _tag(node)
+        if tag == "media" and (node.get("alt") or "").strip():
+            # The figure itself cannot be shown, but its accessibility text can:
+            # it usually carries the values ("F1 = 10 N points down…") that a
+            # "shown below" problem is unanswerable without.
+            out.append("\n[Figure: " + _escape_prose_dollars(" ".join(node.get("alt").split())) + "]\n")
+            if node.tail:
+                out.append(_escape_prose_dollars(node.tail))
+            return
         if tag in _DROP_TAGS:
             if node.tail:
                 out.append(_escape_prose_dollars(node.tail))
@@ -103,6 +111,53 @@ def _find_titled_para(el: ET.Element, wanted: set[str]) -> tuple[str, list[ET.El
             if title_el is not None and (title_el.text or "").strip().lower() in wanted:
                 return (title_el.text or "").strip(), [child]
     return "", []
+
+
+_CONTAINERS = {"exercise", "example", "section", "content"}
+_LINK_NOUN = {"figure": "the figure", "equation": "the equation", "table": "the table", "example": "the example"}
+
+
+def _figure_text(fig: ET.Element) -> str:
+    media = fig.find(f".//{{{CNXML_NS}}}media")
+    alt = " ".join(((media.get("alt") if media is not None else "") or "").split())
+    if alt:
+        return alt
+    caption = fig.find(f"{{{CNXML_NS}}}caption")
+    return " ".join("".join(caption.itertext()).split()) if caption is not None else ""
+
+
+def _name_empty_links(root: ET.Element) -> None:
+    """Give `<link target-id=…/>` the words the rendered book shows instead.
+
+    The book renders an empty link as "Figure 5.12"; flattened, it left "shown in ."
+    — and a worked example whose setup lives in a figure outside it lost that setup
+    entirely. A figure outside the block being read is described inline.
+    """
+    by_id = {el.get("id"): el for el in root.iter() if el.get("id")}
+    parent = {child: el for el in root.iter() for child in el}
+
+    def container(el: ET.Element) -> ET.Element | None:
+        while el is not None and _tag(el) not in _CONTAINERS:
+            el = parent.get(el)
+        return el
+
+    for link in root.iter(f"{{{CNXML_NS}}}link"):
+        if (link.text or "").strip() or len(link) or link.get("document"):
+            continue
+        target = by_id.get(link.get("target-id") or "")
+        if target is None:
+            continue
+        noun = _LINK_NOUN.get(_tag(target))
+        if not noun:
+            continue
+        link.text = noun
+        if _tag(target) != "figure":
+            continue
+        home = container(link)
+        inside = home is not None and any(el is target for el in home.iter())
+        description = _figure_text(target)
+        if not inside and description:
+            link.text = f"{noun} [Figure: {description}]"
 
 
 @dataclass
@@ -176,6 +231,7 @@ def parse_module(path: Path) -> Module:
         doc = link.get("document")
         if doc and doc not in mod.links:
             mod.links.append(doc)
+    _name_empty_links(root)
 
     consumed: set[ET.Element] = set()
 

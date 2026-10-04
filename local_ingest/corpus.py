@@ -28,6 +28,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from local_ingest.jee_syllabus import alias_index
+from local_ingest.reference_notes import NOTES, REFERENCE_BOOK, REFERENCE_LICENSE
 from local_ingest.syllabus import Chapter, Concept, norm, slug
 from retrieval import embedder
 
@@ -48,6 +49,17 @@ OPENSTAX_LICENSE = "CC BY-NC-SA 4.0"
 
 THEORY_CHARS = 1500
 THEORY_MIN = 220
+
+
+# Figure descriptions (cnxml.py) are for the reader: they carry the values a
+# "shown below" problem needs. They are not matching signal — "a baseball player
+# catching the ball" pulled a kinematics example toward "who won the cricket world
+# cup" — so embeddings, keyword search and fingerprints all see the text without them.
+_FIGURE_TEXT = re.compile(r"\[Figure: [^\]]*\]")
+
+
+def match_text(text: str) -> str:
+    return _FIGURE_TEXT.sub(" ", text or "")
 
 
 # ── text helpers ──────────────────────────────────────────────────────────────
@@ -318,7 +330,7 @@ def _item(
         "target_exam": target_exam,
         "has_solution": bool(solution),
         "is_question": is_question,
-        "fingerprint": fingerprint(core_text) if is_question else fingerprint(core_text[:400]),
+        "fingerprint": fingerprint(match_text(core_text)) if is_question else fingerprint(match_text(core_text)[:400]),
         "token_len": token_len(core_text) + token_len(solution),
         "module_id": module_id,
         "candidate_scope": list(candidate_scope),
@@ -454,7 +466,36 @@ def _pyq_difficulty(label: str, exam: str) -> int:
     return 4 if exam == EXAM_ADV else 3
 
 
+# Hindi typed in the Kruti Dev font survives extraction as Latin gibberish
+# ("dh le:i jLlh ds"), interleaved with the English of bilingual papers.
+_KRUTI_DEV = re.compile(r"(?<![A-Za-z])(?:dks|ds|gS|gSA|esa|fd|vkSj|ls|gks|tkrk|fy,|dk|dh|ij|;g|rFkk|Kkr)(?![A-Za-z])")
+# A worked solution that lost its equation images reads "I = = 0.4A".
+_LOST_EQUATION = re.compile(r"=\s*=|\[IMAGE\]")
+
+PYQ_SOURCE_NOTE = (
+    "coaching test paper, labelled {exam} level in the source dataset; "
+    "not verified as an official NTA paper"
+)
+
+
+def _is_mojibake(text: str) -> bool:
+    return len(_KRUTI_DEV.findall(text or "")) >= 2
+
+
 def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    """Questions from the HF JEE set — only the ones a text-only tutor can answer.
+
+    The set is drawn from coaching test papers (P-01 … Ph-28, a teacher's
+    Advanced sheet), not NTA papers, so it is cited as such: a tutor saying "this
+    came in JEE Main 2021" about one of them would be inventing provenance.
+
+    Dropped, because serving them makes the model invent what is missing:
+      * the question has figures (`question_images`): circuits, graphs, block
+        arrangements the dataset only references by file name;
+      * an option is an image, so the choices cannot be read;
+      * the text is interleaved with Kruti Dev mojibake.
+    A worked solution that lost its images is cut back to the answer key.
+    """
     aliases = alias_index()
     files = [
         ("jee_main_physics_train.jsonl", EXAM_MAIN),
@@ -474,13 +515,19 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
             row = json.loads(line)
             question = clean(row.get("question") or "")
             solution = clean(row.get("solution") or "")
-            if len(question) < 40 or question.strip() in {"[IMAGE]", ""}:
+            if len(question) < 40 or "[IMAGE]" in question or row.get("question_images"):
                 continue
-            options = [
-                f"({i}) {clean(row.get(key) or '')}"
-                for i, key in enumerate(("option_1", "option_2", "option_3", "option_4"), start=1)
-                if clean(row.get(key) or "")
-            ]
+            if _is_mojibake(question):
+                continue
+            raw_options = [clean(row.get(f"option_{i}") or "") for i in range(1, 5)]
+            if any(raw_options) and any(not o or "[IMAGE]" in o for o in raw_options):
+                continue
+            if not any(raw_options) and str(row.get("question_type") or "") in {"single_correct", "multiple_correct"}:
+                continue  # a multiple-choice question whose options were all images: unanswerable
+            if row.get("solution_images") or _LOST_EQUATION.search(solution) or _is_mojibake(solution):
+                # The working is incomplete; the answer key below is still exact.
+                solution = ""
+            options = [f"({i}) {o}" for i, o in enumerate(raw_options, start=1) if o]
             core = question if not options else question + "\n\n" + "\n".join(options)
             answer_bits = []
             if row.get("correct_option") not in (None, "", 0):
@@ -496,6 +543,7 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
 
             exam_label = str(row.get("exam") or "")
             exam = EXAM_ADV if "advanced" in exam_label.lower() else default_exam
+            exam_name = "JEE Advanced" if exam == EXAM_ADV else "JEE Main"
             topic = str(row.get("topic") or "")
             subtopic = str(row.get("subtopic") or "")
             unit = ""
@@ -511,16 +559,28 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
                 core_text=core,
                 solution=solution,
                 chapter=None,
-                heading=f"{exam} PYQ · {topic or 'Physics'}",
-                source_book=str(row.get("source_paper") or exam_label or "JEE past paper"),
-                source_ref=f"{row.get('source_paper') or exam_label} · {row.get('question_id') or ''}".strip(" ·"),
-                license_="past exam paper",
+                heading=f"{exam_name}-level test-paper question · {topic or 'Physics'}",
+                source_book=f"Coaching test paper {row.get('source_paper') or ''}".strip(),
+                source_ref=f"{row.get('question_id') or ''} ({PYQ_SOURCE_NOTE.format(exam=exam_name)})",
+                license_="coaching test paper",
                 difficulty=_pyq_difficulty(str(row.get("difficulty") or ""), exam),
                 question_type=str(row.get("question_type") or "single_correct"),
                 target_exam=exam,
                 candidate_scope=(unit,) if unit else (),
             )
             item["topic_label"] = topic or subtopic
+            answer = None
+            if row.get("correct_option") not in (None, "", 0):
+                letters = "".join(sorted({"ABCD"[int(c) - 1] for c in re.findall(r"[1-4]", str(row["correct_option"]))}))
+                answer = {"kind": "letters", "letters": letters} if letters else None
+            elif row.get("numerical_answer") not in (None, ""):
+                from local_ingest.structure import answer_dict
+                answer = answer_dict(str(row["numerical_answer"]))
+            item["structured"] = {
+                "stem": question, "figure": "",
+                "options": [{"label": "ABCD"[i], "text": o} for i, o in enumerate(raw_options)] if any(raw_options) else None,
+                "qtype": item["question_type"], "answer": answer, "built_by": "source",
+            }
             if item["fingerprint"] in seen_fp:
                 continue
             seen_fp.add(item["fingerprint"])
@@ -528,7 +588,183 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
     return items
 
 
-def jeebench_items() -> list[dict[str, Any]]:
+NCERT_LICENSE = "NCERT textbook (© NCERT); local development use"
+
+
+def _split_theory(text: str, limit: int = THEORY_CHARS) -> list[str]:
+    """Paragraph-boundary chunks of at most ~`limit` characters."""
+    chunks, current = [], ""
+    for para in re.split(r"\n{2,}", text):
+        if current and len(current) + len(para) > limit:
+            chunks.append(current.strip())
+            current = ""
+        current += para + "\n\n"
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
+
+
+def ncert_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    """NCERT theory, worked examples and exercises from local_ingest/ncert.
+
+    Records were validated at extraction (figures described, maths renders, examples
+    carry their printed solutions). Concepts are mapped within the record's JEE unit.
+    """
+    path = SOURCES / "ncert" / "ncert.jsonl"
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        ch = chapter_lookup.get(row["chapter_id"])
+        ref = f"Ch {row['chapter']} · {row.get('section') or ''}".strip(" ·")
+        common = dict(chapter=ch, source_book=row["book"], license_=NCERT_LICENSE,
+                      target_exam=EXAM_BOTH, candidate_scope=(row["unit"],))
+        if row["kind"] == "theory":
+            heading = f"{row['chapter']} › {row['section']}"
+            for k, part in enumerate(_split_theory(row["text"])):
+                item = _item(content_id=f"{row['id']}_{k}", content_type=TYPE_THEORY,
+                             core_text=f"{heading}\n\n{part}", solution="", heading=heading,
+                             source_ref=ref, difficulty=1, question_type="theory", **common)
+                item["concept_hint"] = row.get("section") or ""
+                items.append(item)
+        else:
+            example = row["kind"] == "example"
+            label = f"{'Example' if example else 'Exercise'} {row['number']}"
+            items.append(_item(
+                content_id=row["id"], content_type=TYPE_EXAMPLE if example else TYPE_PRACTICE,
+                core_text=row["question"], solution=row.get("solution") or "",
+                heading=f"NCERT {label} · {row['chapter']}", source_ref=f"{ref} · {label}",
+                difficulty=2 if example else 3, question_type="worked_example" if example else "exercise",
+                **common,
+            ))
+    return items
+
+
+HCVERMA_LICENSE = "H.C. Verma, Concepts of Physics (Bharati Bhawan); sponsor material"
+
+
+def hcverma_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    """H.C. Verma rows verified against the book by local_ingest/hcverma.py.
+
+    Theory is labelled verbatim or summary; a worked example carries a solution only when it
+    is the book's own or reaches the book's answer; otherwise it is a question without one.
+    """
+    path = SOURCES / "hcverma" / "hcverma.jsonl"
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        ch = chapter_lookup.get(row["chapter_id"])
+        figure = f"\n\n[Figure: {row['figure']}]" if row.get("figure") else ""
+        common = dict(chapter=ch, source_book="H.C. Verma, Concepts of Physics", license_=HCVERMA_LICENSE,
+                      target_exam=EXAM_BOTH, candidate_scope=(row["unit"],))
+        page = f", p. {row['page']}" if row.get("page") else ""
+        if row["kind"] == "theory":
+            label = "" if row["solution_status"] == "verbatim" else " (summary)"
+            item = _item(content_id=f"hcv_{row['id']}", content_type=TYPE_THEORY,
+                         core_text=row["question"] + figure, solution="",
+                         heading=f"H.C. Verma · {row['chapter']}{label}",
+                         source_ref=f"{row['chapter']}{page}{label}", difficulty=2, question_type="theory", **common)
+        else:
+            solved = row["kind"] == "example"
+            note = ("" if row["solution_status"] == "book" else
+                    "\n\n(Rewritten from H.C. Verma's worked solution; its final answer matches the book.)")
+            item = _item(content_id=f"hcv_{row['id']}", content_type=TYPE_EXAMPLE if solved else TYPE_PRACTICE,
+                         core_text=row["question"] + figure, solution=(row["solution"] + note) if solved else "",
+                         heading=f"H.C. Verma worked example · {row['chapter']}",
+                         source_ref=f"{row['chapter']}{page}", difficulty=3,
+                         question_type="worked_example" if solved else "exercise", **common)
+        item["concept_hint"] = row.get("concept_hint") or ""
+        items.append(item)
+    return items
+
+
+OFFICIAL_LICENSE = "official exam paper (jeeadv.ac.in) with official final answer key"
+_QTYPE_LABEL = {
+    "single_correct": "one correct option", "multiple_correct": "one or more correct options",
+    "matching": "matching (one correct option)", "integer": "integer answer", "numeric": "numerical answer",
+}
+
+
+def official_exam_items(chapter_lookup: dict[str, Chapter] | None = None) -> list[dict[str, Any]]:
+    """Verified official papers from local_ingest/exams (`python -m local_ingest.exams`).
+
+    The answer is the official final key, joined to the question only after the
+    checks in exams/assemble.py; there is no worked solution, so the solution field
+    says so rather than pretending to one.
+    """
+    path = SOURCES / "exams" / "jee_advanced.jsonl"
+    if not path.exists():
+        return []
+    # exams/solve.py: worked solutions kept only when they reach the official answer.
+    solved: dict[str, str] = {}
+    sol_path = SOURCES / "exams" / "jee_advanced_solutions.jsonl"
+    if sol_path.exists():
+        for line in sol_path.read_text(encoding="utf-8").splitlines():
+            rec = json.loads(line) if line.strip() else {}
+            if rec.get("solution"):
+                solved[rec["id"]] = rec["solution"]
+    items: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        parts = []
+        if row.get("paragraph"):
+            parts.append(row["paragraph"])
+        parts.append(row["stem"])
+        if row.get("figure"):
+            parts.append(f"[Figure: {row['figure']}]")
+        if row.get("options"):
+            parts.append("\n".join(f"({k}) {v}" for k, v in row["options"].items()))
+        label = f"JEE Advanced {row['year']} Paper {row['paper']}"
+        item = _item(
+            content_id=f"pyq_{row['id']}",
+            content_type=TYPE_PYQ,
+            core_text="\n\n".join(parts),
+            solution=(
+                f"Official answer: {row['answer']} (official final answer key, {label})\n\n"
+                "Worked solution (written by Aeropt; its final answer was checked against the "
+                f"official key):\n\n{solved[row['id']]}"
+                if row["id"] in solved else
+                f"Official answer: {row['answer']}\n\n"
+                f"(Official final answer key, {label}. No worked solution is stored — "
+                "derive it with the student and check it reaches this answer.)"
+            ),
+            # exams/classify.py filed it under a chapter; concepts are then mapped within it.
+            chapter=(chapter_lookup or {}).get(row.get("chapter_id") or ""),
+            heading=f"{label} · Q{row['qno']} · {_QTYPE_LABEL.get(row['qtype'], row['qtype'])}",
+            source_book=label,
+            source_ref=f"Q{row['qno']} (official paper and final answer key)",
+            license_=OFFICIAL_LICENSE,
+            difficulty=4,
+            question_type=row["qtype"],
+            target_exam=EXAM_ADV,
+        )
+        item["topic_label"] = ""
+        from local_ingest.structure import answer_dict
+        item["structured"] = {
+            "stem": "\n\n".join(x for x in (row.get("paragraph"), re.sub(r"^\s*Q\.?\s*\d+\s*", "", row["stem"])) if x),
+            "figure": row.get("figure") or "",
+            "options": [{"label": k, "text": v} for k, v in (row.get("options") or {}).items()] or None,
+            "qtype": row["qtype"], "answer": answer_dict(row["answer_raw"]), "built_by": "source",
+        }
+        # Paragraph questions open with the same shared passage; fingerprint the
+        # question itself, or the dedupe step treats paragraph-mates as one problem.
+        own = row["stem"] + " " + " ".join((row.get("options") or {}).values())
+        item["fingerprint"] = fingerprint(latex_safe(clean(own)))
+        items.append(item)
+    return items
+
+
+def jeebench_items(skip_papers: set[str] = frozenset()) -> list[dict[str, Any]]:
+    """`skip_papers`: "JEE Adv 2023 Paper 1"-style names already ingested from the official paper."""
     path = SOURCES / "jeebench" / "test.json"
     if not path.exists():
         return []
@@ -536,7 +772,7 @@ def jeebench_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     type_map = {"MCQ": "single_correct", "MCQ(multiple)": "multiple_correct", "Integer": "integer", "Numeric": "numeric"}
     for seq, row in enumerate(rows):
-        if (row.get("subject") or "").lower() != "phy":
+        if (row.get("subject") or "").lower() != "phy" or row.get("description") in skip_papers:
             continue
         question = clean(row.get("question") or "")
         gold = clean(str(row.get("gold") or ""))
@@ -557,7 +793,36 @@ def jeebench_items() -> list[dict[str, Any]]:
             target_exam=EXAM_ADV,
         )
         item["topic_label"] = ""
+        from local_ingest.structure import answer_dict
+        item["answer_struct"] = answer_dict(gold)
         items.append(item)
+    return items
+
+
+# ── reference notes ───────────────────────────────────────────────────────────
+def reference_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    """The authored notes in reference_notes.py, for topics no source teaches."""
+    items: list[dict[str, Any]] = []
+    for chapter_id, title, text in NOTES:
+        ch = chapter_lookup.get(chapter_id)
+        if ch is None:
+            raise ValueError(f"reference note {title!r} names unknown chapter {chapter_id!r}")
+        items.append(
+            _item(
+                content_id=f"ref_{slug(title)}",
+                content_type=TYPE_THEORY,
+                core_text=f"{title}\n\n{text.strip()}",
+                solution="",
+                chapter=ch,
+                heading=title,
+                source_book=REFERENCE_BOOK,
+                source_ref=title,
+                license_=REFERENCE_LICENSE,
+                difficulty=1,
+                question_type="theory",
+                target_exam=EXAM_BOTH,
+            )
+        )
     return items
 
 
@@ -590,12 +855,31 @@ def map_concepts(
     chapter_of = {ch.chapter_id: ch for ch in chapters}
 
     texts = [
-        (it["heading"] + "\n" + it["core_text"][:1200] + "\n" + it["solution"][:300]).strip()
+        (it["heading"] + "\n" + match_text(it["core_text"])[:1200] + "\n" + match_text(it["solution"])[:300]).strip()
         for it in items
     ]
     item_vecs = np.zeros((len(items), concept_vecs.shape[1]), dtype=np.float32)
     for start in range(0, len(texts), batch):
         item_vecs[start : start + batch] = embedder.encode(texts[start : start + batch])
+
+    # A printed section title that names a concept outright ("3.4 OHM'S LAW") is better
+    # evidence than embedding similarity, which filed NCERT's Ohm's-law section under drift
+    # velocity. Names only: aliases include module titles shared by a whole module.
+    def _words(text: str) -> str:
+        # Concept names use a curly apostrophe ("Ohm’s law"), book headings a straight one.
+        text = re.sub(r"['’`]", "", re.sub(r"\s*\([^)]*\)", "", (text or "").lower()))
+        return " " + " ".join(re.findall(r"[a-z0-9]+", text)) + " "
+
+    concept_words = [_words(c.name) for c in concepts]
+
+    def named_in(hint: str, pool: list[int]) -> int | None:
+        target = _words(hint)
+        best, best_len = None, 0
+        for j in pool:
+            name = concept_words[j]
+            if len(name) > 5 and name in target and len(name) > best_len:
+                best, best_len = j, len(name)
+        return best
 
     for i, it in enumerate(items):
         module_rows = by_module.get(it.get("module_id") or "", [])
@@ -613,8 +897,11 @@ def map_concepts(
         sims = concept_vecs[pool] @ item_vecs[i]
         order = np.argsort(-sims)
         best = pool[order[0]]
+        named = named_in(it.get("concept_hint") or "", pool) if it.get("concept_hint") else None
+        if named is not None:
+            best = named
         it["concept_id"] = concepts[best].concept_id
-        it["mapping_score"] = float(sims[order[0]])
+        it["mapping_score"] = float(sims[order[0]]) if named is None else 1.0
         secondary = [
             concepts[pool[j]].concept_id
             for j in order[1:4]
@@ -638,7 +925,12 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
 
     items = openstax_items(chapters, syllabus["modules"])
     items += hf_pyq_items(chapter_lookup)
-    items += jeebench_items()
+    items += ncert_items(chapter_lookup)
+    items += hcverma_items(chapter_lookup)
+    official = official_exam_items(chapter_lookup)
+    items += official
+    items += jeebench_items({f"JEE Adv {it['source_book'].split()[2]} Paper {it['source_book'].split()[-1]}" for it in official})
+    items += reference_items(chapter_lookup)
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}
@@ -665,5 +957,8 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
         by_id[it["content_id"]] = it
         unique.append(it)
 
+    from local_ingest.structure import attach
+    counts = attach(unique)
+    print(f"  question structure: {counts}")
     item_vecs, concept_vecs = map_concepts(unique, concepts, chapters)
     return unique, item_vecs, concept_vecs

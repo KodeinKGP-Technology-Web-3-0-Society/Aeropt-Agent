@@ -21,10 +21,10 @@ make retrieval-bench  # time a standard query set
 |---|---|---|
 | Syllabus concepts | 33, hand-mapped | **1016 derived**, each with a textbook definition |
 | Chapters | 3 | **44** (42 mapped to JEE units, 2 flagged beyond syllabus) |
-| Retrievable items | 203 | **10,055** |
-| Questions with worked solutions | ~160 | **3,987** |
-| PYQs usable | 134 of 818 | **846** (the rest were dropped for want of concepts to map onto) |
-| In-scope concepts with no material | 20 | **0** |
+| Retrievable items | 203 | **10,004** |
+| Questions with stored solutions or answer keys | ~160 | **3,519** |
+| Exam-paper questions usable | 134 of 818 | **361**: 120 official JEE Advanced (JEE-Bench) + 241 coaching test-paper questions answerable from text |
+| In-scope concepts with no material | 20 | **0** (and **0** of 239 JEE topics) |
 | Warm retrieval latency | ~1700 ms (Gemini embed + Aura) | **~6-11 ms** |
 | Query-time network calls | 2 | **0** |
 | Concept resolution | whole taxonomy in an LLM prompt | embeddings + aliases, **~0.3 ms**, no LLM |
@@ -32,13 +32,14 @@ make retrieval-bench  # time a standard query set
 
 ## Sources
 
-Nothing is hand-extracted. `local_ingest/` downloads and parses:
+Nothing is hand-extracted except `reference_notes.py` (below). `local_ingest/` downloads and parses:
 
 | Source | What it gives | Licence |
 |---|---|---|
 | OpenStax University Physics (322 CNXML modules) | 951 theory sections, 487 worked examples with solutions, 5001 exercises, 1024 glossary definitions, 270 chapter summaries, the chapter/section tree, cross-reference links | CC BY-NC-SA 4.0 |
-| HuggingFace JEE Main/Advanced PYQ sets | 818 past questions, 719 with solutions | past exam papers |
-| JEE-Bench | 515 JEE Advanced questions with verified gold answers (physics subset) | past exam papers |
+| HuggingFace JEE Main/Advanced set | 818 questions from **coaching test papers** (P-01 … Ph-28, a teacher's Advanced sheet), not NTA papers; 241 kept (see below) | coaching test papers |
+| JEE-Bench | 515 JEE Advanced questions with verified gold answers (physics subset: 120) | past exam papers |
+| `local_ingest/reference_notes.py` | 39 authored notes: JEE topics no source teaches (lab experiments, bridges, capillarity, rectifiers…) and the JEE optics sign convention | original |
 
 `ncert.nic.in` is unreachable from this machine (TLS handshake fails), which is why
 OpenStax is the theory source. **The licence is non-commercial**: fine for local
@@ -50,7 +51,8 @@ derived from structure, so nothing downstream is hard-wired to OpenStax.
 
 | | JEE Main | JEE Advanced | labelled for both |
 |---|---|---|---|
-| PYQs | 676 (all with solutions) | 170 (all with solutions) | — |
+| Official PYQs (JEE-Bench) | — | 120 (answer keys) | — |
+| Coaching test-paper questions | 210 | 31 | — |
 | Practice questions | — | — | 4,967 |
 | Theory / worked examples | — | — | 3,756 / 486 |
 
@@ -61,10 +63,46 @@ and `search._rank` keeps only questions within ±1 of that target whenever enoug
 Measured over 6 concepts × 5 results: Main `{2:7, 3:22, 4:1}`, Advanced `{3:25, 4:5}`.
 A learner-specific `difficulty_target` from the planner overrides the exam default.
 
-Advanced PYQ depth (170) is a **source** limit, not a pipeline one. The readily
+Official PYQ depth (120 Advanced, 0 Main) is a **source** limit, not a pipeline one. The readily
 available Advanced sets — e.g. the MIT-licensed `Reja1/jee-neet-benchmark` — ship the
 papers as page scans, so adding them needs an OCR pass before ingest. The 348
 challenge-tier textbook problems are what currently carries Advanced-level practice.
+
+## Official papers: questions and answers never mix
+
+Built on the extraction engine in `local_ingest/extract/` — design, research and phases in
+[`EXTRACTION.md`](EXTRACTION.md); NCERT (`make ncert`) uses the same engine.
+
+`make exams` (`local_ingest/exams/`) ingests official JEE Advanced papers. Two documents
+per paper, read by two different methods, joined only when the join is proved:
+
+| step | input | how | never sees |
+|---|---|---|---|
+| questions | clean question paper (jeeadv.ac.in archive) | page image → Cursor vision model (`cursor_gateway/vision_once.mjs`), transcribe-only prompt, cached per page | the key |
+| answers | official **final** key (live, or the Internet Archive's capture of the official URL) | regex over the key PDF's own text layer — no model | the extraction |
+| join | both | `(year, paper, subject, qno)` + checks below | — |
+
+A question is kept only if: the key has a gradable answer (bonus/dropped questions are
+not); the key document's own copy of the question matches the extracted stem (catches a
+numbering slip); the answer's form fits the section type (one letter for single-correct,
+letters for multiple-correct, number/range for numeric); an MCQ has four options; and a
+question that refers to a figure has one described. Everything else is listed with its
+reason in `.local-run/sources/exams/report.json`. Final-key rulings that accept more than
+one answer ("A or B", "[75 to 79] OR [94 to 95]") are kept as such.
+
+Physics pages are found without reading the whole paper: the text layer shows where
+numbering restarts at Q.1 (one block per subject, order varies by year); the first page of
+each block is read to name its subject; only the Physics block is read in full (~13 pages).
+
+Coverage: `local_ingest/exams/catalog.py` lists 2023–2026 (keys located). Keys for
+2014–2016, 2019 and 2022 are also archived (see the catalog docstring); 2007–2013, 2017,
+2018, 2020 and 2021 keys are not located yet, and unkeyed questions are not ingested.
+2023 prints numeric answers in the blank rather than on an `Answer:` line, so those need a
+key-only vision pass (not built yet) and are dropped for now.
+
+Adding coaching solutions (e.g. ALLEN) is a separate, later layer: a solution is attached
+by the same `(year, paper, qno)` key and only if its final answer equals the official key —
+and only with the provider's written permission recorded as the item's licence.
 
 ## The syllabus is derived, not typed
 
@@ -129,6 +167,25 @@ embeddings if you want matched vectors; the index records which model built it.
    "invent a question and hope the answer is right".
 5. **Out-of-syllabus content is flagged, not hidden.** Relativity and particle physics
    stay in the corpus with `in_syllabus = 0` and come with a note.
+6. **No question is served without what it needs.** The HF set references figures it
+   does not ship; 517 of its 818 questions said "the following circuit" with no circuit,
+   and a text-only model invents one. Those, questions with image options, and ones
+   interleaved with Kruti Dev mojibake are dropped at ingest; solutions that lost their
+   working to images are cut back to the answer key. OpenStax figures carry
+   accessibility text, which `cnxml.py` now inlines as `[Figure: …]` (765 questions
+   rely on it). Figure text is kept out of embeddings, FTS and fingerprints
+   (`corpus.match_text`): it is for the reader, and a photo caption otherwise drags
+   off-topic queries past the resolver's guard.
+7. **Provenance is not invented.** Coaching test-paper questions are cited as such,
+   and the pack tells the tutor not to name a JEE year or shift for them.
+8. **Conventions are stated, not assumed.** OpenStax optics is real-is-positive
+   (1/d_o + 1/d_i = 1/f); JEE is Cartesian. Any optics retrieval carries a note with
+   the JEE forms, and a reference note gives the conversion.
+9. **Every syllabus topic has a passage.** Topics no source teaches get a short note in
+   `local_ingest/reference_notes.py`. It is authored text, so it is held to a higher bar:
+   standard results only, each with its conditions, and changed only with a source in
+   hand. Questions served without a stored answer come with a note to solve and check
+   before grading.
 
 ## How it avoids repeating a question
 
@@ -178,6 +235,7 @@ costs grounding. `AEROPT_GATE_LLM=1` restores the classifier for the ambiguous m
 | `local_ingest/cnxml.py` | one module → sections, examples, exercises, glossary |
 | `local_ingest/jee_syllabus.py` | JEE units, chapters, aliases (scope metadata) |
 | `local_ingest/syllabus.py` | chapters, concepts, prerequisite graph, JEE mapping |
+| `local_ingest/reference_notes.py` | authored notes for topics no source teaches, and the JEE optics convention |
 | `local_ingest/corpus.py` | every item from every source + concept mapping |
 | `local_ingest/build_index.py` | orchestration, SQLite + vectors, Postgres mirror, report |
 | `retrieval/embedder.py` | static (or Gemini) embeddings |

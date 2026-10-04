@@ -24,7 +24,7 @@ import logging
 import time
 from typing import Any, Sequence
 
-from retrieval import gate, resolver, search, store
+from retrieval import exam_refs, gate, resolver, search, store
 
 logger = logging.getLogger("aeropt.retrieval")
 
@@ -68,6 +68,82 @@ _NOTE_NEIGHBOURS = (
     "This concept has no unseen questions left, so these come from neighbouring "
     "concepts in the same chapter. Tell the student that is what you are doing."
 )
+# Content-level caveats: true of the material itself, whatever the student asked.
+_OPTICS_CHAPTER = "Geometric Optics and Image Formation"
+_NOTE_OPTICS_CONVENTION = (
+    "Sign convention: the OpenStax passages use the real-is-positive convention "
+    "(1/d_o + 1/d_i = 1/f for mirrors and lenses, concave mirror f > 0). JEE uses the "
+    "Cartesian convention: mirror 1/v + 1/u = 1/f with concave f < 0 and m = -v/u; "
+    "lens 1/v - 1/u = 1/f with convex f > 0 and m = v/u; real object u < 0. Teach and "
+    "solve in the Cartesian form, converting any formula you quote from these passages."
+)
+_NOTE_TEST_PAPER = (
+    "Items cited as a 'Coaching test paper' are JEE-level questions from coaching "
+    "test series, not verified official papers. Do not tell the student they appeared "
+    "in JEE, or name a year or shift for them."
+)
+_NOTE_UNSOLVED = (
+    "{n} of these questions have no stored answer. If you use one, solve it fully, "
+    "check the numbers with the calculate tool, and never present your result as the "
+    "official answer key."
+)
+
+
+_NOTE_EXACT_PAPER = (
+    "This is the exact official question the student named ({label}), as printed, with the "
+    "official final answer. Serve it as it is; do not substitute or paraphrase it. If the "
+    "solution field carries a worked solution, it was checked against the official answer."
+)
+_NOTE_PAPER_UNAVAILABLE = (
+    "The student asked for {label}, but {reason}. Tell them that plainly. Do not present "
+    "another question as if it were that one; you may offer a similar official question instead."
+)
+
+
+def _named_paper_question(query: str, started: float) -> dict[str, Any] | None:
+    """A request for one specific official question ("JEE Advanced 2019 paper 1 Q5")."""
+    ref = exam_refs.parse(query)
+    if ref is None:
+        return None
+    rows = store.chunks_by_ids([ref.content_id])
+    if not rows:
+        return {"retrieved": False, "notes": [_NOTE_PAPER_UNAVAILABLE.format(label=ref.label, reason=ref.unavailable_reason())]}
+    row = rows[0]
+    chunk = search.Hit(row["content_id"], 1.0, 0.0, 0.0, None, None, row).as_chunk()
+    concept = store.concept(row["concept_id"]) or {}
+    return {
+        "decision": {"action": "retrieve", "reason": f"the student named {ref.label}"},
+        "query": query,
+        "content_type": "pyq",
+        "content_type_used": "pyq",
+        "retrieved": True,
+        "in_scope": True,
+        "confidence": "ok",
+        "concept": {
+            "in_scope": True, "concept_id": row["concept_id"], "concept_name": concept.get("name", ""),
+            "chapter": concept.get("chapter", ""), "unit": concept.get("unit", ""),
+            "in_syllabus": True, "matched_by": "named official question",
+        },
+        "chunks": [chunk],
+        "citations": [chunk["citation"]],
+        "notes": [_NOTE_EXACT_PAPER.format(label=ref.label)],
+        "novelty": {},
+        "prerequisites": store.prerequisites(row["concept_id"])[:6] if row["concept_id"] else [],
+        "scope_used": "named question",
+        "took_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def _content_notes(resolution: Any, chunks: list[dict[str, Any]]) -> list[str]:
+    notes: list[str] = []
+    if resolution.chapter == _OPTICS_CHAPTER or any(c.get("chapter") == _OPTICS_CHAPTER for c in chunks):
+        notes.append(_NOTE_OPTICS_CONVENTION)
+    if any(c.get("license") == "coaching test paper" for c in chunks):
+        notes.append(_NOTE_TEST_PAPER)
+    unsolved = sum(1 for c in chunks if c.get("content_type") != "Theory" and not c.get("has_solution"))
+    if unsolved:
+        notes.append(_NOTE_UNSOLVED.format(n=unsolved))
+    return notes
 
 
 def _confidence(strength: str, chunks: list[dict[str, Any]]) -> str:
@@ -98,6 +174,17 @@ def retrieve(
     started = time.perf_counter()
     state = state or {}
     recent_turns = recent_turns or state.get("recent_turns") or []
+
+    named = _named_paper_question(query, started)
+    if named is not None:
+        if named.get("retrieved"):
+            if mark and user_id:
+                store.mark_served(user_id, named["chunks"], purpose="pyq")
+            return named
+        # The named question is not in the verified set: say so, then retrieve normally.
+        unavailable_note = named["notes"][0]
+    else:
+        unavailable_note = ""
 
     decision = gate.decide(query, recent_turns=recent_turns, state=state, forced=forced)
     requested_type = content_type or decision.content_type
@@ -301,6 +388,7 @@ def retrieve(
                 got=labels.get(used, used),
             )
         )
+    pack["notes"].extend(_content_notes(resolution, chunks))
     if exhausted:
         pack["notes"].append(_NOTE_EXHAUSTED)
     elif borrowed:
@@ -319,6 +407,8 @@ def retrieve(
         if questions:
             store.mark_served(user_id, questions, purpose=requested_type)
 
+    if unavailable_note:
+        pack["notes"].insert(0, unavailable_note)
     pack["took_ms"] = round((time.perf_counter() - started) * 1000, 2)
     logger.debug(
         "retrieval %s concept=%s type=%s chunks=%d %.1fms",

@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS chunks (
   core_text     TEXT,
   solution      TEXT,
   fingerprint   TEXT,
-  token_len     INTEGER
+  token_len     INTEGER,
+  structured    TEXT   -- questions: {"stem","figure","options":[{"label","text"}],"answer":{...}} (JSON)
 );
 CREATE INDEX IF NOT EXISTS ix_chunks_concept ON chunks(concept_id, content_type);
 CREATE INDEX IF NOT EXISTS ix_chunks_chapter ON chunks(chapter_id, content_type);

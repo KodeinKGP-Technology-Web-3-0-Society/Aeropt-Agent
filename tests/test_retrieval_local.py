@@ -417,3 +417,100 @@ def test_advanced_questions_are_pitched_higher_than_main():
     adv = sum(levels["JEE_ADVANCED"]) / len(levels["JEE_ADVANCED"])
     assert adv > main, f"Advanced {adv:.2f} should outrank Main {main:.2f}"
     assert min(levels["JEE_ADVANCED"]) >= 3, "an Advanced request should not serve the easiest tier"
+
+
+# ── 5. material the tutor cannot answer from is not served ────────────────────
+def test_no_syllabus_topic_is_left_without_material():
+    """Every JEE topic has at least one passage, so the tutor never teaches one
+    from recall alone (local_ingest/reference_notes.py covers what no source does)."""
+    conn = store.corpus()
+    bare = [r["topic"] for r in conn.execute("SELECT topic FROM syllabus_topics WHERE material = 0")]
+    assert bare == []
+
+
+def test_reference_notes_render():
+    from utils.latex_guidelines import find_latex_issues
+
+    conn = store.corpus()
+    rows = conn.execute(
+        "SELECT content_id, core_text FROM chunks WHERE source_book = 'Aeropt JEE reference notes'"
+    ).fetchall()
+    assert rows
+    broken = {r["content_id"]: find_latex_issues(r["core_text"]) for r in rows}
+    assert not {k: v for k, v in broken.items() if v}
+
+
+def test_questions_whose_figure_is_missing_are_not_served():
+    """A question that says 'the following circuit' with no circuit makes the model
+    invent one. Such questions are dropped at ingest, and solutions that lost their
+    working to images are cut back to the answer key."""
+    conn = store.corpus()
+    leaked = conn.execute(
+        "SELECT count(*) AS n FROM chunks WHERE is_question = 1 AND "
+        "(core_text LIKE '%[IMAGE]%' OR solution LIKE '%[IMAGE]%' "
+        " OR (license = 'coaching test paper' AND solution LIKE '%= =%'))"
+    ).fetchone()["n"]
+    assert leaked == 0
+
+
+def test_textbook_figures_are_described_in_text():
+    conn = store.corpus()
+    row = conn.execute(
+        "SELECT core_text FROM chunks WHERE core_text LIKE '%acceleration of the body of mass 10.0 kg shown below%'"
+    ).fetchone()
+    assert row and "[Figure:" in row["core_text"] and "37 degrees" in row["core_text"]
+
+
+def test_test_papers_are_not_passed_off_as_official_pyqs():
+    from retrieval import service
+
+    conn = store.corpus()
+    mislabelled = conn.execute(
+        "SELECT count(*) AS n FROM chunks WHERE license = 'coaching test paper' AND heading LIKE '%PYQ%'"
+    ).fetchone()["n"]
+    assert mislabelled == 0
+    pack = service.retrieve("pyq on surface tension", user_id="", content_type="pyq", mark=False)
+    if any(c["license"] == "coaching test paper" for c in pack["chunks"]):
+        assert any("not verified official papers" in n for n in pack["notes"])
+
+
+def test_optics_material_carries_the_jee_sign_convention():
+    from retrieval import service
+
+    pack = service.retrieve("lens formula for a convex lens", user_id="", content_type="theory", mark=False)
+    assert pack["chunks"]
+    assert any("1/v - 1/u = 1/f" in n for n in pack["notes"])
+
+
+def test_a_rejected_one_word_name_falls_through_to_the_next_named_concept():
+    from retrieval import resolver
+
+    res = resolver.resolve("half deflection method galvanometer resistance")
+    assert res.concept_id == "galvanometer_resistance_and_figure_of_merit"
+
+
+# ── 6. official papers ─────────────────────────────────────────────────────────
+def test_paper_references_are_parsed():
+    from retrieval import exam_refs
+
+    assert exam_refs.parse("solve JEE Advanced 2019 paper 1 question 5").content_id == "pyq_jee_adv_2019_p1_phy_q05"
+    assert exam_refs.parse("jee adv 2023 p2 q14").content_id == "pyq_jee_adv_2023_p2_phy_q14"
+    assert exam_refs.parse("give me a jee advanced pyq on rotation") is None
+    assert exam_refs.parse("JEE Main 2019 paper 1 q5") is None
+
+
+def test_a_named_official_question_comes_back_exactly_or_not_at_all():
+    from retrieval import exam_refs, service
+
+    conn = store.corpus()
+    row = conn.execute("SELECT content_id FROM chunks WHERE content_id LIKE 'pyq_jee_adv_%' LIMIT 1").fetchone()
+    if row is None:
+        pytest.skip("no official papers ingested (python -m local_ingest.exams)")
+    year, paper, q = row["content_id"].split("_")[3], row["content_id"].split("_")[4][1], row["content_id"].split("q")[-1]
+    pack = service.retrieve(f"JEE Advanced {year} paper {paper} question {int(q)}", user_id="", mark=False)
+    assert [c["content_id"] for c in pack["chunks"]] == [row["content_id"]]
+    assert "Official answer" in pack["chunks"][0]["solution"]
+
+    missing = service.retrieve("solve JEE Advanced 2011 paper 1 question 3", user_id="", content_type="pyq", mark=False)
+    assert "not in the verified set" in missing["notes"][0] or "could not be found" in missing["notes"][0]
+    assert all(c["content_id"] != exam_refs.parse("JEE Advanced 2011 paper 1 q3").content_id for c in missing["chunks"])
