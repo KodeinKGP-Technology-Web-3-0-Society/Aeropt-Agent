@@ -94,11 +94,14 @@ Physics pages are found without reading the whole paper: the text layer shows wh
 numbering restarts at Q.1 (one block per subject, order varies by year); the first page of
 each block is read to name its subject; only the Physics block is read in full (~13 pages).
 
-Coverage: `local_ingest/exams/catalog.py` lists 2023–2026 (keys located). Keys for
-2014–2016, 2019 and 2022 are also archived (see the catalog docstring); 2007–2013, 2017,
-2018, 2020 and 2021 keys are not located yet, and unkeyed questions are not ingested.
-2023 prints numeric answers in the blank rather than on an `Answer:` line, so those need a
-key-only vision pass (not built yet) and are dropped for now.
+Coverage: `local_ingest/exams/catalog.py` lists 2014–2017, 2019 and 2022–2026 — 322 Physics
+questions. Keys the text layer cannot give (scanned 2015–16, font-scrambled 2022, 2023's
+answers printed in the blank) are read from the key's page images, gaps only, each answer
+joined only to the question its printed opening matches. 2022's one key file is sliced per
+paper; where it prints a value and an accepted range, the range is the answer. Matrix-match
+questions (2015) keep a row-by-row answer the tutor grades (no instant grading). The Internet
+Archive holds the 2007–2013, 2018, 2020 and 2021 papers but no answer key for them, and
+unkeyed questions are not ingested.
 
 Adding coaching solutions (e.g. ALLEN) is a separate, later layer: a solution is attached
 by the same `(year, paper, qno)` key and only if its final answer equals the official key —

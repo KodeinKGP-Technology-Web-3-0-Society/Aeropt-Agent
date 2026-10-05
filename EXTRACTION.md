@@ -90,6 +90,20 @@ a rewritten solution must end on a distinctive number found in the book's own so
 chapter without its PDF (Oscillations) is not used. Result: 252 confirmed worked examples, 107 questions
 kept without a solution, 288 theory passages; 107 rows not used.
 
+### H.C. Verma chapters with PDFs only (`local_ingest/hcverma_pdf.py`)
+
+Eight folders had the book's pages but no extracted rows: 12 book chapters (17 Light Waves, 18–20
+geometrical optics / instruments / dispersion, 38 EMI, 39 AC, 40 EM waves, 42 photoelectric, 43 Bohr
+atom, 44 X-rays, 45 semiconductors, 46 nucleus). They go through the NCERT engine with a book-specific
+prompt (`stitch` + text-layer grounding). Pages belong to the chapter whose printed `CHAPTER nn` marker
+precedes them, not to the folder (the EM Waves file opens with the end of chapter 39). These files hold
+theory and worked examples only — they stop at "Questions for short answer", whose answers are not
+in them. Theory needs >= 85 % of its words printed on its pages (that caught the model writing its own
+DC-motor paragraph); a page with a failing block is re-read once (`h2`), and per chapter the reading
+with more checked records is kept. Result: 176 theory sections, 197 worked examples with the book's
+own solution, 20 exercises; 56 blocks dropped with reasons (`report_pdf.json`). `make hcverma` runs
+both H.C. Verma steps.
+
 ### NCERT specifics
 
 * Page JSON is a list of **blocks** in reading order: `heading` (with section number),
@@ -112,7 +126,7 @@ kept without a solution, 288 theory passages; 107 rows not used.
 | 1 | engine: fetch, pdf, reader, report; `exams` ported onto it, cache-compatible | this change |
 | 2 | `ncert` collection: catalog, prompt, stitch, validate; corpus loader; ranking | done |
 | 3 | full NCERT run (613 pages; 4 keys × 2 calls) | done — 1,066 records, text-layer checked |
-| 4 | more JEE Advanced years (2014–16, 2019, 2022 keys archived); key-only vision pass for 2023's in-blank numeric answers | next |
+| 4 | more JEE Advanced years: 2014–17, 2019, 2022 added; key-image pass for scanned/scrambled keys and 2023's in-blank answers; matrix-match keys | done — 322 questions; 2007–13, 2018, 2020–21 have no archived key |
 | 5 | sponsor books as collections when publisher files arrive; ALLEN solutions as an attach-only layer after permission | blocked on agreements |
 
 ## Operating it
