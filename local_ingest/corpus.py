@@ -739,7 +739,9 @@ def official_exam_items(chapter_lookup: dict[str, Chapter] | None = None) -> lis
             ),
             # exams/classify.py filed it under a chapter; concepts are then mapped within it.
             chapter=(chapter_lookup or {}).get(row.get("chapter_id") or ""),
-            heading=f"{label} · Q{row['qno']} · {_QTYPE_LABEL.get(row['qtype'], row['qtype'])}",
+            heading=f"{label} · Q{row['qno']} · "
+                    + ("matrix match (a row may match several entries)" if row.get("answer_kind") == "matrix"
+                       else _QTYPE_LABEL.get(row['qtype'], row['qtype'])),
             source_book=label,
             source_ref=f"Q{row['qno']} (official paper and final answer key)",
             license_=OFFICIAL_LICENSE,

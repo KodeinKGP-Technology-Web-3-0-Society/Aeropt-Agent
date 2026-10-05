@@ -12,22 +12,44 @@ and report.json, which lists every dropped question and why. Then `make index`.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
 from pathlib import Path
 
 from local_ingest.exams import assemble, catalog, classify, extract, keys, keys_vision
+from local_ingest.extract import pdf as pdfs
 from local_ingest.extract.fetch import fetch
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / ".local-run" / "sources" / "exams"
 
 
+def _slice(pdf: Path, pages: tuple[int, int], target: Path) -> None:
+    import subprocess
+    import tempfile
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["pdfseparate", "-f", str(pages[0]), "-l", str(pages[1]), str(pdf), f"{tmp}/p-%03d.pdf"], check=True)
+        parts = sorted(Path(tmp).glob("p-*.pdf"))
+        subprocess.run(["pdfunite", *map(str, parts), str(target)], check=True)
+
+
 def run_paper(paper: catalog.Paper, *, assemble_only: bool) -> tuple[list, list, dict]:
     work = OUT / "jee_advanced" / paper.slug
     paper_sha = fetch(paper.paper_url, work / "paper.pdf")
-    key_sha = fetch(paper.key_fetch_url, work / "key.pdf")
+    if paper.key_pages:
+        # One document holds both papers' keys: keep only this paper's pages, so answers
+        # keyed by question number cannot come from the other paper.
+        whole = work.parent / f"jee_adv_{paper.year}_keys_both.pdf"
+        fetch(paper.key_fetch_url, whole)
+        if not (work / "key.pdf").exists():
+            _slice(whole, paper.key_pages, work / "key.pdf")
+        key_sha = hashlib.sha256((work / "key.pdf").read_bytes()).hexdigest()
+    else:
+        key_sha = fetch(paper.key_fetch_url, work / "key.pdf")
     key_blocks = keys.parse(keys.text_layer(work / "key.pdf"))
 
     if assemble_only:
@@ -45,8 +67,13 @@ def run_paper(paper: catalog.Paper, *, assemble_only: bool) -> tuple[list, list,
     missing = [n for n in questions if n not in keyed or keyed[n].kind == "unreadable"]
     if missing and (not assemble_only or (work / "key" / "vision").exists()):
         pages = keys_vision.physics_pages_from_text(work / "key.pdf", key_blocks, questions)
+        where = "text-located"
+        if not pages and len(pdfs.page_texts(work / "key.pdf")) == len(pdfs.page_texts(work / "paper.pdf")):
+            # 2022's key is the question paper with answers printed in: same pages, so the
+            # paper's Physics pages are the key's. (Its thumbnails read Maths as Physics.)
+            pages, where = sorted({r["_page"] for r in results}), "paper-mirrored"
         key_blocks = keys_vision.fill(key_blocks, keys_vision.read(work / "key.pdf", work / "key", pages), questions)
-        log = log + [f"key gaps read from images: {len(missing)} ({'text-located' if pages else 'thumbnail-located'} pages)"]
+        log = log + [f"key gaps read from images: {len(missing)} ({where if pages else 'thumbnail-located'} pages)"]
     kept, dropped = assemble.join(paper, questions, sections, key_blocks)
     for item in kept:
         item["paper_sha256"], item["key_sha256"] = paper_sha, key_sha

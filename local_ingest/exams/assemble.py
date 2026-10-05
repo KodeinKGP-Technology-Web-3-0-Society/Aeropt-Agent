@@ -7,7 +7,8 @@ reason recorded in the report:
   identity   the key document's own copy of the question matches the extracted stem
              (they are two different documents, so a numbering slip shows up here)
   type       the answer's form fits the section: one letter for single-correct and
-             matching, letters for multiple-correct, a number or range for numeric
+             matching, letters for multiple-correct, a number or range for numeric, a
+             row-by-row map for matrix-match (whose columns must be printed in the stem)
   complete   an MCQ has all four options; a question that refers to a figure has one
              described
 """
@@ -38,6 +39,8 @@ def _qtype(question: dict[str, Any], sections: dict[int, dict[str, Any]], entry:
 
 
 def _fits(qtype: str, entry: keys.KeyEntry) -> bool:
+    if entry.kind == "matrix":
+        return qtype == "matching"
     options = entry.alternatives if entry.kind == "any_of" else [entry]
     for e in options:
         if qtype in {"single_correct", "matching"} and not (e.kind == "letters" and len(e.letters) == 1):
@@ -50,6 +53,13 @@ def _fits(qtype: str, entry: keys.KeyEntry) -> bool:
 
 
 def display(entry: keys.KeyEntry) -> str:
+    if entry.kind == "matrix":
+        # "A → R (also accepted: R, T); B → P, S; …"
+        rows = []
+        for row, accepted in entry.matches.items():
+            first, *others = [", ".join(cols) for cols in accepted]
+            rows.append(f"{row} → {first}" + (f" (also accepted: {'; '.join(others)})" if others else ""))
+        return "; ".join(rows)
     if entry.kind == "any_of":
         return " or ".join(display(a) for a in entry.alternatives) + " (the final key accepts any of these)"
     if entry.kind == "letters":
@@ -121,7 +131,13 @@ def join(paper, questions, sections, key_blocks) -> tuple[list[dict[str, Any]], 
             drop(f"answer {entry.raw!r} does not fit a {qtype} question")
             continue
         opts = q.get("options") or {}
-        if qtype in {"single_correct", "multiple_correct", "matching"} and not all(
+        if entry.kind == "matrix":
+            # No options: both columns are printed in the stem, every label the key uses included.
+            labels = set(entry.matches) | {c for alts in entry.matches.values() for cols in alts for c in cols}
+            if not all(f"({c})" in q["stem"] for c in labels):
+                drop("a matrix-match column entry the key uses is missing from the stem")
+                continue
+        elif qtype in {"single_correct", "multiple_correct", "matching"} and not all(
             str(opts.get(k) or "").strip() for k in "ABCD"
         ):
             drop("an option is missing or empty")

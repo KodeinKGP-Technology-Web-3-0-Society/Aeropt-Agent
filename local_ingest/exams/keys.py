@@ -34,19 +34,24 @@ _NUMBER = re.compile(r"^[\[(]?\s*(-?\d+(?:\.\d+)?)\s*[\])]?$")
 _LETTERS = re.compile(r"^[A-D]+$")
 _OR = re.compile(r"\s+or\s+", re.I)
 _BONUS = re.compile(r"bonus|marks? (?:to|for) all|all candidates|dropped", re.I)
+# Matrix-match (2015 and earlier): "(A) Matches to (R) OR (R) and (T)", one row per line,
+# or "A-R; B-P,S" on one line. Each row lists the Column II letters, with "OR" between
+# answers the final key accepts.
+_MATRIX_ROW = re.compile(r"^\(?([A-D])\)?\s*(?:matches?\s+(?:to|with)\b|→|->|[-:])\s*(.+)$", re.I)
 
 
 @dataclass
 class KeyEntry:
     qno: int
     raw: str
-    kind: str = ""            # letters | integer | range | any_of | bonus | unreadable
+    kind: str = ""            # letters | integer | range | any_of | matrix | bonus | unreadable
     letters: str = ""         # "AD" for A, D
     value: float | None = None
     low: float | None = None
     high: float | None = None
     context: str = ""         # the key document's own copy of the question opening
     alternatives: list["KeyEntry"] = field(default_factory=list)  # any_of: each one is accepted
+    matches: dict[str, list[str]] = field(default_factory=dict)  # matrix: row -> accepted column sets ("RT")
 
 
 @dataclass
@@ -57,11 +62,32 @@ class KeyBlock:
     subject: str = ""  # set when the key itself names the subject (tables)
 
 
+def matrix_rows(text: str) -> dict[str, list[str]]:
+    """{'A': ['R', 'RT'], 'B': ['PS'], …} when every line is a matrix row, else {}."""
+    rows: dict[str, list[str]] = {}
+    for line in filter(None, (part.strip() for part in re.split(r"[\n;]", text))):
+        m = _MATRIX_ROW.match(line)
+        if not m or m.group(1).upper() in rows:
+            return {}
+        accepted = []
+        for alt in _OR.split(m.group(2)):
+            cols = re.sub(r"[\s(),&]|and", "", alt, flags=re.I).upper()
+            if not re.fullmatch(r"[P-T]+", cols):
+                return {}
+            accepted.append("".join(sorted(set(cols))))
+        rows[m.group(1).upper()] = accepted
+    return rows if len(rows) >= 2 else {}
+
+
 def normalise(raw: str) -> KeyEntry:
     entry = KeyEntry(qno=0, raw=raw)
     text = raw.strip().rstrip(".*").strip()  # 2019 marks some ranges with a footnote star
     if _BONUS.search(text):
         entry.kind = "bonus"
+        return entry
+    rows = matrix_rows(text)
+    if rows:
+        entry.kind, entry.matches = "matrix", rows
         return entry
     m = _RANGE.match(text)
     if m:

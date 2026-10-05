@@ -15,9 +15,7 @@ file on 14 June 2025, and "closest capture" resolution handed that back. The joi
 refused it (no key block matched), which is the safeguard working, not a fix.
 
 Adding a year: add a Paper row; `python -m local_ingest.exams --years Y` does the rest.
-Years not listed: 2007-2013, 2018, 2020 and 2021 have no official key located; 2022's
-final key is one document for both papers, and answers keyed only by question number would
-mix them, so it waits for a page-range split; their questions are not ingested, because an unkeyed question cannot be graded.
+Years not listed: 2007-2013, 2018, 2020 and 2021 have no official key located; their questions are not ingested, because an unkeyed question cannot be graded.
 """
 
 from __future__ import annotations
@@ -35,6 +33,8 @@ class Paper:
     paper_url: str
     key_url: str
     key_wayback: str = ""  # Internet Archive timestamp when the key is no longer live
+    # When one key document covers both papers (2022), this paper's page range in it.
+    key_pages: tuple[int, int] | None = None
 
     @property
     def slug(self) -> str:
@@ -59,6 +59,10 @@ PAPERS: list[Paper] = [
     Paper(2024, 2, f"{_ARCHIVE}/2024_2_English.pdf", f"{_DOCS}/Paper2_English_2024_With_Final_Keys.pdf", "20240609000000"),
     Paper(2023, 1, f"{_ARCHIVE}/2023_1_English.pdf", f"{_DOCS}/Paper1_Final_Answer_Keys.pdf", "20230618000000"),
     Paper(2023, 2, f"{_ARCHIVE}/2023_2_English.pdf", f"{_DOCS}/Paper2_Final_Answer_Keys.pdf", "20230618000000"),
+    # 2022: one final-key document for both papers (font-scrambled text, so read as images);
+    # Paper 1 is pages 1-31 of it and Paper 2 pages 32-57, matching the papers' own lengths.
+    Paper(2022, 1, f"{_ARCHIVE}/2022_1_English.pdf", f"{_DOCS}/jeeadv-2022-final-answer-keys.pdf", "20220911000000", (1, 31)),
+    Paper(2022, 2, f"{_ARCHIVE}/2022_2_English.pdf", f"{_DOCS}/jeeadv-2022-final-answer-keys.pdf", "20220911000000", (32, 57)),
     # 2019: scanned papers (subjects found from page thumbnails); the key is a subject table.
     Paper(2019, 1, f"{_ARCHIVE}/2019_1_English.pdf", f"{_DOCS}/KEY-2019-Final-13.06.2019-P1.pdf", "20190713000000"),
     Paper(2019, 2, f"{_ARCHIVE}/2019_2_English.pdf", f"{_DOCS}/KEY-2019-Final-13.06.2019-P2.pdf", "20190713000000"),

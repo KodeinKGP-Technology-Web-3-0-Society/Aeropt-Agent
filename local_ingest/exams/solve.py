@@ -42,7 +42,11 @@ _FORMAT = {
 }
 
 
+_MATRIX_FORMAT = 'every row, e.g. "A-R; B-P,S; C-Q,T; D-R"'
+
+
 def prompt(q: dict[str, Any]) -> str:
+    fmt = _MATRIX_FORMAT if q.get("answer_kind") == "matrix" else _FORMAT.get(q["qtype"], "the answer")
     parts = [f"JEE Advanced {q['year']} Paper {q['paper']}, Physics Q{q['qno']} ({q['qtype'].replace('_', ' ')})."]
     if q.get("paragraph"):
         parts.append("Passage:\n" + q["paragraph"])
@@ -56,7 +60,7 @@ def prompt(q: dict[str, Any]) -> str:
         "by step: principles used, equations in LaTeX ($...$ inline, $$...$$ display), and the "
         "arithmetic. For option questions, say briefly why each option is right or wrong.\n"
         "Return only JSON: {\"solution\": \"<the worked solution in Markdown>\", \"final\": \"<"
-        + _FORMAT.get(q["qtype"], "the answer") + ">\"}"
+        + fmt + ">\"}"
     )
     return "\n\n".join(parts)
 
@@ -64,6 +68,10 @@ def prompt(q: dict[str, Any]) -> str:
 def matches(final: str, q: dict[str, Any]) -> bool:
     """Does the model's final answer equal the official key?"""
     entry = keys.normalise(q["answer_raw"])
+    if entry.kind == "matrix":
+        given = keys.matrix_rows(final or "")
+        return set(given) == set(entry.matches) and all(
+            len(cols) == 1 and cols[0] in entry.matches[row] for row, cols in given.items())
     candidates = entry.alternatives if entry.kind == "any_of" else [entry]
     compact = re.sub(r"[\s(),.&]", "", (final or "").upper())
     if re.fullmatch(r"[A-D]+", compact):  # "AC", "(A), (C)"

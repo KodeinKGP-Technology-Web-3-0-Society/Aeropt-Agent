@@ -48,6 +48,11 @@ def read(key_pdf: Path, work: Path, pages: list[int] | None = None) -> dict[int,
         texts = pdfs.page_texts(key_pdf)
         by_page = extract.subjects_by_vision(key_pdf, work, len(texts))
         pages = sorted(p for p, subjects in by_page.items() if "Physics" in subjects)
+        # A thumbnail misses the small "PART I: PHYSICS" banner on a section's first page
+        # (2015 P2 page 2 held Q.1-3). An unlabelled page just before is read too; its
+        # answers still have to match our stems to be used.
+        if pages and pages[0] > 1 and not by_page.get(pages[0] - 1):
+            pages.insert(0, pages[0] - 1)
     candidates: dict[int, list[keys.KeyEntry]] = {}
     if not pages:
         return candidates

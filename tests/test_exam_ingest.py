@@ -101,3 +101,43 @@ def test_a_solution_counts_only_if_it_reaches_the_official_answer():
     assert not solve.matches("603", {"answer_raw": "[598.00 to 602.00]"})
     assert solve.matches("0.75", {"answer_raw": "0.5 OR 0.75"})
     assert not solve.matches("", {"answer_raw": "B"})
+
+
+MATRIX_KEY = "(A) Matches to (R) OR (R) and (T)\n(B) Matches to (P) and (S)\n(C) Matches to (Q) and (T)\n(D) Matches to (R)"
+MATRIX_STEM = (
+    "Match the nuclear processes given in column I with the appropriate option(s) in column II.\n"
+    "Column I\n(A) Nuclear fusion\n(B) Fission in a nuclear reactor\n(C) beta-decay\n(D) gamma-ray emission\n"
+    "Column II\n(P) Absorption of thermal neutrons\n(Q) Co-60 nucleus\n(R) Energy production in stars\n"
+    "(S) Heavy water\n(T) Neutrino emission"
+)
+
+
+def test_a_matrix_match_key_is_read_row_by_row():
+    entry = keys.normalise(MATRIX_KEY)
+    assert entry.kind == "matrix"
+    assert entry.matches == {"A": ["R", "RT"], "B": ["PS"], "C": ["QT"], "D": ["R"]}
+    assert keys.normalise("A-R; B-P,S; C-Q,T; D-R").matches["B"] == ["PS"]
+    assert keys.normalise("(A)").kind == "letters"  # one row is not a matrix
+
+
+def test_a_matrix_match_question_is_kept_only_with_its_columns_in_the_stem():
+    entry = keys.normalise(MATRIX_KEY)
+    entry.qno = 19
+    block = keys.KeyBlock(entries={19: entry}, order=[19], subject="Physics")
+    sections = {3: {"answer_type": "matching"}}
+    kept, dropped = assemble.join(PAPER, {19: _q(19, MATRIX_STEM, options=False, section=3)}, sections, [block])
+    assert kept and kept[0]["answer_kind"] == "matrix" and not dropped
+    assert kept[0]["answer"].startswith("A → R (also accepted: R, T); B → P, S")
+    short = MATRIX_STEM.replace("(T) Neutrino emission", "")
+    kept, dropped = assemble.join(PAPER, {19: _q(19, short, options=False, section=3)}, sections, [block])
+    assert not kept and "missing from the stem" in dropped[0]["reason"]
+
+
+def test_a_matrix_solution_must_match_every_row():
+    from local_ingest.exams import solve
+
+    q = {"answer_raw": MATRIX_KEY}
+    assert solve.matches("A-R,T; B-P,S; C-Q,T; D-R", q)
+    assert solve.matches("A-R; B-PS; C-QT; D-R", q)
+    assert not solve.matches("A-R; B-P; C-QT; D-R", q)
+    assert not solve.matches("A-R; B-PS; C-QT", q)

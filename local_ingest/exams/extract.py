@@ -84,7 +84,14 @@ def page_questions(pdf: Path) -> list[list[int]]:
 def blocks(pdf: Path) -> list[list[int]]:
     """1-based page numbers of each subject block (numbering restarts at Q.1)."""
     per_page = page_questions(pdf)
-    starts = [i for i, qs in enumerate(per_page) if 1 in qs]
+    # A block starts where Q.1 is printed, or where numbering falls back (Q.18 then Q.5):
+    # 2022's scrambled text layer loses the numbers on the page where Physics opens.
+    starts, highest = [], 0
+    for i, qs in enumerate(per_page):
+        if qs and (1 in qs or min(qs) < highest):
+            starts.append(i)
+            highest = 0
+        highest = max([highest, *qs])
     if not starts:
         raise RuntimeError(f"{pdf.name}: no question numbers in the text layer (scanned paper?)")
     result = []
