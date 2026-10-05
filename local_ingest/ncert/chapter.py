@@ -141,8 +141,9 @@ def stitch(pages: list[dict[str, Any]], chapter_title: str, page_texts: dict[int
                     last["pages"].append(n)
                 elif "question" in last:
                     last["question"] = (last["question"] + "\n" + text).strip()
-                else:
+                else:  # a section running onto this page: record the page it is printed on
                     last["parts"].append(text)
+                    last["pages"].append(n)
             elif kind == "figure":
                 number = str(block.get("number") or "").strip()
                 caption = str(block.get("caption") or "").strip()

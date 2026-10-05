@@ -1,4 +1,4 @@
-.PHONY: cursor-gateway cursor-gateway-test run-cursor ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture exams ncert extract-status
+.PHONY: cursor-gateway cursor-gateway-test run-cursor ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture exams ncert hcverma extract-status
 
 ci:
 	bash ci/run.sh
@@ -34,6 +34,11 @@ exams:
 # CHAPTERS="leph103 leph201" limits the run. Then `make index`.
 ncert:
 	.venv/bin/python -m local_ingest.ncert $(if $(CHAPTERS),--chapters $(CHAPTERS),)
+
+# H.C. Verma: verify the sponsor's CSV rows, then read the PDF-only chapters (same reader).
+hcverma:
+	.venv/bin/python -m local_ingest.hcverma
+	.venv/bin/python -m local_ingest.hcverma_pdf
 
 # Live progress of exams/ncert runs, from the caches:  watch -n 30 make extract-status
 extract-status:

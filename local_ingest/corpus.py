@@ -652,11 +652,12 @@ def hcverma_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
     Theory is labelled verbatim or summary; a worked example carries a solution only when it
     is the book's own or reaches the book's answer; otherwise it is a question without one.
     """
-    path = SOURCES / "hcverma" / "hcverma.jsonl"
-    if not path.exists():
-        return []
+    # hcverma.jsonl: the sponsor's CSV rows; hcverma_pdf.jsonl: chapters read from the PDFs.
+    lines = [line for name in ("hcverma.jsonl", "hcverma_pdf.jsonl")
+             if (SOURCES / "hcverma" / name).exists()
+             for line in (SOURCES / "hcverma" / name).read_text(encoding="utf-8").splitlines()]
     items: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         if not line.strip():
             continue
         row = json.loads(line)
