@@ -24,6 +24,19 @@ Transcribe only what is printed. Do not solve anything and do not guess an answe
 Return only JSON: {"answers": [{"qno": <int>, "answer": "<the printed answer exactly, e.g. (A), (C) or 2.50 to 2.60>", "question_start": "<the first 20 or so words of that question as printed>"}]}
 One entry per question on this page that has a printed answer; [] if none."""
 
+# 2022 prints a value and the accepted range ("2.33  Range (2.30 - 2.35)"); k1 kept the value,
+# so a student's 2.32 would be marked wrong. Pages whose k1 answers are single numbers are read
+# once more asking for the range; it replaces the value only if it contains it.
+RANGE_VERSION = "k1r"
+RANGE_PROMPT = PROMPT + """
+If a question shows both a single value and an accepted range (e.g. "2.33  Range (2.30 - 2.35)"), give the range as the answer, written "2.30 to 2.35"."""
+
+
+def _point(entry: keys.KeyEntry) -> float | None:
+    if entry.kind == "integer" or (entry.kind == "range" and entry.low == entry.high):
+        return entry.value if entry.kind == "integer" else entry.low
+    return None
+
 
 def physics_pages_from_text(key_pdf: Path, key_blocks: list[keys.KeyBlock], questions: dict) -> list[int]:
     """The key's Physics pages, from its own text layer: the numbering-restart block whose
@@ -56,13 +69,29 @@ def read(key_pdf: Path, work: Path, pages: list[int] | None = None) -> dict[int,
     candidates: dict[int, list[keys.KeyEntry]] = {}
     if not pages:
         return candidates
-    for page in reader.read_pages(key_pdf, list(range(pages[0], pages[-1] + 1)), work, prompt=PROMPT, version=VERSION):
+    results = reader.read_pages(key_pdf, list(range(pages[0], pages[-1] + 1)), work, prompt=PROMPT, version=VERSION)
+    numeric = [r["_page"] for r in results
+               if any(_point(keys.normalise(str(a.get("answer") or ""))) is not None for a in r.get("answers") or [])]
+    ranges: dict[tuple[int, int], keys.KeyEntry] = {}
+    try:
+        for r in reader.read_pages(key_pdf, numeric, work, prompt=RANGE_PROMPT, version=RANGE_VERSION) if numeric else []:
+            for a in r.get("answers") or []:
+                e = keys.normalise(str(a.get("answer") or ""))
+                if e.kind == "range" and e.low < e.high and str(a.get("qno", "")).isdigit():
+                    ranges[(r["_page"], int(a["qno"]))] = e
+    except reader.VisionError:
+        pass  # the printed values stand
+    for page in results:
         for row in page.get("answers") or []:
             try:
                 n = int(row["qno"])
             except (KeyError, TypeError, ValueError):
                 continue
             entry = keys.normalise(str(row.get("answer") or ""))
+            wider = ranges.get((page["_page"], n))
+            value = _point(entry)
+            if wider is not None and value is not None and wider.low <= value <= wider.high:
+                entry = wider
             entry.qno = n
             entry.context = str(row.get("question_start") or "")
             if entry.kind != "unreadable":
