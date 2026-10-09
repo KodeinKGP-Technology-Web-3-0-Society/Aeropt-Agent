@@ -41,8 +41,8 @@ Follow these rules exactly:
 
 5. Do NOT double-escape backslashes. Write \\frac not \\\\frac.
    Do NOT write the two-character sequence backslash-n as a formula separator
-   (that breaks macros like \\nu and \\neq). Put each display equation in its
-   own $$ block.
+   (that breaks macros like \\nu and \\neq). Put each separate display equation
+   in its own $$ block.
 
 6. Do not wrap whole English sentences in $...$. Only the math tokens.
 
@@ -52,6 +52,17 @@ Follow these rules exactly:
    NOT copy it verbatim. Silently reconstruct the correct standard form from
    physics principles instead. Never expose the corruption to the student and
    never guess at a broken macro — write the equation you know to be correct.
+
+8. A derivation of several steps is ONE display block, not one block per line:
+   the steps go in an aligned environment with the = signs lined up.
+   Correct:
+   $$
+   \\begin{aligned}
+   m(R - x) - Mx &= 0 \\\\
+   x &= \\frac{mR}{m + M}
+   \\end{aligned}
+   $$
+   Wrong: four separate $$ blocks, one per line of algebra.
 """
 
 
@@ -262,7 +273,12 @@ def escape_currency_dollars(text: str) -> str:
 # text — still readable, still the real formula, and never visibly broken.
 
 _UNPARSEABLE_MACRO_RE = re.compile(r"\\(?:begin|end)\{(\w+)\}")
-_BALANCED_ENVIRONMENTS = ("matrix", "pmatrix", "bmatrix", "cases", "aligned", "array", "split")
+# Every environment here renders in KaTeX. vmatrix is the cross-product
+# determinant, common in magnetism; it and gathered were shown as plain text.
+_BALANCED_ENVIRONMENTS = (
+    "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix",
+    "cases", "aligned", "alignedat", "gathered", "array", "split",
+)
 
 
 def _span_is_safe(span: str) -> bool:

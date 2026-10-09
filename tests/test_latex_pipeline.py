@@ -96,3 +96,37 @@ class TestLatexPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDisplayBlocksPassThrough(unittest.TestCase):
+    """Lines inside $$ … $$ are already maths; the formatter must not re-wrap them."""
+
+    def test_own_line_display_block_unchanged(self) -> None:
+        raw = "Then\n\n$$\nx = \\frac{mR}{m+M}\n$$\n\nso."
+        out = prepare_student_markdown(raw)
+        self.assertEqual(out, raw)
+        self.assertNotIn("```", out)
+
+    def test_aligned_derivation_stays_one_block(self) -> None:
+        raw = (
+            "Sub:\n\n$$\n\\begin{aligned}\nm(R - x) + M(-x) &= 0 \\\\\n"
+            "x &= \\frac{mR}{m + M}\n\\end{aligned}\n$$\n\nDone."
+        )
+        self.assertEqual(prepare_student_markdown(raw), raw)
+
+    def test_bare_stored_equation_line_is_still_wrapped(self) -> None:
+        out = prepare_student_markdown("Using\nI=\\frac{1}{2}MR^2\nthen")
+        self.assertIn("$$\nI=\\frac{1}{2}MR^2\n$$", out)
+
+
+class TestKatexEnvironmentsKept(unittest.TestCase):
+    def test_cross_product_determinant_and_gathered_render_as_maths(self) -> None:
+        from utils.latex_guidelines import harden_math_spans
+
+        det = (
+            "$$\n\\vec{v}\\times\\vec{B}=\\begin{vmatrix}\\hat{\\imath}&\\hat{\\jmath}&\\hat{k}"
+            "\\\\V_0&0&0\\\\0&0&B\\end{vmatrix}\n$$"
+        )
+        gathered = "$$\n\\begin{gathered}a=b\\\\c=d\\end{gathered}\n$$"
+        self.assertEqual(harden_math_spans(det), det)
+        self.assertEqual(harden_math_spans(gathered), gathered)

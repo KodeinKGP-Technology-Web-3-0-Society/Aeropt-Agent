@@ -514,3 +514,14 @@ def test_a_named_official_question_comes_back_exactly_or_not_at_all():
     missing = service.retrieve("solve JEE Advanced 2011 paper 1 question 3", user_id="", content_type="pyq", mark=False)
     assert "not in the verified set" in missing["notes"][0] or "could not be found" in missing["notes"][0]
     assert all(c["content_id"] != exam_refs.parse("JEE Advanced 2011 paper 1 q3").content_id for c in missing["chunks"])
+
+
+def test_year_level_request_parses_without_question_number():
+    from retrieval import exam_refs
+
+    ref = exam_refs.parse_paper("give me jee advanced 2016 famous question with diagram")
+    assert ref is not None and ref.year == 2016 and ref.paper is None
+    assert exam_refs.parse_paper("jee adv 2023 paper 2 problems").id_prefix == "pyq_jee_adv_2023_p2"
+    # A named question is the exact-question path, not this one.
+    assert exam_refs.parse_paper("jee adv 2023 p2 q14") is None
+    assert exam_refs.parse_paper("explain torque") is None

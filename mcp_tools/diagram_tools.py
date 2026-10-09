@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from agents.runtime.toolbelt import SCOPE_READ, ToolContext, tool
 
 
 class DrawDiagramArgs(BaseModel):
+    # Models often send `tikz_code` and skip the caption; a near-miss call should
+    # still draw rather than spend one of the turn's few steps on a retry.
     tikz: str = Field(
         ...,
+        validation_alias=AliasChoices("tikz", "tikz_code", "code"),
         description=(
             "One complete \\begin{tikzpicture}…\\end{tikzpicture} or "
             "\\begin{circuitikz}…\\end{circuitikz} environment — nothing else. "
@@ -29,7 +32,7 @@ class DrawDiagramArgs(BaseModel):
         ),
     )
     caption: str = Field(
-        ...,
+        default="Diagram",
         description="Short caption the student reads, e.g. 'LC circuit at t = 0'.",
     )
 
@@ -43,7 +46,8 @@ class DrawDiagramArgs(BaseModel):
         "the explanation or question clearer — and always when the student asks "
         "for a diagram. Paste the returned `markdown` into your reply exactly, on "
         "its own line. If it returns an error, fix the TikZ and call again (at "
-        "most twice)."
+        "most twice). Never write TikZ in the reply itself: the student would "
+        "see the source code, not a picture."
     ),
     args_model=DrawDiagramArgs,
     scopes=(SCOPE_READ,),

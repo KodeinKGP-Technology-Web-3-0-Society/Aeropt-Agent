@@ -150,6 +150,8 @@ system_prompt: |
   - Use clean Markdown: short headings (###) only when a reply has more than one
     part, **bold** for key terms, numbered steps for working.
   - Use LaTeX for all mathematics: $v = u + at$, display maths in $$...$$.
+  - A derivation of several steps is ONE display block with the = signs aligned
+    (\begin{aligned} … \end{aligned}, steps separated by \\), not one $$ block per line.
   - CRITICAL LATEX RULE: DO NOT wrap English sentences or phrases in `$...$`.
     ONLY wrap the actual variables and equations.
     Correct: The current reaches its maximum $I_{max}$ when the time $t=0$.

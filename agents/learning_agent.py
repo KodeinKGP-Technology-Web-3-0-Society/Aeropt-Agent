@@ -35,7 +35,7 @@ from agents.runtime.trace import AgentTrace, TraceStep
 from db.supabase_client import db
 from models.state import TutorState
 from utils.skills import load_skill
-from utils.stream import stream_callback_var
+from utils.stream import emit_text, stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
@@ -157,8 +157,50 @@ def _format_pending_suggestions(state: TutorState) -> str:
     return "\n".join(lines)
 
 
-def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int]:
+_OPTIONS_PHRASES = ("option", "choices", "multiple choice", "mcq", "hint", "clue")
+
+_OPTIONS_MOVE = (
+    "Student asked for options or a hint. Do not probe again and do not give the answer. "
+    "Offer 3-4 labelled choices (A, B, C, D) to the question you just asked: one correct, "
+    "the others plausible slips (inverted ratio, wrong quantity). Ask which they pick and why."
+)
+
+
+# General chat (the /chat page) sends no room surface. There is no lesson plan
+# to pace, so the tutor reads what the student is asking for and picks the mode
+# itself. One fixed mode failed both ways: always-Socratic dodged plain doubts,
+# always-direct solved a question the student had only asked to see.
+_CHAT_MOVE = (
+    "General chat. Read what the student wants from THIS message and the conversation, "
+    "then choose the mode yourself:\n"
+    "  - They ask for a question or practice ('give me a question', 'a PYQ on X'): give "
+    "ONLY the question (and its diagram/options). No solution, no hints, no final answer. "
+    "End by inviting their attempt, and say they can ask for a hint or the solution.\n"
+    "  - They ask for a question AND its solution ('solve', 'with solution', 'explain this "
+    "problem'): give both, the question first, then the worked solution.\n"
+    "  - They are attempting a question already on the table (an answer, working, or a "
+    "partial idea): do not solve it for them. Say what is right, then guide the next step "
+    "Socratically: one hint or one question at a time.\n"
+    "  - They are stuck on that question ('hint', 'stuck', 'I don't know'): one hint that "
+    "names the principle, not the steps. After a second hint, or when they ask for it, "
+    "give the full solution.\n"
+    "  - They ask for options on a question already on the table: 3-4 labelled choices "
+    "(A-D), one correct, and nothing else.\n"
+    "  - They ask a conceptual doubt ('why', 'what is', 'explain', 'difference between'): "
+    "answer it directly and completely. Do not turn it into a quiz; ask one short check "
+    "question only when a common misconception is worth testing, never on two replies in a row.\n"
+    "When unsure which they want, prefer the lighter reveal: a question can always be "
+    "followed by its solution, but a solution cannot be taken back."
+)
+_CHAT_REVEAL = "your choice, set by the mode you picked above (question only = 0, hint = 2, explanation or requested solution = 4)"
+
+
+def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int | str]:
     query_lower = query.lower()
+    if not (state.get("classroom_surface") or "").strip():
+        return _CHAT_MOVE, _CHAT_REVEAL
+    if any(ph in query_lower for ph in _OPTIONS_PHRASES) and len(query_lower.split()) <= 12:
+        return _OPTIONS_MOVE, 2
     escalate = any(ph in query_lower for ph in ["give up", "show me", "tell me", "don't know", "answer", "stuck"])
     
     reveal = 0
@@ -195,19 +237,24 @@ def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int]:
     return move, reveal
 
 
-def _with_progress(memory_text: str, user_id: str) -> str:
+def _with_progress(memory_text: str, user_id: str, session_id: str = "") -> str:
     """Memories say who the student is; the digest says how they are doing —
     weak and mastered concepts, mistake pattern, reviews due — so a question
-    in chat is answered knowing what the student has already practised."""
+    in chat is answered knowing what the student has already practised. The
+    cross-room digest says what they were just doing in the Study Room."""
+    from services.cross_room import recent_activity
     from services.progress_report import progress_digest
 
     digest = progress_digest(user_id) if user_id else ""
-    if not digest:
-        return memory_text
-    return f"{memory_text}\n\nProgress so far (from their practice record):\n{digest}"
+    if digest:
+        memory_text = f"{memory_text}\n\nProgress so far (from their practice record):\n{digest}"
+    activity = recent_activity(user_id, session_id)
+    if activity:
+        memory_text = f"{memory_text}\n\n{activity}"
+    return memory_text
 
 
-def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaffolding_move: str, scaffolding_reveal: int) -> str:
+def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaffolding_move: str, scaffolding_reveal: int | str) -> str:
     skill = load_skill("learning_agent") or {}
     prompt = skill.get("system_prompt") or ""
     if not prompt:
@@ -230,7 +277,7 @@ def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaf
         "{{preferred_depth}}": str(state.get("preferred_depth") or "standard"),
         "{{interaction_count}}": str(state.get("interaction_count") or 1),
         "{{roadmap_hint}}": _format_roadmap_hint(state),
-        "{{learner_memory}}": _with_progress(_format_memory(memories), state.get("user_id") or ""),
+        "{{learner_memory}}": _with_progress(_format_memory(memories), state.get("user_id") or "", state.get("session_id") or ""),
         "{{session_summary}}": session_text,
         "{{pending_suggestions}}": _format_pending_suggestions(state),
         "{{scaffolding_move}}": scaffolding_move,
@@ -349,6 +396,9 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         logger.error("%s", exc)
         return {"error": str(exc)}
 
+    from services import progress
+
+    progress.report("stage", "thinking")
     result = run_agent_loop(
         system_prompt=system_prompt,
         user_message=query,
@@ -365,6 +415,19 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     )
 
     answer = _resolve_final_text(result.text, ctx)
+
+    if answer:
+        from agents.runtime.provenance import check_exam_claims, render_inline_tikz, strip_foreign_images
+
+        answer, tikz_drawn, tikz_dropped = render_inline_tikz(answer)
+        if tikz_drawn or tikz_dropped:
+            trace.note(f"provenance: inline TikZ drawn {tikz_drawn}, removed {tikz_dropped}")
+        answer, dropped = strip_foreign_images(answer)
+        chunks = list(ctx.updates.get("retrieved_chunks") or []) + list(state.get("retrieved_chunks") or [])
+        history = [t.get("content") or "" for t in (state.get("recent_turns") or [])]
+        answer, unverified = check_exam_claims(answer, chunks, history)
+        if dropped or unverified:
+            trace.note(f"provenance: dropped {dropped} image(s); unverified exam claims {unverified}")
 
     if answer:
         from agents.runtime.proof import ensure_proof
@@ -390,6 +453,8 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     # Fresh review before the student sees any of it.
     cb = stream_callback_var.get()
     
+    progress.report("stage", "thinking", "done")
+    progress.report("stage", "review")
     checked = check_answer_streaming(
         query=query,
         draft=answer,
@@ -398,12 +463,10 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         on_token=cb,
     )
     
+    progress.report("stage", "review", "done")
     if cb and checked.verdict != "revise" and checked.answer:
-        # Fake-stream the draft
-        words = checked.answer.split(" ")
-        for i, w in enumerate(words):
-            cb(w + (" " if i < len(words) - 1 else ""))
-            time.sleep(0.01)
+        # An approved draft arrives whole; a revision already streamed above.
+        emit_text(checked.answer, cb)
 
     updates: Dict[str, Any] = dict(ctx.updates)
     updates.pop("draft_response", None)

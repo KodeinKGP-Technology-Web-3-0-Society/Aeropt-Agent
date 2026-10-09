@@ -315,6 +315,8 @@ class ChatSessionSummary(BaseModel):
     interaction_count: int = 0
     updated_at: Optional[str] = None
     preview: Optional[str] = None
+    title: Optional[str] = None
+    kind: Optional[str] = None
 
 
 class ChatSessionListResponse(BaseModel):
@@ -323,6 +325,12 @@ class ChatSessionListResponse(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     user_id: str
+    kind: Optional[str] = None  # "chat" for the general chat page; None for room sessions
+
+
+class UpdateSessionRequest(BaseModel):
+    user_id: str
+    title: Optional[str] = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -824,8 +832,14 @@ async def chat_message(
         loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "data": token})
 
     def sync_worker():
+        from services import progress
         from utils.stream import stream_callback_var
         stream_callback_var.set(sync_cb)
+        # Tool and stage events ("Reading your course material…") as SSE `status`
+        # frames, the same feed the Study Room shows while the tutor works.
+        progress.install(
+            lambda event: loop.call_soon_threadsafe(queue.put_nowait, {"type": "status", "data": event})
+        )
         try:
             stage_overrides: Dict[str, Any] = {}
             
@@ -916,8 +930,10 @@ async def chat_message(
                 )
 
             def prefetch_bg():
+                from services import progress
                 from utils.stream import stream_callback_var
                 stream_callback_var.set(None)
+                progress.install(None)
                 try:
                     _prefetch_next_query(final_session_id, result)
                 except Exception:
@@ -1022,7 +1038,7 @@ def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiency
 def create_chat_session(req: CreateSessionRequest) -> CreateSessionResponse:
     """Create an empty study session so the client can land on /chat/<id> before the first message."""
     try:
-        session = db.create_session(req.user_id)
+        session = db.create_session(req.user_id, kind=(req.kind or "").strip() or None)
     except Exception as exc:
         logging.exception("create_session failed for user %s", req.user_id)
         raise HTTPException(status_code=502, detail=f"Could not create session: {exc}") from exc
@@ -1034,11 +1050,12 @@ def create_chat_session(req: CreateSessionRequest) -> CreateSessionResponse:
 
 
 @app.get("/api/v1/chat/sessions", response_model=ChatSessionListResponse)
-def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse:
-    """List recent study sessions for a user (newest first)."""
-    capped = max(1, min(limit, 50))
+def list_chat_sessions(user_id: str, limit: int = 20, kind: Optional[str] = None) -> ChatSessionListResponse:
+    """List recent sessions for a user (newest first); `kind=chat` lists only
+    the general chat page's conversations."""
+    capped = max(1, min(limit, 100))
     try:
-        rows = db.list_user_sessions(user_id, limit=capped)
+        rows = db.list_user_sessions(user_id, limit=capped, kind=(kind or "").strip() or None)
     except Exception as exc:
         logging.exception("list_user_sessions failed for user %s", user_id)
         raise HTTPException(status_code=502, detail=f"Could not list sessions: {exc}") from exc
@@ -1054,6 +1071,8 @@ def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse
                 interaction_count=row.get("interaction_count") or 0,
                 updated_at=row.get("updated_at"),
                 preview=previews.get(session_id),
+                title=row.get("title"),
+                kind=row.get("kind"),
             )
         )
     return ChatSessionListResponse(sessions=summaries)
@@ -1062,9 +1081,7 @@ def list_chat_sessions(user_id: str, limit: int = 20) -> ChatSessionListResponse
 @app.get("/api/v1/chat/sessions/{session_id}", response_model=ChatSessionDetailResponse)
 def get_chat_session(session_id: str, user_id: str) -> ChatSessionDetailResponse:
     """Return full message history for a session owned by the user."""
-    session = db.read_session(session_id)
-    if not session or session.get("user_id") != user_id:
-        raise HTTPException(status_code=404, detail="Session not found.")
+    session = _owned_session(session_id, user_id)
     turns = db.read_all_chat_turns(session_id)
     carry = get_carry(session_id)
     presentation_by_turn = carry.get("presentation_by_turn") or {}
@@ -1106,6 +1123,42 @@ def get_chat_session(session_id: str, user_id: str) -> ChatSessionDetailResponse
         interaction_count=session.get("interaction_count") or 0,
         turns=turn_items,
     )
+
+
+def _owned_session(session_id: str, user_id: str) -> Dict[str, Any]:
+    try:
+        session = db.read_session(session_id)
+    except Exception:  # malformed id or no row: same answer as not yours
+        session = None
+    if not session or session.get("user_id") != user_id or db.is_session_deleted(session_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return session
+
+
+@app.patch("/api/v1/chat/sessions/{session_id}")
+def rename_chat_session(session_id: str, req: UpdateSessionRequest) -> Dict[str, Any]:
+    """Rename a chat. An empty title clears it, so the list shows the first question again."""
+    _owned_session(session_id, req.user_id)
+    title = " ".join((req.title or "").split())[:120] or None
+    try:
+        db.update_session_title(session_id, title)
+    except Exception as exc:
+        logging.exception("rename failed for session %s", session_id)
+        raise HTTPException(status_code=502, detail="Could not rename this chat.") from exc
+    return {"ok": True, "session_id": session_id, "title": title}
+
+
+@app.delete("/api/v1/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str, user_id: str) -> Dict[str, Any]:
+    """Delete a chat: hidden from history for good. Learner memory and practice records stay."""
+    _owned_session(session_id, user_id)
+    try:
+        db.delete_session(session_id)
+    except Exception as exc:
+        logging.exception("delete failed for session %s", session_id)
+        raise HTTPException(status_code=502, detail="Could not delete this chat.") from exc
+    release_carry(session_id)
+    return {"ok": True, "session_id": session_id}
 
 
 @app.post("/api/v1/chat/end-session", response_model=EndSessionResponse)
@@ -1574,8 +1627,11 @@ async def study_message(body: StudyMessageRequest) -> StreamingResponse:
     def _run_graph() -> None:
         from services import progress
 
+        from utils.stream import stream_callback_var
+
         token = progress.install(lambda event: _emit("status", event))
         cancel_token = progress.install_cancel(cancel)
+        stream_callback_var.set(lambda text: _emit("token", text))
         try:
             final = study_graph.invoke(state, {"recursion_limit": 25})
         except Exception as exc:

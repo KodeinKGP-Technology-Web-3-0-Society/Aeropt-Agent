@@ -55,3 +55,32 @@ def parse(text: str) -> Ref | None:
     if not (year and paper and question):
         return None
     return Ref(int(year.group(1)), int(paper.group(1)), int(question.group(1)))
+
+
+@dataclass(frozen=True)
+class PaperRef:
+    """A request for questions from one year (and maybe one paper), not one question:
+    "a famous JEE Advanced 2016 question", "jee adv 2023 paper 2 problems"."""
+
+    year: int
+    paper: int | None
+
+    @property
+    def id_prefix(self) -> str:
+        paper = f"p{self.paper}" if self.paper else "p"
+        return f"pyq_jee_adv_{self.year}_{paper}"
+
+    @property
+    def label(self) -> str:
+        return f"JEE Advanced {self.year}" + (f" Paper {self.paper}" if self.paper else "")
+
+
+def parse_paper(text: str) -> PaperRef | None:
+    """A year-level request. None when a question number is named (that is `parse`)."""
+    if not _ADVANCED.search(text or "") or _QUESTION.search(text or ""):
+        return None
+    year = _YEAR.search(text)
+    if not year:
+        return None
+    paper = _PAPER.search(text)
+    return PaperRef(int(year.group(1)), int(paper.group(1)) if paper else None)

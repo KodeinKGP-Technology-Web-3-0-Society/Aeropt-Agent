@@ -107,16 +107,40 @@ class SupabaseClient:
         )
         return res.data
 
-    def list_user_sessions(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        res = (
-            self.client.table("sessions")
-            .select("session_id, user_id, interaction_count, session_summary, updated_at")
-            .eq("user_id", user_id)
-            .order("updated_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return res.data or []
+    def is_session_deleted(self, session_id: str) -> bool:
+        try:
+            res = self.client.table("sessions").select("deleted_at").eq("session_id", session_id).limit(1).execute()
+        except Exception:  # migration 015 not applied: nothing can be deleted
+            return False
+        return bool(res.data and res.data[0].get("deleted_at"))
+
+    def list_user_sessions(
+        self, user_id: str, limit: int = 20, kind: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        def query(columns: str, migrated: bool):
+            q = self.client.table("sessions").select(columns).eq("user_id", user_id)
+            if migrated:
+                q = q.is_("deleted_at", "null")
+                if kind:
+                    q = q.eq("kind", kind)
+            return q.order("updated_at", desc=True).limit(limit).execute().data or []
+
+        base = "session_id, user_id, interaction_count, session_summary, updated_at"
+        try:
+            return query(base + ", kind, title", True)
+        except Exception:
+            # Migration 015 not applied: no kind/title columns, so no filter either.
+            logging.getLogger("jee_tutor.db").debug("sessions.kind/title unavailable; listing unfiltered", exc_info=True)
+            return query(base, False)
+
+    def update_session_title(self, session_id: str, title: Optional[str]) -> None:
+        self.client.table("sessions").update({"title": title}).eq("session_id", session_id).execute()
+
+    def delete_session(self, session_id: str) -> None:
+        """Soft delete: hidden from every list and from history (migration 015)."""
+        self.client.table("sessions").update(
+            {"deleted_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("session_id", session_id).execute()
 
     def first_user_turn_preview(self, session_id: str, max_len: int = 80) -> Optional[str]:
         try:
@@ -170,12 +194,19 @@ class SupabaseClient:
             )
         return previews
 
-    def create_session(self, user_id: str) -> Dict[str, Any]:
-        row = {
+    def create_session(self, user_id: str, kind: Optional[str] = None) -> Dict[str, Any]:
+        row: Dict[str, Any] = {
             "user_id": user_id,
             "interaction_count": 0,
             "active_quiz": False,
         }
+        if kind:
+            try:
+                res = self.client.table("sessions").insert({**row, "kind": kind}).execute()
+                return res.data[0]
+            except Exception:
+                # Migration 015 not applied: the session still works, it just is not tagged.
+                logging.getLogger("jee_tutor.db").debug("sessions.kind unavailable; creating untagged session", exc_info=True)
         res = self.client.table("sessions").insert(row).execute()
         return res.data[0]
 

@@ -100,6 +100,51 @@ _NOTE_PAPER_UNAVAILABLE = (
 )
 
 
+_NOTE_PAPER_SET = (
+    "These are official Physics questions from {label}, as printed, each with its official "
+    "final answer. If the student asked for a question from that paper, serve one of these "
+    "exactly and name it by its citation (e.g. 'JEE Advanced 2016 Paper 2 Q7'). Do not write "
+    "your own question and attribute it to {label}."
+)
+_NOTE_PAPER_SET_EMPTY = (
+    "The student asked for questions from {label}, but none from that paper are in the "
+    "verified set. Tell them so plainly. Never write a question yourself and present it as "
+    "being from {label}; you may offer an official question from another year instead."
+)
+_PAPER_SET_SIZE = 5
+
+
+def _named_paper_set(query: str, started: float, user_id: str = "") -> dict[str, Any] | None:
+    """A request for questions from one exam year or paper, with no question number."""
+    ref = exam_refs.parse_paper(query)
+    if ref is None:
+        return None
+    rows = store.chunks_by_id_prefix(ref.id_prefix)
+    if not rows:
+        return {"retrieved": False, "notes": [_NOTE_PAPER_SET_EMPTY.format(label=ref.label)]}
+    # Unseen questions first, so "another 2016 question" does not repeat one.
+    seen = set(store.served_ids(user_id)) if user_id else set()
+    rows = sorted(rows, key=lambda r: r["content_id"] in seen)[:_PAPER_SET_SIZE]
+    chunks = [search.Hit(r["content_id"], 1.0, 0.0, 0.0, None, None, r).as_chunk() for r in rows]
+    return {
+        "decision": {"action": "retrieve", "reason": f"the student asked for {ref.label} questions"},
+        "query": query,
+        "content_type": "pyq",
+        "content_type_used": "pyq",
+        "retrieved": True,
+        "in_scope": True,
+        "confidence": "ok",
+        "concept": {"in_scope": True, "concept_id": rows[0]["concept_id"], "matched_by": "named official paper"},
+        "chunks": chunks,
+        "citations": [c["citation"] for c in chunks],
+        "notes": [_NOTE_PAPER_SET.format(label=ref.label)],
+        "novelty": {},
+        "prerequisites": [],
+        "scope_used": "named paper",
+        "took_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
 def _named_paper_question(query: str, started: float) -> dict[str, Any] | None:
     """A request for one specific official question ("JEE Advanced 2019 paper 1 Q5")."""
     ref = exam_refs.parse(query)
@@ -185,6 +230,13 @@ def retrieve(
         unavailable_note = named["notes"][0]
     else:
         unavailable_note = ""
+        paper_set = _named_paper_set(query, started, user_id)
+        if paper_set is not None:
+            if paper_set.get("retrieved"):
+                if mark and user_id:
+                    store.mark_served(user_id, paper_set["chunks"], purpose="pyq")
+                return paper_set
+            unavailable_note = paper_set["notes"][0]
 
     decision = gate.decide(query, recent_turns=recent_turns, state=state, forced=forced)
     requested_type = content_type or decision.content_type

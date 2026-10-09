@@ -29,6 +29,7 @@ from db.supabase_client import db
 from models.study_state import StudyRoomState
 from services.study_context import build_learner_snapshot, format_snapshot
 from utils.skills import load_skill
+from utils.stream import emit_text
 
 logger = logging.getLogger("jee_tutor.teacher_agent")
 
@@ -161,14 +162,19 @@ def _history(session_id: str, query: str) -> List[Dict[str, Any]]:
     return merged
 
 
-def _learner_block(snapshot: Dict[str, Any], user_id: str) -> str:
-    """This concept's history, then the student's overall trajectory."""
+def _learner_block(snapshot: Dict[str, Any], user_id: str, session_id: str = "") -> str:
+    """This concept's history, the student's overall trajectory, then what they
+    were just doing elsewhere (doubts asked in chat, other lessons)."""
+    from services.cross_room import recent_activity
     from services.progress_report import progress_digest
 
     parts = [format_snapshot(snapshot) or "- Nothing on record for this concept yet."]
     digest = progress_digest(user_id)
     if digest:
         parts.append("Across everything they have practised:\n" + digest)
+    activity = recent_activity(user_id, session_id)
+    if activity:
+        parts.append(activity)
     return "\n".join(parts)
 
 
@@ -318,7 +324,7 @@ def teacher_agent_node(state: StudyRoomState) -> Dict[str, Any]:
         "{{difficulty_level}}": str(state.get("difficulty_level", 1)),
         "{{questions_served}}": str(state.get("questions_served", 0)),
         "{{questions_correct}}": str(state.get("questions_correct", 0)),
-        "{{learner_memory}}": _learner_block(snapshot, user_id),
+        "{{learner_memory}}": _learner_block(snapshot, user_id, session_id),
         "{{session_summary}}": state.get("session_summary")
         or ("This is the first message of the session." if not history else "See the conversation below."),
         "{{open_question}}": _question_block(state),
@@ -375,10 +381,15 @@ def teacher_agent_node(state: StudyRoomState) -> Dict[str, Any]:
     )
 
     progress.report("stage", "review", "done")
-    reply = _CONTENT_ID_RE.sub("", checked_result.answer)
+    from agents.runtime.provenance import strip_foreign_images
+
+    reply, _ = strip_foreign_images(_CONTENT_ID_RE.sub("", checked_result.answer))
     if "serve_practice_question" in res.tool_calls_made:
         reply = _strip_restated_question(reply)
     updates["response"] = reply
+    # Streamed only now, after review and clean-up, so what the student watches
+    # being typed is exactly the reply that gets stored.
+    emit_text(reply)
     updates["agent_used"] = "teacher_agent"
     updates["model_used"] = res.model_used
     updates["active_agent"] = "teacher_agent"

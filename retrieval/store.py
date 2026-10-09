@@ -274,6 +274,15 @@ def dependents(concept_id: str, limit: int = 12) -> list[str]:
     return [r["concept_id"] for r in rows]
 
 
+def chunks_by_id_prefix(prefix: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Rows whose content_id starts with `prefix`, in id order (paper, then question)."""
+    rows = corpus().execute(
+        "SELECT * FROM chunks WHERE content_id LIKE ? ESCAPE '\\' ORDER BY content_id LIMIT ?",
+        (prefix.replace("_", "\\_") + "%", limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def chunks_by_ids(ids: Sequence[str]) -> list[dict[str, Any]]:
     if not ids:
         return []

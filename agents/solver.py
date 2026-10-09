@@ -629,7 +629,17 @@ def _render_math_text(text: str) -> str:
     text = _normalize_latex_output(text)
     text = _collapse_diagram_lines(text)
     out_lines: List[str] = []
+    # Lines inside an open $$ … $$ block are already maths. Wrapping each one again
+    # turned "$$\nF = ma\n$$" into "$$\n$$\nF = ma\n$$\n$$" (empty blocks, then code
+    # fences) and split an aligned derivation into one broken block per line.
+    in_display = False
     for line in text.split("\n"):
+        fences = line.count("$$")
+        if in_display or fences % 2 == 1:
+            out_lines.append(line)
+            if fences % 2 == 1:
+                in_display = not in_display
+            continue
         converted = _unicode_to_latex(line)
         if _looks_like_equation(converted):
             stripped = _sanitize_latex_expr(converted)
