@@ -1,0 +1,34 @@
+# Keep the image to code + the retrieval index; never bake secrets or local state.
+.git
+.github
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+venv
+**/__pycache__
+*.py[cod]
+.pytest_cache
+*.log
+
+# Local state and sources. Only the index files and the embedding model ship.
+.local-run/*
+!.local-run/index
+.local-run/index/*
+!.local-run/index/corpus.sqlite3
+!.local-run/index/vectors.npy
+!.local-run/index/concept_vectors.npy
+!.local-run/models
+.carry_sessions
+var
+scratch
+scratch.py
+scripts
+cursor_gateway
+remote_agent
+tests
+test_*.py
+docker-compose.yml
+Dockerfile
+.dockerignore
