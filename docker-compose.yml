@@ -1,0 +1,21 @@
+# Local Neo4j for GraphRAG. Never used as the Aura connection.
+# 5.26 supports 3072-d cosine indexes (gemini-embedding-2).
+services:
+  neo4j:
+    image: neo4j:5.26.0
+    ports:
+      - "7687:7687"
+      - "7474:7474"
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p password 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+volumes:
+  neo4j_data:
