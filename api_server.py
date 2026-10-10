@@ -75,6 +75,7 @@ from graph.workflow import tutor_graph
 from models.state import TutorState
 
 # ── Session-management helpers — imported from services.turn_service ───────────
+from services.auth import AgentAuthMiddleware, check_production_config
 from services.classroom_evidence import post_turn_evidence, resolve_learner_token
 from services.turn_service import (
     build_initial_state as _build_initial_state,
@@ -102,6 +103,11 @@ logging.basicConfig(
 async def _lifespan(_app: FastAPI):
     """Load the local retrieval index before the first student turn, not during it."""
     if config.local_retrieval():
+        if os.getenv("AEROPT_ENV", "").strip().lower() == "production":
+            from retrieval import store as retrieval_store
+
+            if not retrieval_store.index_exists():
+                raise RuntimeError(f"Local retrieval index missing under {retrieval_store.INDEX_DIR}.")
         try:
             from retrieval import service as retrieval_service
 
@@ -113,13 +119,28 @@ async def _lifespan(_app: FastAPI):
         except Exception as exc:  # noqa: BLE001 — a cold index must not stop the server
             logging.getLogger("aeropt.startup").warning("local retrieval warm-up failed: %s", exc)
     yield
+    from services import durable_state
 
+    durable_state.drain()
+
+
+check_production_config()
 
 app = FastAPI(title="JEE Tutor Agent API", version="1.0.0", lifespan=_lifespan)
 
+# Added before CORS so CORS wraps it: a 401/429 must still carry CORS headers,
+# or the browser hides the status and the frontend cannot refresh the token.
+app.add_middleware(AgentAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://10.145.27.236:3000", "https://fdf2fb044c112630-104-28-210-148.serveousercontent.com"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ALLOWED_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,http://10.145.27.236:3000",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
