@@ -27,6 +27,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from services import durable_state
+
 logger = logging.getLogger("jee_tutor.diagrams")
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -74,7 +76,19 @@ def diagram_path(diagram_id: str) -> Optional[Path]:
     if not _HASH_RE.match(diagram_id or ""):
         return None
     path = SVG_DIR / f"{diagram_id}.svg"
-    return path if path.exists() else None
+    if path.exists():
+        return path
+    return path if _restore(diagram_id, path) else None
+
+
+def _restore(diagram_id: str, path: Path) -> bool:
+    """Fetch a diagram this container has not compiled from the durable copy."""
+    svg = durable_state.load_diagram(diagram_id)
+    if not svg:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(svg)
+    return True
 
 
 def available() -> bool:
@@ -126,7 +140,7 @@ def render_tikz(source: str) -> Dict[str, Any]:
     src = _validate(source)
     digest = hashlib.sha256(src.encode("utf-8")).hexdigest()[:20]
     out = SVG_DIR / f"{digest}.svg"
-    if out.exists():
+    if out.exists() or _restore(digest, out):
         return {"id": digest, "path": str(out), "cached": True}
     if not available():
         raise DiagramError("Diagram rendering is not installed on this server (needs tectonic and pdftocairo).")
@@ -162,6 +176,7 @@ def render_tikz(source: str) -> Dict[str, Any]:
             raise DiagramError("Could not convert the compiled diagram to SVG.")
         out.write_text(_themeable(svg_tmp.read_text(encoding="utf-8")), encoding="utf-8")
         shutil.rmtree(work, ignore_errors=True)
+    durable_state.save_diagram(digest, out.read_bytes())
 
     logger.info("diagram %s compiled (%d bytes)", digest, out.stat().st_size)
     return {"id": digest, "path": str(out), "cached": False}

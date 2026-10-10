@@ -1,15 +1,22 @@
-"""File-backed carry state — survives agent restarts without DB schema changes."""
+"""File-backed carry state — survives agent restarts without DB schema changes.
+
+Where the disk itself is wiped on restart, `services/durable_state.py` keeps a
+Supabase copy that a fresh container reads back.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any, Dict
 
+from services import durable_state
+
 _SESSION_TTL_SECONDS = 2 * 60 * 60
-_STORE_DIR = Path(__file__).resolve().parent / ".carry_sessions"
+_STORE_DIR = Path(os.getenv("AEROPT_CARRY_DIR", Path(__file__).resolve().parent / ".carry_sessions"))
 
 
 def _file_path(session_id: str) -> Path:
@@ -29,12 +36,24 @@ def _prune() -> None:
             pass
 
 
+def _write_local(session_id: str, carry: Dict[str, Any]) -> None:
+    _STORE_DIR.mkdir(parents=True, exist_ok=True)
+    _file_path(session_id).write_text(
+        json.dumps({"carry": carry, "last_seen": time.time()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def get_carry(session_id: str) -> Dict[str, Any]:
     _STORE_DIR.mkdir(parents=True, exist_ok=True)
     _prune()
     path = _file_path(session_id)
     if not path.exists():
-        return {}
+        saved = durable_state.load_carry(session_id, _SESSION_TTL_SECONDS)
+        if saved is None:
+            return {}
+        _write_local(session_id, saved)
+        return saved
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data.get("carry") or {}
@@ -43,13 +62,10 @@ def get_carry(session_id: str) -> Dict[str, Any]:
 
 
 def save_carry(session_id: str, carry: Dict[str, Any]) -> None:
-    _STORE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _file_path(session_id)
-    path.write_text(
-        json.dumps({"carry": carry, "last_seen": time.time()}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    _write_local(session_id, carry)
+    durable_state.save_carry(session_id, carry)
 
 
 def release_carry(session_id: str) -> None:
     _file_path(session_id).unlink(missing_ok=True)
+    durable_state.release_carry(session_id)

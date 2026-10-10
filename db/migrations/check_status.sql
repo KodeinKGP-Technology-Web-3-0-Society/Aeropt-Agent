@@ -1,4 +1,4 @@
--- Read-only: which agent migrations (006-015) exist on this database?
+-- Read-only: which agent migrations (006-016) exist on this database?
 -- Paste into the Supabase dashboard -> SQL Editor and Run. Changes nothing.
 SELECT migration, applied FROM (VALUES
   ('006_learner_memory: learner_memory',           to_regclass('public.learner_memory') IS NOT NULL),
@@ -16,6 +16,8 @@ SELECT migration, applied FROM (VALUES
   ('014_study_session_mode',                       EXISTS (SELECT 1 FROM information_schema.columns
                                                      WHERE table_schema = 'public' AND table_name = 'study_sessions' AND column_name = 'question_source')),
   ('015_session_kind_title',                       EXISTS (SELECT 1 FROM information_schema.columns
-                                                     WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'kind'))
+                                                     WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'kind')),
+  ('016_durable_agent_state: served_items',        to_regclass('public.served_items') IS NOT NULL),
+  ('016_durable_agent_state: carry_sessions',      to_regclass('public.carry_sessions') IS NOT NULL)
 ) AS t(migration, applied)
 ORDER BY migration;

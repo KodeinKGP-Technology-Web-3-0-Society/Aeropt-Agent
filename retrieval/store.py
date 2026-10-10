@@ -21,10 +21,12 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
+from services import durable_state
+
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_DIR = Path(os.getenv("AEROPT_INDEX_DIR", ROOT / ".local-run" / "index"))
 CORPUS_DB = INDEX_DIR / "corpus.sqlite3"
-LEDGER_DB = INDEX_DIR / "ledger.sqlite3"
+LEDGER_DB = Path(os.getenv("AEROPT_LEDGER_PATH", INDEX_DIR / "ledger.sqlite3"))
 VECTORS = INDEX_DIR / "vectors.npy"
 CONCEPT_VECTORS = INDEX_DIR / "concept_vectors.npy"
 
@@ -316,6 +318,7 @@ def mark_served(
     if not user_id or not rows:
         return 0
     conn = ledger()
+    durable_state.hydrate_ledger(conn, user_id)
     with conn:
         conn.executemany(
             """
@@ -329,7 +332,14 @@ def mark_served(
             """,
             rows,
         )
+    durable_state.copy_served(conn, user_id, (row[1] for row in rows))
     return len(rows)
+
+
+def _user_ledger(user_id: str) -> sqlite3.Connection:
+    conn = ledger()
+    durable_state.hydrate_ledger(conn, user_id)
+    return conn
 
 
 def served_ids(user_id: str, concept_ids: Sequence[str] | None = None) -> dict[str, float]:
@@ -342,7 +352,7 @@ def served_ids(user_id: str, concept_ids: Sequence[str] | None = None) -> dict[s
         marks = ",".join("?" * len(concept_ids))
         sql += f" AND concept_id IN ({marks})"
         params.extend(concept_ids)
-    return {r["content_id"]: r["served_at"] for r in ledger().execute(sql, params)}
+    return {r["content_id"]: r["served_at"] for r in _user_ledger(user_id).execute(sql, params)}
 
 
 def served_fingerprints(user_id: str, concept_ids: Sequence[str] | None = None) -> set[str]:
@@ -354,16 +364,19 @@ def served_fingerprints(user_id: str, concept_ids: Sequence[str] | None = None) 
         marks = ",".join("?" * len(concept_ids))
         sql += f" AND concept_id IN ({marks})"
         params.extend(concept_ids)
-    return {r["fingerprint"] for r in ledger().execute(sql, params) if r["fingerprint"]}
+    return {r["fingerprint"] for r in _user_ledger(user_id).execute(sql, params) if r["fingerprint"]}
 
 
 def served_count(user_id: str) -> int:
-    row = ledger().execute("SELECT count(*) AS n FROM served WHERE user_id = ?", (user_id,)).fetchone()
+    row = _user_ledger(user_id).execute(
+        "SELECT count(*) AS n FROM served WHERE user_id = ?", (user_id,)
+    ).fetchone()
     return int(row["n"]) if row else 0
 
 
 def forget_served(user_id: str, concept_id: str | None = None) -> int:
     conn = ledger()
+    durable_state.forget_served(user_id, concept_id)
     with conn:
         if concept_id:
             cur = conn.execute(
