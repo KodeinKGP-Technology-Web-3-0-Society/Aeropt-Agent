@@ -4,39 +4,25 @@
 #   deploy/push_space.sh agent   <hf-user>/aeropt-agent [--include ncert] [--include hcverma]
 #   deploy/push_space.sh backend <hf-user>/aeropt-api
 #
-# Ships the last *commit* (git archive), never the working tree, so .env files and
-# uncommitted edits cannot leak. For the agent it adds the licence-filtered
-# retrieval index (deploy/public_index.py) and the embedding model, which are
-# gitignored. Needs `hf auth login` with a write token first.
+# Docker Spaces need a PRO subscription on HF (402 otherwise); deploy/push_render.sh
+# is the free path. Needs `hf auth login` with a write token first.
 set -euo pipefail
+source "$(dirname "$0")/stage.sh"
 
-AGENT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICE="${1:-}"
 SPACE="${2:-}"
 shift 2 || true
 
 case "$SERVICE" in
-  agent)   REPO="$AGENT_ROOT";                TITLE="Aeropt tutor agent"; PORT=7860 ;;
-  backend) REPO="$AGENT_ROOT/../Aeropt-backend"; TITLE="Aeropt API";      PORT=8000 ;;
+  agent)   TITLE="Aeropt tutor agent"; PORT=7860 ;;
+  backend) TITLE="Aeropt API";         PORT=8000 ;;
   *) echo "usage: $0 agent|backend <hf-user>/<space> [--include ncert|hcverma ...]" >&2; exit 2 ;;
 esac
 [[ "$SPACE" == */* ]] || { echo "Space id must look like <hf-user>/<space-name>" >&2; exit 2; }
-REPO="$(cd "$REPO" && pwd)"
-
-if [[ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]]; then
-  echo "warning: $REPO has uncommitted changes; only the last commit is published." >&2
-fi
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-git -C "$REPO" archive --format=tar HEAD | tar -x -C "$STAGE"
-
-if [[ "$SERVICE" == agent ]]; then
-  PY="$REPO/.venv/bin/python"; [[ -x "$PY" ]] || PY=python3
-  "$PY" "$REPO/deploy/public_index.py" "$REPO/.local-run/index" "$STAGE/.local-run/index" "$@"
-  mkdir -p "$STAGE/.local-run/models"
-  cp -r "$REPO/.local-run/models/potion-base-8M" "$STAGE/.local-run/models/"
-fi
+stage_service "$SERVICE" "$STAGE" "$@"
 
 # A Space reads its settings from README front matter; the service README is not that.
 cat > "$STAGE/README.md" <<EOF
