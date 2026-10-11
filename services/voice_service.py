@@ -157,6 +157,32 @@ def prepare_text_for_speech(text: str, max_chars: int = 2500) -> str:
     return text
 
 
+def normalize_audio_mime(mime: str, filename: str = "") -> str:
+    """Normalize audio MIME type to match Sarvam AI exact accepted formats (strip ;codecs=opus etc)."""
+    clean = (mime or "").split(";")[0].strip().lower()
+    allowed = {
+        "audio/mpeg", "audio/mp3", "audio/mpeg3", "audio/x-mpeg-3", "audio/x-mp3",
+        "audio/wav", "audio/x-wav", "audio/wave", "audio/pcm_s16le", "audio/l16",
+        "audio/raw", "application/octet-stream", "audio/aac", "audio/x-aac",
+        "audio/aiff", "audio/x-aiff", "audio/ogg", "audio/opus", "audio/flac",
+        "audio/x-flac", "audio/mp4", "audio/x-m4a", "audio/amr", "audio/x-ms-wma",
+        "audio/webm", "video/webm"
+    }
+    if clean in allowed:
+        return clean
+    if "webm" in clean or filename.lower().endswith(".webm"):
+        return "audio/webm"
+    if "wav" in clean or filename.lower().endswith(".wav"):
+        return "audio/wav"
+    if "ogg" in clean or "opus" in clean or filename.lower().endswith(".ogg"):
+        return "audio/ogg"
+    if "mp4" in clean or "m4a" in clean or filename.lower().endswith((".mp4", ".m4a")):
+        return "audio/mp4"
+    if "mp3" in clean or filename.lower().endswith(".mp3"):
+        return "audio/mp3"
+    return "audio/webm"
+
+
 def transcribe_speech(
     file_bytes: bytes,
     filename: str = "audio.webm",
@@ -179,7 +205,8 @@ def transcribe_speech(
     """
     client = get_sarvam_client()
 
-    file_tuple = (filename, file_bytes, content_type)
+    clean_content_type = normalize_audio_mime(content_type, filename)
+    file_tuple = (filename, file_bytes, clean_content_type)
     target_lang = language_code or "unknown"
 
     try:
