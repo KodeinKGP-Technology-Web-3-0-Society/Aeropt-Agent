@@ -26,7 +26,7 @@ class TestConfiguredModelsAreLive(unittest.TestCase):
     def test_every_configured_model_is_available(self):
         from openai import OpenAI
 
-        client = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
         configured = {
             config.ORCHESTRATOR_MODEL,

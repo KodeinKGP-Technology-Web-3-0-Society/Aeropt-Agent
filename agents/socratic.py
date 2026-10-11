@@ -26,7 +26,7 @@ from models.state import TutorState
 from utils.latex_guidelines import LATEX_OUTPUT_RULES, sanitize_chunk_text_for_prompt
 from utils.llm import groq_complete
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _SOCRATIC_PROMPT = """\
 You are an elite, world-class Socratic tutor for JEE Physics, modeled after the best educators in the world. Your ultimate goal is to lead the student to their own "aha!" moment, NEVER to simply hand them the answer.

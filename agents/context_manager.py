@@ -29,7 +29,7 @@ from db.supabase_client import db
 from models.state import TutorState
 from utils.llm import groq_complete
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _SUMMARY_PROMPT = """\
 You are a session summariser for a JEE Physics tutoring system.

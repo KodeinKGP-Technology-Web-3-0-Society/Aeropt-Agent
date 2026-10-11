@@ -32,7 +32,7 @@ from utils.llm import groq_complete, groq_stream
 
 logger = logging.getLogger("jee_tutor.answer_checker")
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 #: Below this length a reply is an acknowledgement, not an explanation worth
 #: paying a second model call to review.

@@ -25,11 +25,19 @@ import logging
 
 logger = logging.getLogger("jee_tutor.retriever")
 
-_genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
+_genai_client = None
+
+
+def _get_genai_client():
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
+    return _genai_client
 
 
 def _embed_query(text: str) -> List[float]:
-    result = _genai_client.models.embed_content(
+    client = _get_genai_client()
+    result = client.models.embed_content(
         model=config.EMBEDDING_MODEL,
         contents=text,
     )

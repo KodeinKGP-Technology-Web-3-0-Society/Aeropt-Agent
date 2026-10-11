@@ -22,7 +22,7 @@ from utils.llm import groq_complete
 from utils.stream import stream_callback_var
 
 logger = logging.getLogger("jee_tutor.practice_generator")
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _QUESTION_TYPES = frozenset({"mcq", "numerical"})
 

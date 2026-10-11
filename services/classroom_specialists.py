@@ -61,9 +61,24 @@ def plan_specialist(learner: Dict[str, Any]) -> Dict[str, Any]:
     trackers = learner.get("trackers", [])
     
     plan = generate_study_plan(user_profile, trackers, catalog)
+    mastery_by_id = _mastery_index(learner)
+    catalog_ids = {_concept_id(row) for row in catalog if _concept_id(row)}
+
+    if plan:
+        filtered_plan = []
+        for i, p in enumerate(plan):
+            cid = p.get("concept_id")
+            if cid in catalog_ids and mastery_by_id.get(cid, 0) < 80:
+                item = dict(p)
+                if not item.get("status"):
+                    item["status"] = "in_progress" if not filtered_plan else "pending"
+                if not item.get("when"):
+                    item["when"] = "today" if not filtered_plan else "this_week"
+                filtered_plan.append(item)
+        plan = filtered_plan
+
     if not plan:
         # Fallback to static plan logic
-        mastery_by_id = _mastery_index(learner)
         plan = []
         for row in catalog:
             concept_id = _concept_id(row)

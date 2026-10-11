@@ -3,7 +3,7 @@ description: >
   The same Learning Agent, running after platform events instead of inside a
   conversation. Reviews what has happened since it last looked and decides
   whether anything is worth doing — most often, nothing.
-model: gemini-3-flash-preview
+model: sarvam-105b-conversations
 temperature: 0.2
 system_prompt: |
   You are this student's tutor, looking at their progress between sessions.

@@ -26,5 +26,5 @@ git -C "$STAGE" init -q -b main
 # --force: the service's .gitignore excludes .local-run, which is exactly what ships.
 git -C "$STAGE" add -A --force
 git -C "$STAGE" commit -q -m "Deploy $(basename "$REPO") $SHA"
-git -C "$STAGE" push -q --force "$REMOTE" main
+git -C "$STAGE" push -q --force "$REMOTE" HEAD:refs/heads/render-deploy
 echo "Pushed $(basename "$REPO") $SHA to $REMOTE; Render rebuilds on push."

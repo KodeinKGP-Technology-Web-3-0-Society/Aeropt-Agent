@@ -69,6 +69,12 @@ class TestLoadKeys(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(load_gemini_api_keys({}), [])
 
+    def test_sarvam_keys_loading(self):
+        from utils.groq_pool import load_sarvam_api_keys
+
+        self.assertEqual(load_sarvam_api_keys({"SARVAM_API_KEY": "sk_test"}), ["sk_test"])
+        self.assertEqual(load_sarvam_api_keys({"SARVAM_KEYS": "sk1, sk2 ; sk3"}), ["sk1", "sk2", "sk3"])
+
 
 class TestKeyRotation(unittest.TestCase):
     def tearDown(self):

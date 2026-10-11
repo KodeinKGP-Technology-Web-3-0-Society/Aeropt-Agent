@@ -42,7 +42,7 @@ from utils.skills import load_skill
 
 logger = logging.getLogger("jee_tutor.learning_coach")
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 #: The coach may learn and remember, and may schedule. It may not compose
 #: anything a student will read, and it may not grade an attempt that did not

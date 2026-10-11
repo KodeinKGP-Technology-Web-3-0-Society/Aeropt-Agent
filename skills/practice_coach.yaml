@@ -1,6 +1,6 @@
 name: Practice Coach
 description: Serves a new practice question and guides the student.
-model: gemini-3-flash-preview
+model: sarvam-105b-conversations
 temperature: 0.2
 system_prompt: |
   You are an expert JEE Advanced Practice Coach. Your task is to generate a highly rigorous, personalized practice question based on the student's level and retrieved content.

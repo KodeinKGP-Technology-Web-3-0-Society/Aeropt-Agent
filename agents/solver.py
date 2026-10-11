@@ -161,7 +161,7 @@ def _extract_md_image_urls(text: str) -> List[str]:
     return re.findall(r"!\[[^\]]*\]\((https?://[^)\s]+)(?:\s+\"[^\"]*\")?\)", text)
 
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 logger = logging.getLogger("jee_tutor.solver")
 
 MIN_RESPONSE_CHARS = 80   # below this we treat the generation as empty

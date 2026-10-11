@@ -63,7 +63,7 @@ import json
 import config  # noqa: F401
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, File, Form, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -2159,3 +2159,95 @@ def study_history(user_id: str) -> List[Dict[str, Any]]:
     except Exception:
         logging.debug("study history message counts failed", exc_info=True)
     return rows
+
+
+# ── Voice API (Sarvam AI: Saaras STT + Bulbul TTS) ───────────────────────────
+
+from services.voice_service import (
+    DEFAULT_SPEAKER,
+    DEFAULT_TTS_MODEL,
+    DEFAULT_STT_MODEL,
+    TUTOR_SPEAKERS,
+    synthesize_speech as _synthesize_speech,
+    transcribe_speech as _transcribe_speech,
+)
+
+
+class VoiceSynthesisRequest(BaseModel):
+    text: str
+    speaker: Optional[str] = DEFAULT_SPEAKER
+    language_code: Optional[str] = "en-IN"
+    model: Optional[str] = DEFAULT_TTS_MODEL
+
+
+class VoiceSynthesisResponse(BaseModel):
+    audio_base64: str
+    format: str = "wav"
+    speaker: str
+    cleaned_text: str
+
+
+class VoiceTranscribeResponse(BaseModel):
+    transcript: str
+    language_code: str
+
+
+@app.get("/api/v1/voice/speakers")
+def get_voice_speakers() -> Dict[str, Any]:
+    """List available Indian voice personas for Bulbul TTS tutor."""
+    return {
+        "speakers": TUTOR_SPEAKERS,
+        "default_speaker": DEFAULT_SPEAKER,
+    }
+
+
+@app.post("/api/v1/voice/transcribe", response_model=VoiceTranscribeResponse)
+async def voice_transcribe(
+    file: UploadFile = File(...),
+    language_code: Optional[str] = Form(None),
+) -> VoiceTranscribeResponse:
+    """Transcribe spoken JEE doubt audio using Sarvam Saaras STT."""
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio file received.")
+        filename = file.filename or "doubt_audio.webm"
+        content_type = file.content_type or "audio/webm"
+        result = _transcribe_speech(
+            file_bytes=content,
+            filename=filename,
+            content_type=content_type,
+            language_code=language_code,
+        )
+        return VoiceTranscribeResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.getLogger("aeropt.voice").error("Voice transcription failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Voice transcription failed: {str(exc)}")
+
+
+@app.post("/api/v1/voice/synthesize", response_model=VoiceSynthesisResponse)
+def voice_synthesize(req: VoiceSynthesisRequest) -> VoiceSynthesisResponse:
+    """Read aloud tutor explanation or doubt answer using Sarvam Bulbul TTS."""
+    try:
+        if not req.text or not req.text.strip():
+            return VoiceSynthesisResponse(
+                audio_base64="",
+                format="wav",
+                speaker=req.speaker or DEFAULT_SPEAKER,
+                cleaned_text="",
+            )
+        result = _synthesize_speech(
+            text=req.text,
+            speaker=req.speaker or DEFAULT_SPEAKER,
+            language_code=req.language_code or "en-IN",
+            model=req.model or DEFAULT_TTS_MODEL,
+        )
+        return VoiceSynthesisResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.getLogger("aeropt.voice").error("Voice synthesis failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Voice synthesis failed: {str(exc)}")
+

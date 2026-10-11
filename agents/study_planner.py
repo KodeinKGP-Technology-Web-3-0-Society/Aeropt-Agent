@@ -32,7 +32,7 @@ Respond ONLY with valid JSON. No markdown fences.
 """
 
 def generate_study_plan(user_profile: Dict[str, Any], trackers: List[Dict[str, Any]], available_concepts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    client = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     
     # Format tracker data
     tracker_text = ""

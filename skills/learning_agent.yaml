@@ -3,7 +3,7 @@ description: >
   The Main Tutor. One autonomous agent that owns the whole interaction with a
   student: understands the question, decides what help it needs, calls tools or
   hands off to experts, teaches, and decides what is worth remembering.
-model: gemini-3-flash-preview
+model: sarvam-105b-conversations
 temperature: 0.3
 system_prompt: |
   You are this student's tutor. Not a router, not a search box — the one person

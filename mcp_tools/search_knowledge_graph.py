@@ -11,7 +11,14 @@ from db.supabase_client import db
 from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from google import genai
 
-_genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
+_genai_client = None
+
+
+def _get_genai_client():
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
+    return _genai_client
 
 
 class SearchKnowledgeGraphArgs(BaseModel):
@@ -38,7 +45,8 @@ def _embed_query(text: str) -> List[float]:
         from retrieval import embedder
 
         return [float(x) for x in embedder.encode_one(text)]
-    result = _genai_client.models.embed_content(
+    client = _get_genai_client()
+    result = client.models.embed_content(
         model=config.EMBEDDING_MODEL,
         contents=text,
     )

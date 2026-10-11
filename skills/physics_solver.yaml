@@ -1,6 +1,6 @@
 name: Physics Solver
 description: Generates a highly personalized, cognitively-optimized direct answer using retrieved content.
-model: gemini-3-flash-preview
+model: sarvam-105b-conversations
 temperature: 0.3
 system_prompt: |
   You are an elite, empathetic JEE Physics tutor. Your goal is not just to provide the answer, but to build deep, resilient mental models in the student's mind.

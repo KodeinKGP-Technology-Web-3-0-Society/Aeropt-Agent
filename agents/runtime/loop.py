@@ -108,7 +108,7 @@ def run_agent_loop(
     message — recalled memory, session summary, retrieved evidence the caller
     already has. They are context, not instructions.
     """
-    groq = client or OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    groq = client or OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     trace = trace or toolbelt.ctx.trace
     deadline = time.time() + time_budget_s
 

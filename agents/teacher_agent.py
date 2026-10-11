@@ -348,7 +348,7 @@ def teacher_agent_node(state: StudyRoomState) -> Dict[str, Any]:
         system_prompt=prompt,
         user_message=query,
         toolbelt=toolbelt,
-        model=skill.get("model") or "gemini-3-flash-preview",
+        model=skill.get("model") or config.LEARNING_AGENT_MODEL,
         # Without a chain the room failed outright the moment the primary
         # model's daily quota ran out.
         fallback_models=config.LEARNING_AGENT_FALLBACK_MODELS,

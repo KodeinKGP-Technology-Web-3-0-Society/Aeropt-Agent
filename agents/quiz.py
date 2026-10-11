@@ -44,7 +44,7 @@ from models.state import TutorState
 # Reuse Solver's image + formulae helpers so quiz content renders identically.
 from agents.solver import _image_urls, _formulae_block, _render_math_text
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 # ── On-demand quiz batch (intent=quiz_request) ────────────────────────────────
 

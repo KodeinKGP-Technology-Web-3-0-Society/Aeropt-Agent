@@ -39,7 +39,7 @@ from utils.stream import emit_text, stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 #: The tutor's reply when it accepts an expert's draft verbatim.
 _USE_DRAFT_TOKEN = "USE_DRAFT"

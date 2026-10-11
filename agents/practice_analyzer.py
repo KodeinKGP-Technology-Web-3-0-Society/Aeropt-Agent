@@ -19,7 +19,7 @@ from models.state import TutorState
 from utils.llm import groq_complete
 
 logger = logging.getLogger("jee_tutor.practice_analyzer")
-_groq = OpenAI(api_key=config.GEMINI_API_KEYS[0], base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _PROMPT = """\
 You are an expert JEE physics tutor. The student just submitted a practice batch.

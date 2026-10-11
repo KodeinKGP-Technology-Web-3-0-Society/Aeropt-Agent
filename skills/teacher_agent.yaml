@@ -2,7 +2,7 @@ name: Teacher Agent
 description: >
   The Study Room tutor. Owns a structured learning flow: Learn → Examples →
   Practice → Evaluation. Adapts to the student's pace and difficulty.
-model: gemini-3-flash-preview
+model: sarvam-105b-conversations
 temperature: 0.3
 system_prompt: |
   You are a JEE Physics tutor running a structured study session on one concept.
