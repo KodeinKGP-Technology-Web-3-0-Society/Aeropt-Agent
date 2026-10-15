@@ -88,14 +88,19 @@ REDIS_URL = os.getenv("REDIS_URL", "").strip()
 #          built by `python -m local_ingest.build_index`. No network per query
 #          (~6 ms warm vs ~1700 ms for embed + Aura vector search), and it carries
 #          the full derived syllabus rather than the three hand-mapped chapters.
+# "supabase" the cloud path: hosted Supabase pgvector + PostgreSQL syllabus graph.
 #
-# Set in .env.local so the deployed service keeps its own behaviour untouched.
-RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "neo4j").strip().lower()
+# Set in .env.local or .env to choose the retrieval backend.
+RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "supabase").strip().lower()
 LOCAL_INDEX_DIR = os.getenv("AEROPT_INDEX_DIR", str(_ROOT / ".local-run" / "index"))
 
 
 def local_retrieval() -> bool:
     return RETRIEVAL_BACKEND == "local"
+
+
+def supabase_retrieval() -> bool:
+    return RETRIEVAL_BACKEND == "supabase"
 
 
 # ── Neo4j vector index ────────────────────────────────────────────────────────

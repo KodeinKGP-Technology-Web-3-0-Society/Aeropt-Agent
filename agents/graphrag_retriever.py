@@ -88,6 +88,11 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
     # hybrid search, and returns this node's exact output shape (retrieval/bridge.py).
     # It is selected by RETRIEVAL_BACKEND=local in .env.local; the deployed service
     # never sets it, so everything below is untouched for Aura.
+    if config.supabase_retrieval():
+        from retrieval.supabase_retriever import retrieve_for_state
+
+        return retrieve_for_state(dict(state))
+
     if config.local_retrieval():
         from retrieval.bridge import retrieve_for_state
 

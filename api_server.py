@@ -102,7 +102,15 @@ logging.basicConfig(
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """Load the local retrieval index before the first student turn, not during it."""
-    if config.local_retrieval():
+    if config.supabase_retrieval():
+        try:
+            from retrieval import supabase_retriever
+
+            result = supabase_retriever.warm()
+            logging.getLogger("aeropt.startup").info("Supabase cloud retrieval: %s", result)
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger("aeropt.startup").warning("Supabase retrieval warm-up failed: %s", exc)
+    elif config.local_retrieval():
         if os.getenv("AEROPT_ENV", "").strip().lower() == "production":
             from retrieval import store as retrieval_store
 

@@ -251,6 +251,9 @@ def resolve_concept_id(args: ResolveConceptIdArgs) -> Dict[str, Any]:
     Maps a natural language query to the exact taxonomy concept IDs and content type.
     """
     try:
+        if config.supabase_retrieval():
+            from retrieval.supabase_retriever import resolve_concept
+            return resolve_concept(args)
         if config.local_retrieval():
             return _resolve_local(args)
         concepts = db.read_concepts()
