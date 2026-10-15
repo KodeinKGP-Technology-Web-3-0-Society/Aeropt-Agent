@@ -36,16 +36,19 @@ Free text always goes to the Main Tutor. There is no intent enum.
 
 ## Retrieval
 
-Two backends, chosen by `RETRIEVAL_BACKEND`:
+Three backends, chosen by `RETRIEVAL_BACKEND`:
 
-| | `neo4j` (default, deployed) | `local` (set in `.env.local`) |
-|---|---|---|
-| Store | Neo4j Aura + Supabase | `.local-run/index` (SQLite + FTS5 + `.npy`) |
-| Query embedding | Gemini, ~1175 ms | static model, <1 ms |
-| Warm latency | ~1700 ms | ~6-11 ms |
-| Syllabus | 33 hand-mapped concepts, 3 chapters | 1016 derived concepts, 44 chapters |
-| Corpus | 203 items | 10,055 items, 3,987 with solutions |
-| Exam split | Advanced-leaning | 676 Main PYQs, 170 Advanced PYQs, 5,453 exam-neutral questions banded by difficulty |
+| | `supabase` (default, cloud pgvector) | `local` (SQLite + static embed) | `neo4j` (legacy Aura) |
+|---|---|---|---|
+| Store | Supabase pgvector (`stecalgmpaulkkwqlqcx`) | `.local-run/index` (SQLite + FTS5 + `.npy`) | Neo4j Aura + Supabase |
+| Query embedding | static / Gemini | static model, <1 ms | Gemini, ~1175 ms |
+| Neo4j required? | **No** | **No** | Yes |
+| Syllabus | 1,016 concepts, 44 chapters | 1,016 derived concepts, 44 chapters | 33 hand-mapped concepts |
+| Corpus | 12,933 items | 10,055 items | 203 items |
+
+### Dual Database Setup
+- **User DB (`SUPABASE_URL`)**: Stores user profiles, sessions, and chat history.
+- **Retrieval DB (`RETRIEVAL_SUPABASE_URL`)**: Dedicated to content chunks, concept graphs, and vector similarity search.
 
 ```bash
 make index                                        # build/rebuild the local index (~4 s)
@@ -80,16 +83,20 @@ Do not add a second registry in `mcp_tools/__init__.py`.
 | POST | `/api/v1/coach/run` |
 
 ## Run
-
+ 
 ```bash
-cp .env.example .env   # fill Neo4j, Supabase, Groq, Gemini
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
-make ci
+# 1. Activate environment
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Configure environment (.env)
+cp .env.example .env
+# Set SUPABASE_URL (User DB), RETRIEVAL_SUPABASE_URL (Retrieval DB), and LLM keys
+
+# 3. Start Agent server (port 8001)
 python -m uvicorn api_server:app --port 8001 --reload
 ```
 
-`make deploy` starts `:8001` if `/health` is down.
 
 Live Groq catalog checks: `RUN_LIVE_GROQ_CHECKS=1 python -m pytest tests/test_model_health.py`.
 
