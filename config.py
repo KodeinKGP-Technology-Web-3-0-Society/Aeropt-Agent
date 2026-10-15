@@ -20,10 +20,10 @@ load_dotenv(_ROOT / ".env.local", override=True)
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
-# ── Neo4j ─────────────────────────────────────────────────────────────────────
-NEO4J_URI = os.environ["NEO4J_URI"]
-NEO4J_USER = os.environ["NEO4J_USER"]
-NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
+# ── Neo4j (Optional: only needed if RETRIEVAL_BACKEND=neo4j) ──────────────────
+NEO4J_URI = os.getenv("NEO4J_URI", "")
+NEO4J_USER = os.getenv("NEO4J_USER", "")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 
 # ── Supabase (User DB) ────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"]

@@ -18,8 +18,6 @@ from typing import Any, Dict, List, Optional
 from google import genai
 
 import config
-from db.supabase_client import db
-from db.neo4j_client import graph_db
 from models.state import TutorState
 import logging
 
@@ -118,6 +116,9 @@ def graphrag_retriever_node(state: TutorState) -> Dict[str, Any]:
     content_type = state.get("content_type_requested", "theory")
     query = state["query"]
     target_exam = state.get("target_exam", "JEE_ADVANCED")
+
+    from db.supabase_client import db
+    from db.neo4j_client import graph_db
 
     try:
         # ── 1. Load target concept's user state ───────────────────────────────

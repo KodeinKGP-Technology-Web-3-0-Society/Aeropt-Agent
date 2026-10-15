@@ -42,27 +42,29 @@ def _allowed_types(content_type: str) -> List[str]:
 
 class Neo4jClient:
     def __init__(self, uri: str, user: str, password: str) -> None:
-        self.driver: Driver = GraphDatabase.driver(
+        if not uri:
+            self.driver: Optional[Driver] = None
+            return
+        self.driver: Optional[Driver] = GraphDatabase.driver(
             uri,
             auth=(user, password),
-            # Connection resilience — Neo4j Aura drops idle connections after ~30 min.
-            # liveness_check_timeout ensures the driver tests the connection before
-            # reusing it from the pool, avoiding "defunct connection" errors.
-            max_connection_lifetime=1200,       # retire connections after 20 min
+            max_connection_lifetime=1200,
             max_connection_pool_size=10,
             connection_acquisition_timeout=30,
             liveness_check_timeout=10,
-            # Suppress DEPRECATION notifications (db.index.vector.queryNodes).
             notifications_disabled_classifications=["DEPRECATION"],
         )
 
     def close(self) -> None:
-        self.driver.close()
+        if self.driver:
+            self.driver.close()
 
     def _run(
         self, cypher: str, params: Optional[Dict[str, Any]] = None, retries: int = 3
     ) -> List[Dict[str, Any]]:
         """Execute a read query with automatic retry on transient connection errors."""
+        if not self.driver:
+            return []
         params = params or {}
         last_exc: Exception = RuntimeError("No attempts made")
         for attempt in range(retries):
@@ -247,6 +249,8 @@ class Neo4jClient:
     # ─────────────────────── Health check ─────────────────────────────────────
 
     def ping(self) -> bool:
+        if not self.driver:
+            return False
         try:
             self._run("RETURN 1")
             return True
