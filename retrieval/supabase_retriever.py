@@ -29,7 +29,7 @@ def warm() -> Dict[str, Any]:
     t0 = time.time()
     try:
         probe_vec = embedder.encode_one("probe").tolist()
-        res = db.client.rpc(
+        res = db.retrieval_client.rpc(
             "match_concepts",
             {"query_embedding": probe_vec, "match_threshold": 0.0, "match_count": 1},
         ).execute()
@@ -54,7 +54,7 @@ def resolve_concept(args: Any) -> Dict[str, Any]:
     if roadmap_concept_id:
         try:
             res = (
-                db.client.table("concepts")
+                db.retrieval_client.table("concepts")
                 .select("concept_id, concept_name, chapter")
                 .eq("concept_id", roadmap_concept_id)
                 .limit(1)
@@ -80,7 +80,7 @@ def resolve_concept(args: Any) -> Dict[str, Any]:
     # 2. Vector match via Supabase
     q_vec = embedder.encode_one(query).tolist()
     try:
-        res = db.client.rpc(
+        res = db.retrieval_client.rpc(
             "match_concepts",
             {
                 "query_embedding": q_vec,
@@ -139,7 +139,7 @@ def _get_prerequisites(concept_id: str) -> List[Dict[str, Any]]:
         return []
     try:
         res = (
-            db.client.table("concept_edges")
+            db.retrieval_client.table("concept_edges")
             .select("requires")
             .eq("concept_id", concept_id)
             .execute()
@@ -150,7 +150,7 @@ def _get_prerequisites(concept_id: str) -> List[Dict[str, Any]]:
             return []
 
         c_res = (
-            db.client.table("concepts")
+            db.retrieval_client.table("concepts")
             .select("concept_id, concept_name")
             .in_("concept_id", req_ids)
             .execute()
@@ -197,7 +197,7 @@ def retrieve_for_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not primary_id:
         try:
-            c_res = db.client.rpc(
+            c_res = db.retrieval_client.rpc(
                 "match_concepts",
                 {"query_embedding": q_vec, "match_threshold": 0.0, "match_count": 3},
             ).execute()
@@ -256,13 +256,13 @@ def retrieve_for_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "filter_content_type": target_db_type,
             "filter_target_exam": None,
         }
-        res = db.client.rpc("match_content", rpc_params).execute()
+        res = db.retrieval_client.rpc("match_content", rpc_params).execute()
         chunks_raw = res.data or []
 
         # Pass 2: relax content type if not enough hits
         if len(chunks_raw) < 2 and target_db_type:
             rpc_params["filter_content_type"] = None
-            res2 = db.client.rpc("match_content", rpc_params).execute()
+            res2 = db.retrieval_client.rpc("match_content", rpc_params).execute()
             existing_ids = {c["content_id"] for c in chunks_raw}
             for c in (res2.data or []):
                 if c["content_id"] not in existing_ids:
@@ -272,7 +272,7 @@ def retrieve_for_state(state: Dict[str, Any]) -> Dict[str, Any]:
         if not chunks_raw:
             rpc_params["filter_concept_id"] = None
             rpc_params["match_count"] = top_k
-            res3 = db.client.rpc("match_content", rpc_params).execute()
+            res3 = db.retrieval_client.rpc("match_content", rpc_params).execute()
             chunks_raw = res3.data or []
 
     except Exception as exc:

@@ -25,10 +25,14 @@ NEO4J_URI = os.environ["NEO4J_URI"]
 NEO4J_USER = os.environ["NEO4J_USER"]
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 
-# ── Supabase ──────────────────────────────────────────────────────────────────
+# ── Supabase (User DB) ────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "physics-diagrams")
+
+# ── Supabase (Retrieval DB: Concepts, Content Chunks, Vector RPCs) ─────────────
+RETRIEVAL_SUPABASE_URL = os.getenv("RETRIEVAL_SUPABASE_URL", SUPABASE_URL)
+RETRIEVAL_SUPABASE_KEY = os.getenv("RETRIEVAL_SUPABASE_KEY", SUPABASE_KEY)
 
 # ── LLM APIs (Gemini with Round-Robin Key Pool) ───────────────────────────────
 # Comma-separated in .env (GEMINI_KEYS). Never put keys in source: this file is

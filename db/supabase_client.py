@@ -42,8 +42,18 @@ def _make_redis_client():
 
 
 class SupabaseClient:
-    def __init__(self, url: str, key: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        key: str,
+        retrieval_url: Optional[str] = None,
+        retrieval_key: Optional[str] = None,
+    ) -> None:
         self.client: Client = create_client(url, key)
+        if retrieval_url and retrieval_key and (retrieval_url != url or retrieval_key != key):
+            self.retrieval_client: Client = create_client(retrieval_url, retrieval_key)
+        else:
+            self.retrieval_client: Client = self.client
         # None = not probed yet; set by memory_enabled() on first use.
         self._memory_enabled: Optional[bool] = None
         # Set to True the first time chat_turns rejects a post-007 agent label.
@@ -450,7 +460,7 @@ class SupabaseClient:
     def read_concepts(self) -> List[Dict[str, Any]]:
         """Return all 33 concepts as a flat list (concept_id, concept_name, chapter)."""
         res = (
-            self.client.table("concepts")
+            self.retrieval_client.table("concepts")
             .select("concept_id, concept_name, chapter, subject")
             .execute()
         )
@@ -462,7 +472,7 @@ class SupabaseClient:
         if not content_ids:
             return []
         res = (
-            self.client.table("content")
+            self.retrieval_client.table("content")
             .select(
                 "content_id, content_type, chapter, difficulty, core_text, solution, "
                 "latex_formulae_core, latex_formulae_solution, "
@@ -1288,4 +1298,9 @@ class SupabaseClient:
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
-db = SupabaseClient(config.SUPABASE_URL, config.SUPABASE_KEY)
+db = SupabaseClient(
+    config.SUPABASE_URL,
+    config.SUPABASE_KEY,
+    getattr(config, "RETRIEVAL_SUPABASE_URL", None),
+    getattr(config, "RETRIEVAL_SUPABASE_KEY", None),
+)
