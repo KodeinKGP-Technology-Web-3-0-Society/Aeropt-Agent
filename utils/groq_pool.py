@@ -65,10 +65,10 @@ def load_gemini_api_keys(env: Optional[Dict[str, str]] = None) -> List[str]:
 
 
 def _default_client(api_key: str) -> OpenAI:
-    # Use Sarvam endpoint by default if SARVAM_API_KEY exists or if configured.
-    base_url = os.getenv("SARVAM_BASE_URL", SARVAM_OPENAI_BASE_URL)
-    if not (os.getenv("SARVAM_API_KEY") or os.getenv("SARVAM_KEYS")) and (os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEYS")):
-        base_url = GEMINI_OPENAI_BASE_URL
+    # Use Gemini endpoint by default; allow Sarvam if explicitly configured or key matches
+    base_url = GEMINI_OPENAI_BASE_URL
+    if os.getenv("LLM_PROVIDER", "").strip().lower() == "sarvam" or (api_key.startswith("sk_") and not api_key.startswith("AIza")):
+        base_url = os.getenv("SARVAM_BASE_URL", SARVAM_OPENAI_BASE_URL)
     return OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
 
 
@@ -76,7 +76,7 @@ class GeminiKeyPool:
     def __init__(self, keys: List[str], client_factory: Callable[[str], OpenAI] = _default_client):
         keys = list(dict.fromkeys(k for k in keys if k))
         if not keys:
-            raise ValueError("At least one API key is required (set SARVAM_API_KEY in .env).")
+            raise ValueError("At least one API key is required (set GEMINI_KEYS or GEMINI_API_KEY in .env).")
         self._keys = keys
         self._clients = [client_factory(k) for k in keys]
         self._lock = threading.Lock()
@@ -190,7 +190,7 @@ def get_pool() -> GeminiKeyPool:
             if _pool is None:
                 import config
 
-                keys = getattr(config, "LLM_API_KEYS", None) or getattr(config, "SARVAM_API_KEYS", None) or config.GEMINI_API_KEYS
+                keys = getattr(config, "GEMINI_API_KEYS", None) or getattr(config, "LLM_API_KEYS", None)
                 _pool = GeminiKeyPool(keys)
     return _pool
 

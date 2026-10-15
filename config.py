@@ -30,37 +30,38 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "physics-diagrams")
 
-# ── LLM APIs (Sarvam AI / Indic-first) ─────────────────────────────────────────
+# ── LLM APIs (Gemini with Round-Robin Key Pool) ───────────────────────────────
+# Comma-separated in .env (GEMINI_KEYS). Never put keys in source: this file is
+# committed. utils/groq_pool.py rotates through them and retires rejected ones.
+from utils.groq_pool import load_gemini_api_keys, load_sarvam_api_keys  # noqa: E402
+
+GEMINI_API_KEYS = load_gemini_api_keys()
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
+
+LLM_API_KEYS = GEMINI_API_KEYS
+LLM_API_KEY = GEMINI_API_KEY
+LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+# Voice / Optional Indic APIs (Sarvam AI for STT/TTS)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
-SARVAM_OPENAI_BASE_URL = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai/v1").strip()
-
-from utils.groq_pool import load_sarvam_api_keys, load_gemini_api_keys  # noqa: E402
-
 SARVAM_API_KEYS = load_sarvam_api_keys()
-# LLM key and client settings (Sarvam preferred, Gemini as backward-compatibility fallback)
-LLM_API_KEYS = SARVAM_API_KEYS or load_gemini_api_keys()
-LLM_API_KEY = LLM_API_KEYS[0] if LLM_API_KEYS else ""
-LLM_BASE_URL = SARVAM_OPENAI_BASE_URL if SARVAM_API_KEYS else "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-# Compatibility aliases
-GEMINI_API_KEYS = LLM_API_KEYS
-GEMINI_API_KEY = LLM_API_KEY
+# ── Model assignments per agent ───────────────────────────────────────────────
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview").strip()
+ORCHESTRATOR_MODEL = GEMINI_MODEL
+CONCEPT_RESOLVER_MODEL = GEMINI_MODEL
+DIAGNOSTIC_MODEL = GEMINI_MODEL
+CONTEXT_MANAGER_MODEL = GEMINI_MODEL
 
-# ── Model assignments per agent (Sarvam AI) ──────────────────────────────────
-SARVAM_MODEL = os.getenv("SARVAM_MODEL", "sarvam-105b-conversations").strip()
-SARVAM_FALLBACK_MODELS = [m.strip() for m in os.getenv("SARVAM_FALLBACK_MODELS", "sarvam-105b").split(",") if m.strip()]
-
-ORCHESTRATOR_MODEL = SARVAM_MODEL
-CONCEPT_RESOLVER_MODEL = SARVAM_MODEL
-DIAGNOSTIC_MODEL = SARVAM_MODEL
-CONTEXT_MANAGER_MODEL = SARVAM_MODEL
-
-SOLVER_MODEL = SARVAM_MODEL
-SOCRATIC_MODEL = SARVAM_MODEL
-QUIZ_MODEL = SARVAM_MODEL
+SOLVER_MODEL = GEMINI_MODEL
+SOCRATIC_MODEL = GEMINI_MODEL
+QUIZ_MODEL = GEMINI_MODEL
 
 # ── Fallback chains ──
-FALLBACK_MODELS = SARVAM_FALLBACK_MODELS
+# Free-tier Gemini quotas are per model AND per day (gemini-3-flash: 20 requests
+# a day per key, measured 2026-10-02 when all 12 keys ran out). Each fallback has
+# its own quota, so the chain multiplies daily capacity.
+FALLBACK_MODELS = [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
 SOLVER_FALLBACK_MODELS = FALLBACK_MODELS
 QUIZ_FALLBACK_MODELS = FALLBACK_MODELS
 SOCRATIC_FALLBACK_MODELS = FALLBACK_MODELS
@@ -139,7 +140,7 @@ STRUGGLE_STREAK_QUIZ_TRIGGER = 3
 CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
 
 # ── Autonomous Learning Agent ─────────────────────────────────────────────────
-LEARNING_AGENT_MODEL = SARVAM_MODEL
+LEARNING_AGENT_MODEL = GEMINI_MODEL
 LEARNING_AGENT_FALLBACK_MODELS = FALLBACK_MODELS
 
 # Reasoning steps per turn. Enough for resolve -> retrieve -> verify -> compose,
@@ -157,13 +158,15 @@ LEARNING_AGENT_TEMPERATURE = 0.3
 # Fail-open: if the checker is unavailable the draft is sent unchanged, and the
 # turn trace records the skip.
 ANSWER_CHECKER_ENABLED = os.getenv("ANSWER_CHECKER_ENABLED", "true").lower() != "false"
-ANSWER_CHECKER_MODEL = SARVAM_MODEL
-# Answer checker reasoning effort (empty string for providers that don't take it)
-ANSWER_CHECKER_REASONING = os.getenv("ANSWER_CHECKER_REASONING", "").strip()
+ANSWER_CHECKER_MODEL = GEMINI_MODEL
+# Gemini 3 thinks before answering; on the checker's review prompt that took
+# ~12 s at default effort vs ~1.5 s at "low" (2026-10-02), and "low" still
+# caught and fixed a planted ω = √(LC) error. Empty string = provider default.
+ANSWER_CHECKER_REASONING = os.getenv("ANSWER_CHECKER_REASONING", "low").strip()
 
 # ── Background Learning Coach ─────────────────────────────────────────────────
 # The same agent, run after platform events rather than in a live conversation.
 # It decides for itself whether any action is warranted — doing nothing is a
 # valid and common outcome, so there is no "N wrong answers triggers X" rule.
-LEARNING_COACH_MODEL = SARVAM_MODEL
+LEARNING_COACH_MODEL = GEMINI_MODEL
 LEARNING_COACH_MAX_STEPS = 4
