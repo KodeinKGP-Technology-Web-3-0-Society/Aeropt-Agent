@@ -2,7 +2,7 @@
 content_*.csv), checked against the book's own PDF pages before any of it is used.
 
     .venv/bin/python -m local_ingest.hcverma        # verify -> .local-run/sources/hcverma/hcverma.jsonl
-    make index                                      # fold the verified rows in
+    make push                                       # fold the verified rows in
 
 The rows were produced by a model reading the book, and measuring them showed three different
 things inside one file: worked-example questions are near-verbatim (median 96 % of their

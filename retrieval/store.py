@@ -59,7 +59,14 @@ _pool_lock = threading.Lock()
 
 
 def database_url() -> str:
-    return os.getenv("RETRIEVAL_DATABASE_URL", "").strip()
+    url = os.getenv("RETRIEVAL_DATABASE_URL", "").strip()
+    if not url:
+        try:
+            import config
+            url = getattr(config, "RETRIEVAL_DATABASE_URL", "").strip()
+        except Exception:
+            pass
+    return url
 
 
 def _get_pool():

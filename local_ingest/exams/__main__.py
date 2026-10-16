@@ -6,7 +6,7 @@
     .venv/bin/python -m local_ingest.exams --classify-only  # file unclassified questions under chapters
 
 Writes .local-run/sources/exams/jee_advanced.jsonl (read by corpus.official_exam_items)
-and report.json, which lists every dropped question and why. Then `make index`.
+and report.json, which lists every dropped question and why. Then `make push`.
 """
 
 from __future__ import annotations

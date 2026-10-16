@@ -2,7 +2,7 @@
 
     .venv/bin/python -m local_ingest.hcverma_pdf              # read + verify all chapters below
     .venv/bin/python -m local_ingest.hcverma_pdf --estimate   # Cursor calls still needed
-    make index                                                # fold the records in
+    make push                                                 # fold the records in
 
 The pages are read by the same Cursor page reader as NCERT (local_ingest/ncert/chapter.py:
 stitch + grounding), with a prompt for this book. Every block is checked against the PDF's

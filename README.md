@@ -36,28 +36,39 @@ Free text always goes to the Main Tutor. There is no intent enum.
 
 ## Retrieval
 
-Three backends, chosen by `RETRIEVAL_BACKEND`:
+Retrieval runs against a dedicated Supabase Postgres instance (`RETRIEVAL_DATABASE_URL`) with `pgvector` and full-text search (`tsvector`):
 
-| | `supabase` (default, cloud pgvector) | `local` (SQLite + static embed) | `neo4j` (legacy Aura) |
-|---|---|---|---|
-| Store | Supabase pgvector (`stecalgmpaulkkwqlqcx`) | `.local-run/index` (SQLite + FTS5 + `.npy`) | Neo4j Aura + Supabase |
-| Query embedding | static / Gemini | static model, <1 ms | Gemini, ~1175 ms |
-| Neo4j required? | **No** | **No** | Yes |
-| Syllabus | 1,016 concepts, 44 chapters | 1,016 derived concepts, 44 chapters | 33 hand-mapped concepts |
-| Corpus | 12,933 items | 10,055 items | 203 items |
+- **Store**: Supabase Postgres (`stecalgmpaulkkwqlqcx`) using `vector(256)` with HNSW indexes and `ts_rank_cd`.
+- **Embedding model**: `minishlab/potion-base-8M` (`DIM = 256`), explicit and enforced at startup.
+- **Syllabus**: 1,517 derived concepts across 63 chapters (Physics + NCERT Chemistry).
+- **Corpus**: 14,874 items (12,933 Physics, 1,941 Chemistry). Zero cross-subject links.
 
 ### Dual Database Setup
-- **User DB (`SUPABASE_URL`)**: Stores user profiles, sessions, and chat history.
-- **Retrieval DB (`RETRIEVAL_SUPABASE_URL`)**: Dedicated to content chunks, concept graphs, and vector similarity search.
+- **User DB (`SUPABASE_URL`, `SUPABASE_KEY`)**: Stores user profiles, sessions, chat turns, and served question ledger.
+- **Retrieval DB (`RETRIEVAL_DATABASE_URL`)**: Dedicated Postgres pooler connection for content chunks, concept graphs, and pgvector similarity search. (`RETRIEVAL_SUPABASE_URL` / `RETRIEVAL_SUPABASE_KEY` kept for REST reads).
 
 ```bash
-make index                                        # build/rebuild the local index (~4 s)
+make push                                         # push corpus & embeddings to Postgres
+make push-dry                                     # preview changes without writing
 .venv/bin/python -m retrieval.cli "explain torque"  # inspect a retrieval
 make retrieval-bench
 ```
 
 `RETRIEVAL.md` covers how the syllabus is derived, how repeats are prevented and
 when retrieval is skipped.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `SUPABASE_URL` | Yes | Supabase user project URL (`users`, `sessions`, `chat_turns`) |
+| `SUPABASE_KEY` | Yes | Service role key for user DB |
+| `RETRIEVAL_DATABASE_URL` | Yes | Postgres connection URI for retrieval project (`content`, `concepts`, `pgvector`) |
+| `RETRIEVAL_SUPABASE_URL` | Optional | Retrieval project REST URL (defaults to `SUPABASE_URL`) |
+| `RETRIEVAL_SUPABASE_KEY` | Optional | Retrieval project REST key (defaults to `SUPABASE_KEY`) |
+| `GROQ_API_KEY` | Optional | Groq API key (tutor reasoning loop) |
+| `GEMINI_API_KEY` | Optional | Gemini API key (fallback/diagnostic models) |
+| `DJANGO_API_BASE_URL` | Optional | Django backend URL (evidence posting; default: `http://127.0.0.1:8000`) |
 
 ## Tools
 
@@ -91,7 +102,7 @@ pip install -r requirements.txt
 
 # 2. Configure environment (.env)
 cp .env.example .env
-# Set SUPABASE_URL (User DB), RETRIEVAL_SUPABASE_URL (Retrieval DB), and LLM keys
+# Set SUPABASE_URL (User DB), RETRIEVAL_DATABASE_URL (Retrieval DB pooler), and LLM keys
 
 # 3. Start Agent server (port 8001)
 python -m uvicorn api_server:app --port 8001 --reload

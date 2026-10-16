@@ -41,5 +41,9 @@ try {
 } catch (err) {
   done({ error: String(err?.message || err) });
 } finally {
-  agent?.close();
+  try {
+    agent?.close();
+  } catch {}
+  process.exit(0);
 }
+

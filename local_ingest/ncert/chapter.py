@@ -18,30 +18,55 @@ from utils.latex_guidelines import find_latex_issues
 # cache is kept, and every block is checked against the page's own text layer (`grounded`).
 PROMPT_VERSION = "n1"
 RETRY_VERSION = "n2"  # pages that fail the text-layer check are re-read once with the placeholder prompt
+CHEM_PROMPT_VERSION = "nc1"
+CHEM_RETRY_VERSION = "nc2"
 
-PROMPT = """You are transcribing one page of an NCERT Physics textbook into JSON.
+
+def get_prompt(subject: str = "Physics") -> str:
+    subj = "Chemistry" if subject.lower() == "chemistry" else "Physics"
+    if subj == "Chemistry":
+        formula_desc = (
+            "All mathematics, chemical formulas and reaction equations in LaTeX inside $...$ (inline) or $$...$$ (display) "
+            r"(e.g. $\text{H}_2\text{O}$, $\text{CH}_4$, $\Delta H$, chemical equations). Keep equation/reaction numbers like (3.3) after the equation."
+        )
+        example_desc = (
+            '{"kind": "example", "number": "<example or problem number as printed, e.g. 1.1>", "question": "<the example/problem question>", "solution": "<its printed solution, if on this page>", "continues_on_next_page": <bool>}'
+        )
+    else:
+        formula_desc = (
+            "All mathematics in LaTeX inside $...$ (inline) or $$...$$ (display). Keep equation numbers like (3.3) after the equation."
+        )
+        example_desc = (
+            '{"kind": "example", "number": "<example number as printed>", "question": "<the example\'s question>", "solution": "<its printed solution, if on this page>", "continues_on_next_page": <bool>}'
+        )
+
+    return f"""You are transcribing one page of an NCERT {subj} textbook into JSON.
 
 Rules:
 - Copy the text exactly, in reading order. Do not summarise, solve, correct, or add anything.
-- All mathematics in LaTeX inside $...$ (inline) or $$...$$ (display). Keep equation numbers like (3.3) after the equation.
+- {formula_desc}
 - Ignore running headers, page numbers and the "Reprint" footer.
 - Sidebars and boxes: give their text as a "box" block; set "biography": true for a scientist's biography.
 
 Return only this JSON object:
-{
+{{
   "blocks": [
-    {"kind": "heading", "number": "<section number as printed>", "title": "<section title as printed>"},
-    {"kind": "text", "text": "<paragraph(s) of explanation>"},
-    {"kind": "continuation", "part": "text" | "example_question" | "example_solution" | "exercise", "text": "<text at the top of the page that continues what the previous page ended with; 'part' says which>"},
-    {"kind": "figure", "number": "<figure number as printed>", "caption": "<printed caption>", "description": "<what the drawing shows: every label, value, direction and arrangement>"},
-    {"kind": "example", "number": "<example number as printed>", "question": "<the example's question>", "solution": "<its printed solution, if on this page>", "continues_on_next_page": <bool>},
-    {"kind": "exercise", "number": "<exercise number as printed>", "text": "<exercise question>"},
-    {"kind": "box", "text": "<sidebar text>", "biography": <bool>},
-    {"kind": "summary", "text": "<SUMMARY section text>"},
-    {"kind": "points_to_ponder", "text": "<POINTS TO PONDER text>"}
+    {{"kind": "heading", "number": "<section number as printed>", "title": "<section title as printed>"}},
+    {{"kind": "text", "text": "<paragraph(s) of explanation>"}},
+    {{"kind": "continuation", "part": "text" | "example_question" | "example_solution" | "exercise", "text": "<text at the top of the page that continues what the previous page ended with; 'part' says which>"}},
+    {{"kind": "figure", "number": "<figure number as printed>", "caption": "<printed caption>", "description": "<what the drawing shows: every label, value, direction and arrangement>"}},
+    {example_desc},
+    {{"kind": "exercise", "number": "<exercise number as printed>", "text": "<exercise question>"}},
+    {{"kind": "box", "text": "<sidebar text>", "biography": <bool>}},
+    {{"kind": "summary", "text": "<SUMMARY section text>"}},
+    {{"kind": "points_to_ponder", "text": "<POINTS TO PONDER text>"}}
   ]
-}
+}}
 Use only the block kinds shown. A page may contain any number of blocks."""
+
+
+PROMPT = get_prompt("Physics")
+
 
 _FIG_REF = re.compile(r"\bFig(?:ure)?s?\.?\s*(\d+\.\d+)", re.I)
 MIN_GROUNDED = 0.6  # share of a block's words that must be printed on its pages
@@ -210,8 +235,15 @@ def validate(chapter, stitched: dict[str, Any], report, doc: str,
     for page, reason in stitched.get("rejected", []):
         report.drop(doc, f"page {page}", reason)
 
-    base = {"chapter_code": chapter.code, "chapter": chapter.title, "chapter_id": chapter.chapter_id,
-            "unit": chapter.unit, "book": chapter.book, "source_url": chapter.url}
+    base = {
+        "chapter_code": chapter.code,
+        "chapter": chapter.title,
+        "chapter_id": chapter.chapter_id,
+        "unit": chapter.unit,
+        "book": chapter.book,
+        "source_url": chapter.url,
+        "subject": getattr(chapter, "subject", "Physics"),
+    }
 
     for i, section in enumerate(stitched["sections"]):
         text = "\n\n".join(p for p in section["parts"] if p.strip())

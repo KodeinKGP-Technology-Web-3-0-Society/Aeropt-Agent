@@ -342,8 +342,13 @@ def test_syllabus_topics_cover_the_jee_main_units():
 def test_retrieval_is_fast():
     """The local backend exists for latency; a regression here is a real regression."""
     import time
+    from urllib.parse import urlparse
 
-    from retrieval import service
+    from retrieval import service, store
+
+    host = (urlparse(store.database_url()).hostname or "").lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        pytest.skip(f"latency budget (<150ms) applies to local database, not hosted ({host})")
 
     service.retrieve("warm up the caches", user_id="", mark=False)
     started = time.perf_counter()

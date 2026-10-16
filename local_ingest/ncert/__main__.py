@@ -6,7 +6,7 @@
     .venv/bin/python -m local_ingest.ncert --assemble-only         # re-stitch from the cache
 
 Writes .local-run/sources/ncert/ncert.jsonl (read by corpus.ncert_items) and
-report.json. Then `make index`. Design: EXTRACTION.md.
+report.json. Then `make push`. Design: EXTRACTION.md.
 """
 
 from __future__ import annotations
@@ -32,22 +32,26 @@ def run_chapter(ch: catalog.Chapter, report: Report, *, assemble_only: bool) -> 
     pdf = OUT / "pdf" / f"{ch.code}.pdf"
     sha = fetch(ch.url, pdf)
     pages = list(range(1, len(pdfs.page_texts(pdf)) + 1))
-    if assemble_only and reader.pending(pdf, pages, work, prompt=chapter.PROMPT, version=chapter.PROMPT_VERSION):
+    prompt = chapter.get_prompt(ch.subject)
+    version = chapter.CHEM_PROMPT_VERSION if ch.subject.lower() == "chemistry" else chapter.PROMPT_VERSION
+    retry_version = chapter.CHEM_RETRY_VERSION if ch.subject.lower() == "chemistry" else chapter.RETRY_VERSION
+
+    if assemble_only and reader.pending(pdf, pages, work, prompt=prompt, version=version):
         raise RuntimeError("not fully extracted yet; run without --assemble-only")
-    results = reader.read_pages(pdf, pages, work, prompt=chapter.PROMPT, version=chapter.PROMPT_VERSION)
+    results = reader.read_pages(pdf, pages, work, prompt=prompt, version=version)
     texts = {i + 1: t for i, t in enumerate(pdfs.page_texts(pdf))}  # the check against invention
     stitched = chapter.stitch(results, ch.title, texts)
     # A page with a block that is not printed on it was not really read: read it once more
     # (placeholder prompt, so nothing can be copied from the instructions) and check again.
     flagged = sorted({page for page, reason in stitched["rejected"]
                       if "not read from the page" in reason or "not printed on page" in reason})
-    if flagged and (not assemble_only or not reader.pending(pdf, flagged, work, prompt=chapter.PROMPT,
-                                                              version=chapter.RETRY_VERSION)):
+    if flagged and (not assemble_only or not reader.pending(pdf, flagged, work, prompt=prompt,
+                                                              version=retry_version)):
         by_page = {}
         for page in flagged:  # a failed re-read keeps the first reading; block checks still apply
             try:
-                by_page[page] = reader.read_pages(pdf, [page], work, prompt=chapter.PROMPT,
-                                                  version=chapter.RETRY_VERSION)[0]
+                by_page[page] = reader.read_pages(pdf, [page], work, prompt=prompt,
+                                                  version=retry_version)[0]
             except reader.VisionError as exc:
                 report.drop(ch.code, f"page {page}", f"re-read failed ({str(exc)[:80]}); first reading kept, block-checked")
         results = [by_page.get(r["_page"], r) for r in results]
@@ -55,7 +59,7 @@ def run_chapter(ch: catalog.Chapter, report: Report, *, assemble_only: bool) -> 
     records = chapter.validate(ch, stitched, report, ch.code, texts)
     for r in records:
         r["sha256"] = sha
-        r["read_by"] = f"{reader.MODEL} / prompt {chapter.PROMPT_VERSION}"
+        r["read_by"] = f"{reader.MODEL} / prompt {version}"
     report.documents.append({
         "document": ch.code, "pages": len(pages), "kept": len(records), "reread": len(flagged),
         "sections": len(stitched["sections"]), "examples": len(stitched["examples"]),
@@ -67,10 +71,11 @@ def run_chapter(ch: catalog.Chapter, report: Report, *, assemble_only: bool) -> 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--chapters", nargs="*")
+    ap.add_argument("--subject", choices=["physics", "chemistry"], default=None, help="Filter by subject")
     ap.add_argument("--assemble-only", action="store_true")
     ap.add_argument("--estimate", action="store_true")
     args = ap.parse_args(argv)
-    chosen = catalog.select(set(args.chapters or []))
+    chosen = catalog.select(set(args.chapters or []), subject=args.subject)
 
     if args.estimate:
         total = 0
@@ -78,10 +83,13 @@ def main(argv: list[str] | None = None) -> int:
             pdf = OUT / "pdf" / f"{ch.code}.pdf"
             fetch(ch.url, pdf)
             pages = list(range(1, len(pdfs.page_texts(pdf)) + 1))
-            total += reader.pending(pdf, pages, OUT / ch.code, prompt=chapter.PROMPT, version=chapter.PROMPT_VERSION)
+            prompt = chapter.get_prompt(ch.subject)
+            version = chapter.CHEM_PROMPT_VERSION if ch.subject.lower() == "chemistry" else chapter.PROMPT_VERSION
+            total += reader.pending(pdf, pages, OUT / ch.code, prompt=prompt, version=version)
         minutes = total * 45 / reader.CONCURRENCY / 60
         print(f"{total} pages to read ≈ {minutes:.0f} min at {reader.CONCURRENCY} parallel Cursor calls")
         return 0
+
 
     report = Report()
     rows: list[dict] = []
