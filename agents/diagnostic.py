@@ -231,7 +231,7 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             if weak_prereq:
                 root_cause_concept_id = weak_prereq.get("concept_id")
 
-        db.insert_user_attempt(
+        attempt = db.insert_user_attempt(
             user_id=user_id,
             session_id=session_id,
             concept_id=primary_id,
@@ -285,6 +285,13 @@ def diagnostic_node(state: TutorState) -> Dict[str, Any]:
             "recorded_concept_id": primary_id,
             "mastery_pct": max(0, min(100, round(new_score * 100))),
         }
+        # Declared on TutorState, so the graded fast path can hand it to commit.
+        # The two scores are not TutorState fields. The Study Room copies them
+        # into last_grade; the chat graph drops them.
+        if isinstance(attempt, dict) and attempt.get("attempt_id"):
+            result["attempt_id"] = str(attempt["attempt_id"])
+        result["proficiency_before"] = old_score
+        result["proficiency_after"] = round(new_score, 4)
 
         if not is_correct:
             prereq_states     = state.get("prereq_concept_states") or []

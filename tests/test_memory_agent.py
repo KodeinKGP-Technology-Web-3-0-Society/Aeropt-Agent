@@ -452,24 +452,37 @@ def _patch_progress(monkeypatch):
     )
 
 
-def test_states_accept_only_episode_context():
+def test_states_accept_episode_context_and_grade_metadata():
     from models.state import TutorState
     from models.study_state import StudyRoomState
 
-    tutor: TutorState = {"episode_context": _EPISODE_BLOCK}
-    study: StudyRoomState = {"episode_context": _EPISODE_BLOCK}
+    tutor: TutorState = {"episode_context": _EPISODE_BLOCK, "attempt_id": "attempt-1"}
+    study: StudyRoomState = {
+        "episode_context": _EPISODE_BLOCK,
+        "last_grade": {
+            "is_correct": False,
+            "content_id": "item-1",
+            "concept_id": "torque",
+            "attempt_id": "attempt-9",
+            "proficiency_before": 0.4,
+            "proficiency_after": 0.33,
+        },
+    }
     assert tutor["episode_context"] == _EPISODE_BLOCK
+    assert tutor["attempt_id"] == "attempt-1"
     assert study["episode_context"] == _EPISODE_BLOCK
+    assert study["last_grade"]["attempt_id"] == "attempt-9"
 
     def _ann(cls, name: str) -> str:
         value = cls.__annotations__[name]
         return getattr(value, "__forward_arg__", value)
 
     assert _ann(TutorState, "episode_context") == "Optional[str]"
+    assert _ann(TutorState, "attempt_id") == "Optional[str]"
     assert _ann(StudyRoomState, "episode_context") == "Optional[str]"
-    for banned in ("attempt_id", "current_episode_id", "recalled_episodes", "memory_action"):
+    assert "Dict" in _ann(StudyRoomState, "last_grade")
+    for banned in ("current_episode_id", "recalled_episodes", "memory_action", "proficiency_before", "proficiency_after"):
         assert banned not in TutorState.__annotations__
-    assert "last_grade" not in StudyRoomState.__annotations__
     assert "attempt_id" not in StudyRoomState.__annotations__
 
 
@@ -524,6 +537,8 @@ def test_tutor_graph_recalls_only_free_text_and_commits_both_paths(monkeypatch):
     assert route_after_turn({"run_context_manager": False}) == "end"
     assert route_after_turn({"run_context_manager": True, "error": "boom"}) == "end"
     assert "episode_context" not in _CARRY_KEYS
+    assert "attempt_id" not in _CARRY_KEYS
+    assert "last_grade" not in _CARRY_KEYS
 
     workflow_source = inspect.getsource(__import__("graph.workflow", fromlist=["build_graph"]))
     for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
@@ -675,3 +690,190 @@ def test_teacher_agent_appends_episode_context_without_fetching(monkeypatch):
     source = inspect.getsource(teacher_agent)
     for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
         assert name not in source
+
+
+def test_diagnostic_returns_attempt_id_without_closing(monkeypatch):
+    import agents.diagnostic as diagnostic
+
+    class _DiagDB:
+        def __init__(self):
+            self.calls = []
+
+        def read_user_concept_state(self, user_id, concept_id):
+            self.calls.append("read")
+            return {
+                "proficiency_score": 0.5,
+                "avg_time_seconds": 60,
+                "attempts": 1,
+                "correct": 0,
+                "struggle_streak": 0,
+                "flagged_weak": False,
+            }
+
+        def update_user_concept_state(self, user_id, concept_id, fields):
+            self.calls.append("update")
+            self.written = fields
+
+        def insert_user_attempt(self, **kwargs):
+            self.calls.append("insert")
+            return {"attempt_id": "attempt-77"}
+
+        def insert_chat_turn(self, **kwargs):
+            self.calls.append("chat")
+
+        def close_pending_episode(self, **kwargs):
+            self.calls.append("close")
+
+    fake = _DiagDB()
+    monkeypatch.setattr(diagnostic, "db", fake)
+    result = diagnostic.diagnostic_node({
+        "user_id": "user-a",
+        "session_id": "sess-1",
+        "primary_concept_id": "concept-a",
+        "has_graded_outcome": True,
+        "is_correct": True,
+        "student_answer": "5",
+    })
+    assert result.get("error") is None
+    assert result["attempt_id"] == "attempt-77"
+    assert result["proficiency_before"] == 0.5
+    assert result["proficiency_after"] == fake.written["proficiency_score"]
+    assert "close" not in fake.calls
+    source = inspect.getsource(diagnostic)
+    assert "memory_agent" not in source
+    assert "close_pending_episode" not in source
+
+    _patch_embed(monkeypatch)
+    episode_db = _patch_db(monkeypatch)
+    state = _state(
+        has_graded_outcome=True,
+        is_correct=True,
+        primary_concept_id="concept-a",
+        attempt_id=result["attempt_id"],
+        agent_trace_path=[],
+    )
+    assert memory_commit_node(state) == {}
+    assert len(episode_db.closed) == 1
+    assert episode_db.closed[0]["concept_id"] == "concept-a"
+    assert episode_db.closed[0]["attempt_id"] == "attempt-77"
+    assert episode_db.closed[0]["exclude_turn_index"] == 6
+
+    other = _state(
+        has_graded_outcome=True,
+        is_correct=False,
+        primary_concept_id="concept-b",
+        attempt_id="attempt-b",
+        agent_trace_path=[],
+    )
+    memory_commit_node(other)
+    assert [row["concept_id"] for row in episode_db.closed] == ["concept-a", "concept-b"]
+    assert episode_db.closed[1]["attempt_id"] == "attempt-b"
+    assert all(row["concept_id"] != "concept-a" or row["attempt_id"] == "attempt-77" for row in episode_db.closed)
+
+
+def test_study_grade_stages_last_grade_and_only_commit_closes(monkeypatch):
+    import mcp_tools.study_tools as study_tools
+    from agents.runtime.toolbelt import ToolContext
+    from mcp_tools.study_tools import GradePracticeArgs, grade_practice_answer
+
+    class _StudyDB:
+        def __init__(self):
+            self.calls = []
+            self.attempt = {
+                "attempt_id": "attempt-fb",
+                "proficiency_before": 0.2,
+                "proficiency_after": 0.15,
+            }
+
+        def insert_study_event(self, *args, **kwargs):
+            self.calls.append("event")
+
+        def update_study_session_stats(self, *args, **kwargs):
+            self.calls.append("stats")
+
+        def insert_user_attempt(self, **kwargs):
+            self.calls.append("insert")
+            return dict(self.attempt)
+
+        def close_pending_episode(self, **kwargs):
+            self.calls.append("close")
+
+    store = _StudyDB()
+    monkeypatch.setattr(study_tools, "db", store)
+
+    def _ctx():
+        return ToolContext(
+            user_id="user-a",
+            session_id="sess-1",
+            state={
+                "study_session_id": "study-1",
+                "session_id": "sess-1",
+                "concept_id": "torque",
+                "current_question": {"content_id": "item-1", "difficulty": 2},
+                "questions_served": 0,
+                "questions_correct": 0,
+                "difficulty_level": 1,
+                "practice_streak": 0,
+                "wrong_streak": 0,
+            },
+        )
+
+    monkeypatch.setattr(
+        "agents.diagnostic.diagnostic_node",
+        lambda state: {
+            "error": None,
+            "attempt_id": "attempt-9",
+            "proficiency_before": 0.4,
+            "proficiency_after": 0.55,
+        },
+    )
+    ctx = _ctx()
+    grade_practice_answer(GradePracticeArgs(is_correct=True, student_answer="5"), ctx)
+    assert "insert" not in store.calls
+    assert "close" not in store.calls
+    grade = ctx.updates["last_grade"]
+    assert grade == {
+        "is_correct": True,
+        "content_id": "item-1",
+        "concept_id": "torque",
+        "attempt_id": "attempt-9",
+        "proficiency_before": 0.4,
+        "proficiency_after": 0.55,
+    }
+
+    _patch_embed(monkeypatch)
+    episode_db = _patch_db(monkeypatch)
+    committed = _state(
+        study_session_id="study-1",
+        response="The torque is r cross F.",
+        last_grade=grade,
+        agent_trace_path=[],
+    )
+    assert memory_commit_node(committed) == {}
+    assert len(episode_db.closed) == 1
+    assert episode_db.closed[0]["attempt_id"] == "attempt-9"
+    assert episode_db.closed[0]["concept_id"] == "torque"
+    assert episode_db.closed[0]["proficiency_before"] == 0.4
+    assert episode_db.closed[0]["proficiency_after"] == 0.55
+    saved = build_episode(committed, kind="study")
+    assert saved is not None
+    assert saved["feedback_status"] == "next_attempt"
+    assert saved["attempt_id"] == "attempt-9"
+    assert saved["feedback_attempt_id"] == "attempt-9"
+
+    monkeypatch.setattr(
+        "agents.diagnostic.diagnostic_node",
+        lambda state: {"error": "No concept state"},
+    )
+    fallback_ctx = _ctx()
+    grade_practice_answer(GradePracticeArgs(is_correct=False, student_answer="2"), fallback_ctx)
+    assert store.calls.count("insert") == 1
+    assert "close" not in store.calls
+    assert fallback_ctx.updates["last_grade"]["attempt_id"] == "attempt-fb"
+    assert fallback_ctx.updates["last_grade"]["proficiency_before"] == 0.2
+    assert fallback_ctx.updates["last_grade"]["is_correct"] is False
+
+    source = inspect.getsource(study_tools)
+    assert "close_pending_episode" not in source
+    assert "memory_commit" not in source
+    assert "memory_agent" not in source
