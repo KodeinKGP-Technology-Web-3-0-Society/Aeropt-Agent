@@ -13,7 +13,7 @@ import numpy as np
 from retrieval import embedder
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = (ROOT / "db" / "migrations" / "017_retrieval_pgvector.sql").read_text()
+MIGRATION = (ROOT / "db" / "migrations" / "019_retrieval_pgvector.sql").read_text()
 
 
 def test_migration_checks_the_embedder_model():

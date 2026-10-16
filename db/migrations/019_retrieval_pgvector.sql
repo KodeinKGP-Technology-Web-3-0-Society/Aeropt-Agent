@@ -1,4 +1,4 @@
--- 017_retrieval_pgvector.sql — the retrieval corpus lives in Postgres + pgvector.
+-- 019_retrieval_pgvector.sql — the retrieval corpus lives in Postgres + pgvector.
 --
 -- Run on the *retrieval* project (RETRIEVAL_DATABASE_URL), never the user-data one.
 -- `make push` (local_ingest/push_index.py) applies it before every push; it is idempotent.

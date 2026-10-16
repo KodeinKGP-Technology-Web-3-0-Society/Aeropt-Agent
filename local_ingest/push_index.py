@@ -47,7 +47,7 @@ load_dotenv(ROOT / ".env.local", override=True)
 
 from retrieval.embedder import DIM, MODEL_ID, to_pg as vec_literal  # noqa: E402 — the one embedding contract
 
-MIGRATION = ROOT / "db" / "migrations" / "017_retrieval_pgvector.sql"
+MIGRATION = ROOT / "db" / "migrations" / "019_retrieval_pgvector.sql"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 

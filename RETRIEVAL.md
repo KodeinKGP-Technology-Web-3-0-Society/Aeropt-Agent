@@ -309,7 +309,7 @@ left with no material — read that report, it is the quality signal.
 `local_ingest/push_index.py` builds the corpus **directly into Postgres** (`RETRIEVAL_DATABASE_URL`) —
 derives syllabus → items → concept mapping → embeddings, without any intermediate SQLite or `.npy` files.
 
-- Schema: `db/migrations/017_retrieval_pgvector.sql` (additive, idempotent; run on the *retrieval* project).
+- Schema: `db/migrations/019_retrieval_pgvector.sql` (additive, idempotent; run on the *retrieval* project).
   `content.embedding` / `concepts.embedding` are `vector(256)` with HNSW cosine indexes (`hnsw.ef_search=100`);
   `embed_model` is stored per row with a CHECK constraint.
 - Embeddings are generated during ingestion using the explicit static model (`minishlab/potion-base-8M`),
