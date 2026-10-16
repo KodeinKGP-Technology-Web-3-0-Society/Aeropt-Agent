@@ -58,6 +58,9 @@ class StudyRoomState(TypedDict, total=False):
 
     # ── Memory ────────────────────────────────────────────────────────────────
     recalled_memories: List[Dict[str, Any]]
+    # Episodic block for this turn only. Written by memory_recall_node and read
+    # by the Teacher Agent. Not carried across turns.
+    episode_context: Optional[str]
     prior_study_sessions: List[Dict[str, Any]]  # past sessions on this concept
     learner_snapshot: Dict[str, Any]            # services/study_context.py
     prior_session_summary: Optional[str]

@@ -237,11 +237,17 @@ def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int | s
     return move, reveal
 
 
-def _with_progress(memory_text: str, user_id: str, session_id: str = "") -> str:
+def _with_progress(
+    memory_text: str,
+    user_id: str,
+    session_id: str = "",
+    episode_context: str = "",
+) -> str:
     """Memories say who the student is; the digest says how they are doing —
     weak and mastered concepts, mistake pattern, reviews due — so a question
     in chat is answered knowing what the student has already practised. The
-    cross-room digest says what they were just doing in the Study Room."""
+    cross-room digest says what they were just doing in the Study Room.
+    A non-empty episodic block is appended as already written."""
     from services.cross_room import recent_activity
     from services.progress_report import progress_digest
 
@@ -251,6 +257,9 @@ def _with_progress(memory_text: str, user_id: str, session_id: str = "") -> str:
     activity = recent_activity(user_id, session_id)
     if activity:
         memory_text = f"{memory_text}\n\n{activity}"
+    context = (episode_context or "").strip()
+    if context:
+        memory_text = f"{memory_text}\n\n{context}"
     return memory_text
 
 
@@ -277,7 +286,12 @@ def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaf
         "{{preferred_depth}}": str(state.get("preferred_depth") or "standard"),
         "{{interaction_count}}": str(state.get("interaction_count") or 1),
         "{{roadmap_hint}}": _format_roadmap_hint(state),
-        "{{learner_memory}}": _with_progress(_format_memory(memories), state.get("user_id") or "", state.get("session_id") or ""),
+        "{{learner_memory}}": _with_progress(
+            _format_memory(memories),
+            state.get("user_id") or "",
+            state.get("session_id") or "",
+            state.get("episode_context") or "",
+        ),
         "{{session_summary}}": session_text,
         "{{pending_suggestions}}": _format_pending_suggestions(state),
         "{{scaffolding_move}}": scaffolding_move,

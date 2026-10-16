@@ -1,4 +1,7 @@
-"""Phase 1 Memory Agent. No network, no live model, no graph wiring."""
+"""Memory Agent. No network and no live model.
+
+Phase 2 checks graph routing and that speakers only append episode_context.
+"""
 
 from __future__ import annotations
 
@@ -398,3 +401,277 @@ def test_module_does_not_call_a_model_or_the_graphs():
     assert "graph.workflow" not in source
     assert "graph.study_workflow" not in source
     assert "skills/" not in source
+
+
+_EPISODE_BLOCK = (
+    "Past experiences (this student, not course material):\n"
+    "- 2026-10-01 torque: chat, taught."
+)
+
+
+def _guarded_fn(app, name):
+    """The function a guarded graph node actually calls."""
+    fn = app.builder.nodes[name].runnable.func
+    if fn.__closure__:
+        return fn.__closure__[0].cell_contents
+    return fn
+
+
+def _targets(app, source: str):
+    return {edge.target for edge in app.get_graph().edges if edge.source == source}
+
+
+def _reachable(app, start: str):
+    outgoing = {}
+    for edge in app.get_graph().edges:
+        outgoing.setdefault(edge.source, set()).add(edge.target)
+    seen = set()
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(outgoing.get(node, ()))
+    return seen
+
+
+def _route_fn(app, node: str):
+    spec = next(iter(app.builder.branches[node].values()))
+    return spec.path.func
+
+
+def _patch_progress(monkeypatch):
+    monkeypatch.setattr(
+        "services.progress_report.progress_digest",
+        lambda user_id, tz_name=None: "weak: torque",
+    )
+    monkeypatch.setattr(
+        "services.cross_room.recent_activity",
+        lambda user_id, session_id="": "Just now in Study Room: torque",
+    )
+
+
+def test_states_accept_only_episode_context():
+    from models.state import TutorState
+    from models.study_state import StudyRoomState
+
+    tutor: TutorState = {"episode_context": _EPISODE_BLOCK}
+    study: StudyRoomState = {"episode_context": _EPISODE_BLOCK}
+    assert tutor["episode_context"] == _EPISODE_BLOCK
+    assert study["episode_context"] == _EPISODE_BLOCK
+
+    def _ann(cls, name: str) -> str:
+        value = cls.__annotations__[name]
+        return getattr(value, "__forward_arg__", value)
+
+    assert _ann(TutorState, "episode_context") == "Optional[str]"
+    assert _ann(StudyRoomState, "episode_context") == "Optional[str]"
+    for banned in ("attempt_id", "current_episode_id", "recalled_episodes", "memory_action"):
+        assert banned not in TutorState.__annotations__
+    assert "last_grade" not in StudyRoomState.__annotations__
+    assert "attempt_id" not in StudyRoomState.__annotations__
+
+
+def test_tutor_graph_recalls_only_free_text_and_commits_both_paths(monkeypatch):
+    import traceback
+
+    import openai
+
+    real_openai = openai.OpenAI
+
+    def _spy(*args, **kwargs):
+        for line in traceback.format_stack():
+            if "agents/memory_agent.py" in line.replace("\\", "/"):
+                raise AssertionError("Memory Agent constructed a model client")
+        return real_openai(*args, **kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", _spy)
+
+    from graph.workflow import (
+        build_graph,
+        is_structured_input,
+        route_after_turn,
+        route_from_bootstrap,
+    )
+    from services.turn_service import _CARRY_KEYS
+
+    fake = _patch_db(monkeypatch)
+    app = build_graph()
+
+    assert {"memory_recall", "memory_commit"} <= set(app.get_graph().nodes)
+    assert _guarded_fn(app, "memory_recall") is memory_recall_node
+    assert _guarded_fn(app, "memory_commit") is memory_commit_node
+    assert fake.calls == []
+
+    assert is_structured_input({"has_graded_outcome": True}) is True
+    assert is_structured_input({"query": "correct"}) is False
+    assert route_from_bootstrap({"error": "no such user"}) == "end"
+    assert route_from_bootstrap({"has_graded_outcome": True}) == "graded_fast_path"
+    assert route_from_bootstrap({"query": "explain torque"}) == "memory_recall"
+    assert _route_fn(app, "bootstrap") is route_from_bootstrap
+
+    assert _targets(app, "bootstrap") == {"graded_fast_path", "memory_recall", "__end__"}
+    assert _targets(app, "memory_recall") == {"learning_agent"}
+    assert _targets(app, "learning_agent") == {"memory_commit"}
+    assert _targets(app, "graded_fast_path") == {"memory_commit"}
+    assert "learning_agent" not in _reachable(app, "graded_fast_path")
+    assert "memory_recall" not in _reachable(app, "graded_fast_path")
+
+    assert _targets(app, "memory_commit") == {"context_manager", "__end__"}
+    assert _route_fn(app, "memory_commit") is route_after_turn
+    assert route_after_turn({"run_context_manager": True}) == "context_manager"
+    assert route_after_turn({"run_context_manager": False}) == "end"
+    assert route_after_turn({"run_context_manager": True, "error": "boom"}) == "end"
+    assert "episode_context" not in _CARRY_KEYS
+
+    workflow_source = inspect.getsource(__import__("graph.workflow", fromlist=["build_graph"]))
+    for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
+        assert name not in workflow_source
+
+
+def test_study_graph_commits_after_a_live_teacher_turn(monkeypatch):
+    from graph.study_workflow import (
+        build_study_graph,
+        route_after_commit,
+        route_after_evaluation,
+        route_after_teacher,
+    )
+
+    fake = _patch_db(monkeypatch)
+    app = build_study_graph()
+
+    assert {"memory_recall", "memory_commit"} <= set(app.get_graph().nodes)
+    assert _guarded_fn(app, "memory_recall") is memory_recall_node
+    assert _guarded_fn(app, "memory_commit") is memory_commit_node
+    assert fake.calls == []
+
+    assert _targets(app, "bootstrap") == {"memory_recall"}
+    assert _targets(app, "memory_recall") == {"teacher_agent"}
+    assert _targets(app, "teacher_agent") == {"memory_commit", "__end__"}
+    assert "evaluation_agent" not in _targets(app, "teacher_agent")
+    assert "context_manager" not in _targets(app, "teacher_agent")
+
+    assert route_after_teacher({"cancelled": True, "phase_transition": "evaluation"}) == "end"
+    assert route_after_teacher({"error": "boom", "run_context_manager": True}) == "end"
+    assert route_after_teacher({"current_phase": "learn"}) == "memory_commit"
+    assert _route_fn(app, "teacher_agent") is route_after_teacher
+
+    assert _targets(app, "memory_commit") == {"evaluation_agent", "context_manager", "__end__"}
+    assert _route_fn(app, "memory_commit") is route_after_commit
+    assert route_after_commit({"phase_transition": "evaluation"}) == "evaluation"
+    assert route_after_commit({"current_phase": "evaluation"}) == "evaluation"
+    assert route_after_commit({"run_context_manager": True}) == "context_manager"
+    assert route_after_commit({}) == "end"
+    assert route_after_commit({"error": "boom", "run_context_manager": True}) == "end"
+    # Evaluation stays downstream of commit, not a second episode path off the teacher.
+    assert "memory_commit" in _reachable(app, "teacher_agent")
+    assert _reachable(app, "memory_commit") >= {"evaluation_agent", "context_manager", "__end__"}
+
+    assert _targets(app, "evaluation_agent") == {"context_manager", "__end__"}
+    assert _route_fn(app, "evaluation_agent") is route_after_evaluation
+    assert route_after_evaluation({"run_context_manager": True}) == "context_manager"
+    assert route_after_evaluation({"error": "boom", "run_context_manager": True}) == "end"
+
+    # Cancel and error leave the teacher node for END, so commit is not on that route.
+    assert route_after_teacher({"cancelled": True}) != "memory_commit"
+    assert route_after_teacher({"error": "boom"}) != "memory_commit"
+
+    study_source = inspect.getsource(__import__("graph.study_workflow", fromlist=["build_study_graph"]))
+    for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
+        assert name not in study_source
+
+
+def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
+    _patch_progress(monkeypatch)
+    from agents.learning_agent import _build_system_prompt
+
+    memories = [{"kind": "preference", "fact": "likes diagrams", "confidence": 0.9}]
+    base = {
+        "user_id": "user-a",
+        "session_id": "sess-1",
+        "target_exam": "JEE_ADVANCED",
+        "preferred_depth": "standard",
+        "interaction_count": 2,
+    }
+
+    def prompt(state):
+        return _build_system_prompt(state, memories, "Probe.", 0)
+
+    empty = prompt(base)
+    assert prompt({**base, "episode_context": ""}) == empty
+    assert prompt({**base, "episode_context": "   "}) == empty
+    assert prompt({**base, "episode_context": None}) == empty
+    assert "Past experiences" not in empty
+    assert "likes diagrams" in empty
+    assert "weak: torque" in empty
+    assert "Progress so far" in empty
+    assert "Just now in Study Room: torque" in empty
+
+    filled = prompt({**base, "episode_context": _EPISODE_BLOCK})
+    assert _EPISODE_BLOCK in filled
+    assert filled.count("Past experiences (this student, not course material):") == 1
+    assert filled.replace("\n\n" + _EPISODE_BLOCK, "", 1) == empty
+
+    source = inspect.getsource(__import__("agents.learning_agent", fromlist=["_build_system_prompt"]))
+    for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
+        assert name not in source
+
+
+def test_teacher_agent_appends_episode_context_without_fetching(monkeypatch):
+    _patch_progress(monkeypatch)
+    from agents.runtime.loop import LoopResult
+    from agents.teacher_agent import _learner_block, teacher_agent_node
+    import agents.teacher_agent as teacher_agent
+
+    snapshot = {"concept_name": "Torque"}
+    empty = _learner_block(snapshot, "user-a", "sess-1")
+    assert _learner_block(snapshot, "user-a", "sess-1", "") == empty
+    assert _learner_block(snapshot, "user-a", "sess-1", "   ") == empty
+    assert "Past experiences" not in empty
+    assert "First time studying Torque" in empty
+    assert "weak: torque" in empty
+    assert "Just now in Study Room: torque" in empty
+
+    filled = _learner_block(snapshot, "user-a", "sess-1", _EPISODE_BLOCK)
+    assert _EPISODE_BLOCK in filled
+    assert filled.count("Past experiences (this student, not course material):") == 1
+    assert filled.replace("\n\n" + _EPISODE_BLOCK, "", 1) == empty
+
+    captured = {}
+
+    def _loop(**kwargs):
+        captured["prompt"] = kwargs["system_prompt"]
+        return LoopResult(text="", stop_reason="cancelled")
+
+    monkeypatch.setattr(teacher_agent, "run_agent_loop", _loop)
+    monkeypatch.setattr(teacher_agent.db, "read_recent_chat_turns", lambda *args, **kwargs: [])
+
+    state = {
+        "user_id": "user-a",
+        "session_id": "sess-1",
+        "query": "explain torque",
+        "concept_id": "torque",
+        "concept_name": "Torque",
+        "learner_snapshot": snapshot,
+        "current_phase": "learn",
+        "study_mode": "learn",
+        "episode_context": _EPISODE_BLOCK,
+    }
+    result = teacher_agent_node(state)
+    assert result.get("cancelled") is True
+    with_episode = captured["prompt"]
+    assert _EPISODE_BLOCK in with_episode
+    assert with_episode.count("Past experiences (this student, not course material):") == 1
+
+    captured.clear()
+    bare = dict(state)
+    bare.pop("episode_context")
+    teacher_agent_node(bare)
+    without = captured["prompt"]
+    assert "Past experiences" not in without
+    assert with_episode.replace("\n\n" + _EPISODE_BLOCK, "", 1) == without
+
+    source = inspect.getsource(teacher_agent)
+    for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
+        assert name not in source

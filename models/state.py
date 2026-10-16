@@ -102,6 +102,9 @@ class TutorState(TypedDict, total=False):
     # Memories recalled into this turn's prompt, so the Answer Checker can judge
     # the reply against what the tutor claimed to know.
     recalled_memories: List[Dict[str, Any]]
+    # Episodic block for this turn only. Written by memory_recall_node and read
+    # when the Learning Agent builds its prompt. Not carried across turns.
+    episode_context: Optional[str]
     # Observability: an autonomous path cannot be read off a diagram, so it is
     # recorded. e.g. ["tool:resolve_concept", "tool:retrieve_content",
     # "handoff:worked_solution", "check:answer_checker"].
