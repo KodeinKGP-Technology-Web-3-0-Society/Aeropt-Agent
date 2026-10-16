@@ -1178,6 +1178,12 @@ def delete_chat_session(session_id: str, user_id: str) -> Dict[str, Any]:
     except Exception as exc:
         logging.exception("delete failed for session %s", session_id)
         raise HTTPException(status_code=502, detail="Could not delete this chat.") from exc
+    try:
+        from agents.memory_agent import invalidate_session
+
+        invalidate_session(session_id)
+    except Exception:
+        logging.debug("episode invalidation failed for session %s", session_id, exc_info=True)
     release_carry(session_id)
     return {"ok": True, "session_id": session_id}
 
@@ -1761,6 +1767,13 @@ def _discard_stopped_turn(study_session_id: str, session_id: str, final: Dict[st
             ).eq("turn_index", interaction * 2 - 1).eq("role", "user").execute()
         except Exception:
             logging.debug("could not blank stopped turn", exc_info=True)
+        # The assistant episode, if commit already wrote one, is the even index.
+        try:
+            from agents.memory_agent import invalidate_turn
+
+            invalidate_turn(session_id, interaction * 2)
+        except Exception:
+            logging.debug("episode turn invalidation failed", exc_info=True)
     turns = max(0, int(state.get("phase_turns") or 1) - 1)
     db.update_study_session_fields(study_session_id, {"phase_turns": turns})
 

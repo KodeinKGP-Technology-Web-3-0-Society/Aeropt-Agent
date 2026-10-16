@@ -617,7 +617,6 @@ def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
     assert prompt({**base, "episode_context": ""}) == empty
     assert prompt({**base, "episode_context": "   "}) == empty
     assert prompt({**base, "episode_context": None}) == empty
-    assert "Past experiences" not in empty
     assert "likes diagrams" in empty
     assert "weak: torque" in empty
     assert "Progress so far" in empty
@@ -625,7 +624,7 @@ def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
 
     filled = prompt({**base, "episode_context": _EPISODE_BLOCK})
     assert _EPISODE_BLOCK in filled
-    assert filled.count("Past experiences (this student, not course material):") == 1
+    assert filled.count(_EPISODE_BLOCK) == 1
     assert filled.replace("\n\n" + _EPISODE_BLOCK, "", 1) == empty
 
     source = inspect.getsource(__import__("agents.learning_agent", fromlist=["_build_system_prompt"]))
@@ -677,19 +676,41 @@ def test_teacher_agent_appends_episode_context_without_fetching(monkeypatch):
     assert result.get("cancelled") is True
     with_episode = captured["prompt"]
     assert _EPISODE_BLOCK in with_episode
-    assert with_episode.count("Past experiences (this student, not course material):") == 1
+    assert with_episode.count(_EPISODE_BLOCK) == 1
 
     captured.clear()
     bare = dict(state)
     bare.pop("episode_context")
     teacher_agent_node(bare)
     without = captured["prompt"]
-    assert "Past experiences" not in without
+    assert _EPISODE_BLOCK not in without
     assert with_episode.replace("\n\n" + _EPISODE_BLOCK, "", 1) == without
 
     source = inspect.getsource(teacher_agent)
     for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
         assert name not in source
+
+
+def test_speaking_skills_explain_episode_context_without_a_new_token():
+    from pathlib import Path
+
+    from utils.skills import load_skill
+
+    learning = load_skill("learning_agent")["system_prompt"]
+    teacher = load_skill("teacher_agent")["system_prompt"]
+    heading = "Past experiences (this student, not course material):"
+    for prompt in (learning, teacher):
+        assert heading in prompt
+        assert "not course" in prompt
+        assert "recite" in prompt
+        assert "failed" in prompt
+        assert "absent" in prompt
+        assert "{{episode_context}}" not in prompt
+    assert "tool results stay authoritative" in learning
+    assert "phase rules" in teacher
+    assert "open question" in teacher
+    assert "evaluation and progression" in teacher
+    assert not (Path("skills") / "memory_agent.yaml").exists()
 
 
 def test_diagnostic_returns_attempt_id_without_closing(monkeypatch):
