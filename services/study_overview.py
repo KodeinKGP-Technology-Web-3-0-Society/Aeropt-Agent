@@ -28,18 +28,13 @@ _PHASE_WORD = {"learn": "Learn", "examples": "Examples", "practice": "Practice"}
 
 
 def _index() -> Dict[str, Any]:
-    """Chapters and in-syllabus concepts in curriculum order, from the local index."""
+    """Chapters and in-syllabus concepts in curriculum order, from the retrieval database."""
     try:
         from retrieval import store
 
         if not store.index_exists():
             return {"chapters": [], "concepts": {}, "by_chapter": {}}
-        chapters = [
-            dict(r)
-            for r in store.corpus().execute(
-                "SELECT chapter_id, title, unit, jee_unit, in_syllabus, ord FROM chapters ORDER BY CAST(ord AS INTEGER)"
-            )
-        ]
+        chapters = store.chapters()
         concepts = {c["concept_id"]: c for c in store.all_concepts()}
     except Exception:
         logger.debug("concept index unavailable", exc_info=True)
@@ -230,13 +225,7 @@ def _syllabus_topics() -> List[Dict[str, Any]]:
     try:
         from retrieval import store
 
-        return [
-            dict(r)
-            for r in store.corpus().execute(
-                "SELECT unit, unit_ord, topic, topic_ord, concept_id, created, material"
-                " FROM syllabus_topics ORDER BY unit_ord, topic_ord"
-            )
-        ]
+        return store.syllabus_topics()
     except Exception:
         return []  # an index built before the topic layer
 

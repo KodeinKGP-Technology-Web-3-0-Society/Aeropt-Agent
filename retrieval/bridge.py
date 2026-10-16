@@ -1,9 +1,7 @@
-"""Adapter: the local retrieval service, shaped exactly like the GraphRAG node's output.
+"""Adapter: the retrieval service, shaped exactly like the GraphRAG node's output.
 
 `graphrag_retriever_node` returns a specific dict of state updates that the Solver,
-the experts and the Answer Checker all read. The local backend must be a drop-in for
-it — same keys, same meanings — so switching `RETRIEVAL_BACKEND` changes latency and
-coverage, not behaviour.
+the experts and the Answer Checker all read — same keys, same meanings as ever.
 
 What is genuinely new is added, not substituted: `retrieval_citations`,
 `retrieval_novelty` and `retrieval_notes` carry the grounding trail and the
@@ -63,14 +61,14 @@ def _learner_states(user_id: str, concept_id: str, prereqs: list[dict[str, Any]]
 
 
 def retrieve_for_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Run local retrieval for one turn and return GraphRAG-shaped state updates."""
+    """Run retrieval for one turn and return GraphRAG-shaped state updates."""
     from retrieval import service, store
 
     if not store.index_exists():
         return {
             "error": (
-                "Local retrieval index missing. Build it with: "
-                ".venv/bin/python -m local_ingest.build_index"
+                "Retrieval database unavailable: set RETRIEVAL_DATABASE_URL "
+                "(and fill it with `make push`)."
             )
         }
 

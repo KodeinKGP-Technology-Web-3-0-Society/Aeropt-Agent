@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish a service to a Hugging Face Docker Space.
 #
-#   deploy/push_space.sh agent   <hf-user>/aeropt-agent [--include ncert] [--include hcverma]
+#   deploy/push_space.sh agent   <hf-user>/aeropt-agent
 #   deploy/push_space.sh backend <hf-user>/aeropt-api
 #
 # Docker Spaces need a PRO subscription on HF (402 otherwise); deploy/push_render.sh
@@ -16,13 +16,13 @@ shift 2 || true
 case "$SERVICE" in
   agent)   TITLE="Aeropt tutor agent"; PORT=7860 ;;
   backend) TITLE="Aeropt API";         PORT=8000 ;;
-  *) echo "usage: $0 agent|backend <hf-user>/<space> [--include ncert|hcverma ...]" >&2; exit 2 ;;
+  *) echo "usage: $0 agent|backend <hf-user>/<space>" >&2; exit 2 ;;
 esac
 [[ "$SPACE" == */* ]] || { echo "Space id must look like <hf-user>/<space-name>" >&2; exit 2; }
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-stage_service "$SERVICE" "$STAGE" "$@"
+stage_service "$SERVICE" "$STAGE"
 
 # A Space reads its settings from README front matter; the service README is not that.
 cat > "$STAGE/README.md" <<EOF

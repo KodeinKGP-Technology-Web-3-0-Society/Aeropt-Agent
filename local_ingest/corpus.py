@@ -30,6 +30,7 @@ import numpy as np
 from local_ingest.jee_syllabus import alias_index
 from local_ingest.reference_notes import NOTES, REFERENCE_BOOK, REFERENCE_LICENSE
 from local_ingest.syllabus import Chapter, Concept, norm, slug
+from local_ingest import ncert_syllabus
 from retrieval import embedder
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -307,18 +308,26 @@ def _item(
     target_exam: str,
     module_id: str = "",
     candidate_scope: tuple[str, ...] = (),
+    subject: str = "Physics",
+    chapter_id: str = "",
+    chapter_title: str = "",
+    unit: str = "",
 ) -> dict[str, Any]:
     core_text = latex_safe(clean(core_text))
     solution = latex_safe(clean(solution))
     is_question = content_type in {TYPE_EXAMPLE, TYPE_PRACTICE, TYPE_PYQ}
+    cid = (chapter.chapter_id if chapter else "") or chapter_id
+    ctitle = (chapter.title if chapter else "") or chapter_title
+    cunit = ((chapter.jee_unit or chapter.unit) if chapter else "") or unit
     return {
         "content_id": content_id,
         "content_type": content_type,
-        "subject": "Physics",
-        "chapter_id": chapter.chapter_id if chapter else "",
-        "chapter": chapter.title if chapter else "",
-        "unit": (chapter.jee_unit or chapter.unit) if chapter else "",
+        "subject": subject,
+        "chapter_id": cid,
+        "chapter": ctitle,
+        "unit": cunit,
         "in_syllabus": bool(chapter.in_syllabus) if chapter else True,
+
         "heading": heading,
         "core_text": core_text,
         "solution": solution,
@@ -619,27 +628,49 @@ def ncert_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
             continue
         row = json.loads(line)
         ch = chapter_lookup.get(row["chapter_id"])
+        subj = row.get("subject", "Chemistry" if "ch" in row.get("chapter_code", "") else "Physics")
         ref = f"Ch {row['chapter']} · {row.get('section') or ''}".strip(" ·")
-        common = dict(chapter=ch, source_book=row["book"], license_=NCERT_LICENSE,
-                      target_exam=EXAM_BOTH, candidate_scope=(row["unit"],))
+        common = dict(
+            chapter=ch,
+            source_book=row["book"],
+            license_=NCERT_LICENSE,
+            target_exam=EXAM_BOTH,
+            candidate_scope=(row["unit"],),
+            subject=subj,
+            chapter_id=row.get("chapter_id", ""),
+            chapter_title=row.get("chapter", ""),
+            unit=row.get("unit", ""),
+        )
+
+        if subj in ncert_syllabus.SUBJECTS:
+            # Concepts derived from this book (ncert_syllabus.py): map within the row's own
+            # chapter, by the heading it sits under where it has one. Never the physics pool.
+            common["module_id"] = row.get("chapter_id", "")
+            hint = ncert_syllabus.section_hint(row["id"])
+        else:
+            hint = ""
+
         if row["kind"] == "theory":
             heading = f"{row['chapter']} › {row['section']}"
             for k, part in enumerate(_split_theory(row["text"])):
                 item = _item(content_id=f"{row['id']}_{k}", content_type=TYPE_THEORY,
                              core_text=f"{heading}\n\n{part}", solution="", heading=heading,
                              source_ref=ref, difficulty=1, question_type="theory", **common)
-                item["concept_hint"] = row.get("section") or ""
+                item["concept_hint"] = hint or row.get("section") or ""
                 items.append(item)
         else:
             example = row["kind"] == "example"
             label = f"{'Example' if example else 'Exercise'} {row['number']}"
-            items.append(_item(
+            item = _item(
                 content_id=row["id"], content_type=TYPE_EXAMPLE if example else TYPE_PRACTICE,
                 core_text=row["question"], solution=row.get("solution") or "",
                 heading=f"NCERT {label} · {row['chapter']}", source_ref=f"{ref} · {label}",
                 difficulty=2 if example else 3, question_type="worked_example" if example else "exercise",
                 **common,
-            ))
+            )
+            if hint:
+                item["concept_hint"] = hint
+            items.append(item)
     return items
 
 
@@ -854,7 +885,11 @@ def map_concepts(
         by_chapter.setdefault(c.chapter_id, []).append(i)
         if c.in_syllabus:
             by_unit.setdefault(c.unit, []).append(i)
-    in_scope = [i for i, c in enumerate(concepts) if c.in_syllabus]
+    # The last-resort pool is per subject: a physics item must never land on a chemistry concept.
+    in_scope_by_subject: dict[str, list[int]] = {}
+    for i, c in enumerate(concepts):
+        if c.in_syllabus:
+            in_scope_by_subject.setdefault(c.subject, []).append(i)
     chapter_of = {ch.chapter_id: ch for ch in chapters}
 
     texts = [
@@ -890,6 +925,7 @@ def map_concepts(
         scope_rows: list[int] = []
         for unit in it.get("candidate_scope") or []:
             scope_rows.extend(by_unit.get(unit, []))
+        in_scope = in_scope_by_subject.get(it.get("subject") or "Physics", [])
         candidates = module_rows or scope_rows or chapter_rows or in_scope
         # A module's own concepts are the best answer when they exist, but a
         # section can teach a concept defined in a sibling module, so the chapter
@@ -897,6 +933,9 @@ def map_concepts(
         pool = sorted(set(candidates) | set(chapter_rows)) if module_rows else sorted(set(candidates))
         if not pool:
             pool = in_scope
+        # Never across subjects, whatever the chapter/unit lookups said.
+        same_subject = [j for j in pool if concepts[j].subject == (it.get("subject") or "Physics")]
+        pool = same_subject or in_scope
         sims = concept_vecs[pool] @ item_vecs[i]
         order = np.argsort(-sims)
         best = pool[order[0]]
@@ -925,15 +964,18 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
     chapters: list[Chapter] = syllabus["chapters"]
     concepts: list[Concept] = syllabus["concepts"]
     chapter_lookup = {ch.chapter_id: ch for ch in chapters}
+    # Physics-only sources classify into physics chapters only ("half-life" is also a
+    # chemical-kinetics heading); NCERT rows carry their own subject and chapter.
+    physics_lookup = {cid: ch for cid, ch in chapter_lookup.items() if ch.subject == "Physics"}
 
-    items = openstax_items(chapters, syllabus["modules"])
-    items += hf_pyq_items(chapter_lookup)
+    items = openstax_items([ch for ch in chapters if ch.subject == "Physics"], syllabus["modules"])
+    items += hf_pyq_items(physics_lookup)
     items += ncert_items(chapter_lookup)
-    items += hcverma_items(chapter_lookup)
-    official = official_exam_items(chapter_lookup)
+    items += hcverma_items(physics_lookup)
+    official = official_exam_items(physics_lookup)
     items += official
     items += jeebench_items({f"JEE Adv {it['source_book'].split()[2]} Paper {it['source_book'].split()[-1]}" for it in official})
-    items += reference_items(chapter_lookup)
+    items += reference_items(physics_lookup)
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}

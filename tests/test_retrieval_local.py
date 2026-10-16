@@ -7,7 +7,10 @@ These assert the four properties the pipeline exists to guarantee:
   3. a question is never served to the same student twice;
   4. turns that need no retrieval do not retrieve.
 
-They skip if the index has not been built — `python -m local_ingest.build_index`.
+They run against the retrieval Postgres (RETRIEVAL_DATABASE_URL, filled by `make push`)
+and skip when it is not configured. Point it at the local Supabase, not the deployed one,
+for CI. The novelty ledger is kept in memory here (AEROPT_LEDGER=memory, tests/conftest.py)
+so test learners are never written to the user database.
 """
 
 from __future__ import annotations
@@ -17,8 +20,13 @@ import pytest
 from retrieval import gate, store
 
 pytestmark = pytest.mark.skipif(
-    not store.index_exists(), reason="local index not built (python -m local_ingest.build_index)"
+    not store.index_exists(), reason="retrieval database not configured (RETRIEVAL_DATABASE_URL + make push)"
 )
+
+
+def _one(sql: str, params=None) -> dict:
+    rows = store.query(sql, params)
+    return rows[0] if rows else None
 
 IN_SYLLABUS = [
     "what is the work energy theorem",
@@ -61,11 +69,25 @@ def test_off_syllabus_queries_stay_unresolved():
 
 
 def test_weak_grounding_is_labelled_not_presented_as_course_material():
-    """Another subject may resolve weakly; it must not come back as confident."""
+    """A subject the corpus does not cover (maths) may resolve weakly; it must not come back as confident."""
     from retrieval import service
 
-    pack = service.retrieve("benzene resonance structures", user_id="", mark=False)
+    pack = service.retrieve("integrate x squared by parts", user_id="", mark=False)
     assert pack["confidence"] != "ok" or pack["notes"]
+
+
+def test_chemistry_is_answered_from_chemistry():
+    """Chemistry (NCERT) and physics share one corpus; a chemistry question gets chemistry material,
+    and nothing is ever linked to a concept of the other subject."""
+    from retrieval import service
+
+    pack = service.retrieve("explain aufbau principle and hund's rule", user_id="", mark=False)
+    assert pack["chunks"] and all(c["subject"] == "Chemistry" for c in pack["chunks"])
+    crossed = _one(
+        "select count(*) as n from public.chunk_concepts cc join public.content c using (content_id)"
+        " join public.concepts k on k.concept_id = cc.concept_id where k.subject <> c.subject"
+    )["n"]
+    assert crossed == 0
 
 
 # ── 2. citations ──────────────────────────────────────────────────────────────
@@ -80,9 +102,7 @@ def test_every_chunk_carries_a_citation():
 
 
 def test_out_of_jee_syllabus_content_is_flagged():
-    rows = store.corpus().execute(
-        "SELECT count(*) AS n FROM chunks WHERE in_syllabus = 0"
-    ).fetchone()
+    rows = _one("select count(*) as n from public.content where not coalesce(in_syllabus, true)")
     assert rows["n"] > 0, "nothing marked out of syllabus — the scope map is not being applied"
 
 
@@ -132,10 +152,10 @@ def test_practice_batch_returns_only_unseen_questions():
 
     user = "test-batch-user"
     service.forget(user)
-    concept = store.corpus().execute(
-        "SELECT concept_id FROM chunks WHERE is_question = 1 AND has_solution = 1 "
-        "GROUP BY concept_id ORDER BY count(*) DESC LIMIT 1"
-    ).fetchone()["concept_id"]
+    concept = _one(
+        "select primary_concept_id as concept_id from public.content where is_question and has_solution"
+        " group by 1 order by count(*) desc limit 1"
+    )["concept_id"]
     first = service.practice_batch(user_id=user, concept_id=concept, count=3)
     second = service.practice_batch(user_id=user, concept_id=concept, count=3)
     overlap = {q["content_id"] for q in first["questions"]} & {
@@ -156,12 +176,10 @@ def test_draining_a_concept_is_declared_not_hidden():
 
     user = "test-exhausted-user"
     service.forget(user)
-    concept = store.corpus().execute(
-        """
-        SELECT concept_id FROM chunks WHERE is_question = 1
-        GROUP BY concept_id HAVING count(*) BETWEEN 2 AND 6 LIMIT 1
-        """
-    ).fetchone()["concept_id"]
+    concept = _one(
+        "select primary_concept_id as concept_id from public.content where is_question"
+        " group by 1 having count(*) between 2 and 6 order by 1 limit 1"
+    )["concept_id"]
     declared = False
     for _ in range(14):
         pack = service.retrieve(
@@ -248,27 +266,25 @@ def test_reuse_downgrades_to_retrieve_when_the_topic_moves():
 
 # ── index integrity ───────────────────────────────────────────────────────────
 def test_index_is_internally_consistent():
-    conn = store.corpus()
     meta = store.meta()
-    chunks = conn.execute("SELECT count(*) AS n FROM chunks").fetchone()["n"]
-    assert chunks == meta["chunks"]
-    assert store.vectors().shape[0] == chunks
-    assert store.concept_vectors().shape[0] == meta["concepts"]
-    orphans = conn.execute(
-        "SELECT count(*) AS n FROM chunks c LEFT JOIN concepts k ON k.concept_id = c.concept_id "
-        "WHERE k.concept_id IS NULL"
-    ).fetchone()["n"]
+    chunks = _one("select count(*) as n from public.content")["n"]
+    assert chunks == meta["content_rows"]
+    assert _one("select count(*) as n from public.content where embedding is null")["n"] == 0
+    assert store.concept_vectors().shape[0] == len(store.all_concepts())
+    orphans = _one(
+        "select count(*) as n from public.content c left join public.concepts k on k.concept_id = c.primary_concept_id"
+        " where k.concept_id is null"
+    )["n"]
     assert orphans == 0, f"{orphans} chunks point at a concept that does not exist"
-    dangling = conn.execute(
-        "SELECT count(*) AS n FROM concept_edges e LEFT JOIN concepts k ON k.concept_id = e.requires "
-        "WHERE k.concept_id IS NULL"
-    ).fetchone()["n"]
+    dangling = _one(
+        "select count(*) as n from public.concept_edges e left join public.concepts k on k.concept_id = e.requires"
+        " where k.concept_id is null"
+    )["n"]
     assert dangling == 0
 
 
 def test_prerequisite_graph_is_acyclic():
-    conn = store.corpus()
-    edges = conn.execute("SELECT concept_id, requires FROM concept_edges").fetchall()
+    edges = store.query("select concept_id, requires from public.concept_edges")
     graph: dict[str, list[str]] = {}
     for row in edges:
         graph.setdefault(row["concept_id"], []).append(row["requires"])
@@ -289,25 +305,24 @@ def test_prerequisite_graph_is_acyclic():
 
 def test_every_in_syllabus_concept_has_material():
     """Every textbook concept has content. JEE syllabus topics the textbook never
-    teaches (local_ingest/syllabus_topics.py: lab experiments, logic gates) are
+    teaches (local_ingest/pg_syllabus_topics.py: lab experiments, logic gates) are
     the one allowed exception, and only when recorded as such."""
-    conn = store.corpus()
-    bare = conn.execute(
+    bare = _one(
         """
-        SELECT count(*) AS n FROM concepts k
-        WHERE k.in_syllabus = 1 AND k.source <> 'syllabus'
-          AND NOT EXISTS (SELECT 1 FROM chunk_concepts cc WHERE cc.concept_id = k.concept_id)
+        select count(*) as n from public.concepts k
+        where k.in_syllabus and k.source <> 'syllabus'
+          and not exists (select 1 from public.chunk_concepts cc where cc.concept_id = k.concept_id)
         """
-    ).fetchone()["n"]
+    )["n"]
     assert bare == 0, f"{bare} in-syllabus concepts have no content at all"
-    unrecorded = conn.execute(
+    unrecorded = _one(
         """
-        SELECT count(*) AS n FROM concepts k
-        WHERE k.source = 'syllabus'
-          AND NOT EXISTS (SELECT 1 FROM chunk_concepts cc WHERE cc.concept_id = k.concept_id)
-          AND NOT EXISTS (SELECT 1 FROM syllabus_topics t WHERE t.concept_id = k.concept_id AND t.material < 3)
+        select count(*) as n from public.concepts k
+        where k.source = 'syllabus'
+          and not exists (select 1 from public.chunk_concepts cc where cc.concept_id = k.concept_id)
+          and not exists (select 1 from public.syllabus_topics t where t.concept_id = k.concept_id and t.material < 3)
         """
-    ).fetchone()["n"]
+    )["n"]
     assert unrecorded == 0, f"{unrecorded} syllabus topics have no material and are not marked tutor-taught"
 
 
@@ -315,13 +330,12 @@ def test_syllabus_topics_cover_the_jee_main_units():
     """All 20 JEE Main units (NTA 2026-27) are present, each topic resolvable."""
     from local_ingest.jee_topics import JEE_TOPICS
 
-    conn = store.corpus()
-    units = [r["unit"] for r in conn.execute("SELECT DISTINCT unit FROM syllabus_topics ORDER BY unit_ord")]
+    units = list(dict.fromkeys(t["unit"] for t in store.syllabus_topics("Physics")))
     assert units == [u for u, _ in JEE_TOPICS]
-    missing = conn.execute(
-        "SELECT count(*) AS n FROM syllabus_topics t LEFT JOIN concepts k ON k.concept_id = t.concept_id "
-        "WHERE k.concept_id IS NULL"
-    ).fetchone()["n"]
+    missing = _one(
+        "select count(*) as n from public.syllabus_topics t left join public.concepts k on k.concept_id = t.concept_id"
+        " where k.concept_id is null"
+    )["n"]
     assert missing == 0
 
 
@@ -343,9 +357,7 @@ def test_retrieval_is_fast():
 def test_local_graph_client_answers_the_neo4j_surface():
     from retrieval.local_graph import graph
 
-    concept = store.corpus().execute(
-        "SELECT concept_id FROM concept_edges LIMIT 1"
-    ).fetchone()["concept_id"]
+    concept = _one("select concept_id from public.concept_edges order by 1 limit 1")["concept_id"]
     assert graph.ping()
     assert graph.get_prerequisite_concepts(concept)
     assert graph.get_content_ids_for_concept(concept, content_type="theory", limit=3)
@@ -356,22 +368,20 @@ def test_local_graph_client_answers_the_neo4j_surface():
 
 
 def test_local_graph_client_refuses_foreign_vectors():
-    """A hosted 3072-d vector against a 256-d index must fail loudly, not rank noise."""
+    """A 3072-d (Gemini-sized) vector against the 256-d corpus must fail loudly, not rank noise."""
+    from retrieval import embedder
     from retrieval.local_graph import graph
 
-    with pytest.raises(ValueError, match="not comparable"):
+    with pytest.raises(embedder.EmbeddingMismatch, match="256-d"):
         graph.vector_search(query_vector=[0.1] * 3072, top_k=3)
 
 
 def test_follow_up_candidates_exclude_seen_ids():
     from retrieval.local_graph import graph
 
-    concept = store.corpus().execute(
-        """
-        SELECT concept_id FROM chunk_concepts GROUP BY concept_id
-        HAVING count(*) > 4 LIMIT 1
-        """
-    ).fetchone()["concept_id"]
+    concept = _one(
+        "select concept_id from public.chunk_concepts group by 1 having count(*) > 4 order by 1 limit 1"
+    )["concept_id"]
     first = graph.get_content_ids_for_follow_up(concept, seen_ids=[], difficulty_max=5, limit=4)
     assert first
     later = graph.get_content_ids_for_follow_up(
@@ -423,18 +433,16 @@ def test_advanced_questions_are_pitched_higher_than_main():
 def test_no_syllabus_topic_is_left_without_material():
     """Every JEE topic has at least one passage, so the tutor never teaches one
     from recall alone (local_ingest/reference_notes.py covers what no source does)."""
-    conn = store.corpus()
-    bare = [r["topic"] for r in conn.execute("SELECT topic FROM syllabus_topics WHERE material = 0")]
+    bare = [t["topic"] for t in store.syllabus_topics() if t["material"] == 0]
     assert bare == []
 
 
 def test_reference_notes_render():
     from utils.latex_guidelines import find_latex_issues
 
-    conn = store.corpus()
-    rows = conn.execute(
-        "SELECT content_id, core_text FROM chunks WHERE source_book = 'Aeropt JEE reference notes'"
-    ).fetchall()
+    rows = store.query(
+        "select content_id, core_text from public.content where source_book = 'Aeropt JEE reference notes'"
+    )
     assert rows
     broken = {r["content_id"]: find_latex_issues(r["core_text"]) for r in rows}
     assert not {k: v for k, v in broken.items() if v}
@@ -444,30 +452,29 @@ def test_questions_whose_figure_is_missing_are_not_served():
     """A question that says 'the following circuit' with no circuit makes the model
     invent one. Such questions are dropped at ingest, and solutions that lost their
     working to images are cut back to the answer key."""
-    conn = store.corpus()
-    leaked = conn.execute(
-        "SELECT count(*) AS n FROM chunks WHERE is_question = 1 AND "
-        "(core_text LIKE '%[IMAGE]%' OR solution LIKE '%[IMAGE]%' "
-        " OR (license = 'coaching test paper' AND solution LIKE '%= =%'))"
-    ).fetchone()["n"]
+    leaked = _one(
+        "select count(*) as n from public.content where is_question and "
+        "(core_text like '%%[IMAGE]%%' or solution like '%%[IMAGE]%%' "
+        " or (license = 'coaching test paper' and solution like '%%= =%%'))", ()
+    )["n"]
     assert leaked == 0
 
 
 def test_textbook_figures_are_described_in_text():
-    conn = store.corpus()
-    row = conn.execute(
-        "SELECT core_text FROM chunks WHERE core_text LIKE '%acceleration of the body of mass 10.0 kg shown below%'"
-    ).fetchone()
+    row = _one(
+        "select core_text from public.content where core_text like %s",
+        ("%acceleration of the body of mass 10.0 kg shown below%",),
+    )
     assert row and "[Figure:" in row["core_text"] and "37 degrees" in row["core_text"]
 
 
 def test_test_papers_are_not_passed_off_as_official_pyqs():
     from retrieval import service
 
-    conn = store.corpus()
-    mislabelled = conn.execute(
-        "SELECT count(*) AS n FROM chunks WHERE license = 'coaching test paper' AND heading LIKE '%PYQ%'"
-    ).fetchone()["n"]
+    mislabelled = _one(
+        "select count(*) as n from public.content where license = 'coaching test paper' and heading like %s",
+        ("%PYQ%",),
+    )["n"]
     assert mislabelled == 0
     pack = service.retrieve("pyq on surface tension", user_id="", content_type="pyq", mark=False)
     if any(c["license"] == "coaching test paper" for c in pack["chunks"]):
@@ -502,8 +509,7 @@ def test_paper_references_are_parsed():
 def test_a_named_official_question_comes_back_exactly_or_not_at_all():
     from retrieval import exam_refs, service
 
-    conn = store.corpus()
-    row = conn.execute("SELECT content_id FROM chunks WHERE content_id LIKE 'pyq_jee_adv_%' LIMIT 1").fetchone()
+    row = _one("select content_id from public.content where content_id like %s order by 1 limit 1", ("pyq_jee_adv_%",))
     if row is None:
         pytest.skip("no official papers ingested (python -m local_ingest.exams)")
     year, paper, q = row["content_id"].split("_")[3], row["content_id"].split("_")[4][1], row["content_id"].split("q")[-1]

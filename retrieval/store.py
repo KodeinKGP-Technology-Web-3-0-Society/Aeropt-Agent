@@ -1,390 +1,343 @@
-"""The local index: SQLite for structure and lexical search, .npy for dense vectors.
+"""Retrieval storage: the Supabase retrieval Postgres (pgvector). No SQLite, no .npy.
 
-Two files, two lifetimes, on purpose:
+Two databases, two owners, never mixed:
 
-  index/corpus.sqlite3   rebuilt from scratch by every ingest (content is derived)
-  index/ledger.sqlite3   never rebuilt (what a student has already been served)
+  RETRIEVAL_DATABASE_URL   the corpus — content, concepts, chapters, concept_edges,
+                           chunk_concepts, syllabus_topics, retrieval_meta. Read-only at
+                           runtime; written only by `make push` (local_ingest/push_index.py).
+  user-data Supabase       the novelty ledger (`public.served_items`, via services/durable_state):
+                           what each learner has already been served. Survives every corpus
+                           rebuild because it is keyed by content_id, not by row position.
 
-That split is what makes "don't show me the same question again" survive a corpus
-rebuild. The ledger is the only table the retrieval path writes to.
+Rows come back in the shape the pipeline has always used (`concept_id`, `name`, `secondary`,
+`structured` as JSON text, integer flags), so resolver/search/service read the same keys.
+
+What is cached in-process, and why it is safe: the concept table (≈1.1k rows incl. vectors,
+used by the resolver on every turn), chapters and syllabus topics. They change only when a
+push lands, and a push bumps `retrieval_meta.built_at`, which is re-checked every
+CACHE_CHECK_SECONDS. Content (13k+ rows, growing per subject) is never cached: dense and
+lexical scoring run in SQL.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
-import sqlite3
 import threading
 import time
-from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from services import durable_state
+from retrieval import embedder
 
-ROOT = Path(__file__).resolve().parents[1]
-INDEX_DIR = Path(os.getenv("AEROPT_INDEX_DIR", ROOT / ".local-run" / "index"))
-CORPUS_DB = INDEX_DIR / "corpus.sqlite3"
-LEDGER_DB = Path(os.getenv("AEROPT_LEDGER_PATH", INDEX_DIR / "ledger.sqlite3"))
-VECTORS = INDEX_DIR / "vectors.npy"
-CONCEPT_VECTORS = INDEX_DIR / "concept_vectors.npy"
+logger = logging.getLogger("aeropt.retrieval.store")
 
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CACHE_CHECK_SECONDS = 300
+LEDGER_REFRESH_SECONDS = 120
 
-CREATE TABLE IF NOT EXISTS chapters (
-  chapter_id  TEXT PRIMARY KEY,
-  title       TEXT,
-  volume      TEXT,
-  unit        TEXT,
-  jee_unit    TEXT,
-  in_syllabus INTEGER,
-  ord         INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS concepts (
-  concept_id  TEXT PRIMARY KEY,
-  name        TEXT,
-  definition  TEXT,
-  chapter_id  TEXT,
-  chapter     TEXT,
-  unit        TEXT,
-  in_syllabus INTEGER,
-  ord         INTEGER,
-  aliases     TEXT,
-  source      TEXT,
-  vec_row     INTEGER
-);
-CREATE INDEX IF NOT EXISTS ix_concepts_chapter ON concepts(chapter_id);
-
-CREATE TABLE IF NOT EXISTS concept_edges (
-  concept_id TEXT,
-  requires   TEXT,
-  PRIMARY KEY (concept_id, requires)
-);
-CREATE INDEX IF NOT EXISTS ix_edges_requires ON concept_edges(requires);
-
-CREATE TABLE IF NOT EXISTS chunks (
-  content_id    TEXT PRIMARY KEY,
-  vec_row       INTEGER,
-  content_type  TEXT,
-  subject       TEXT,
-  chapter_id    TEXT,
-  chapter       TEXT,
-  unit          TEXT,
-  concept_id    TEXT,
-  secondary     TEXT,
-  source_book   TEXT,
-  source_ref    TEXT,
-  license       TEXT,
-  difficulty    INTEGER,
-  question_type TEXT,
-  target_exam   TEXT,
-  in_syllabus   INTEGER,
-  has_solution  INTEGER,
-  is_question   INTEGER,
-  heading       TEXT,
-  core_text     TEXT,
-  solution      TEXT,
-  fingerprint   TEXT,
-  token_len     INTEGER,
-  structured    TEXT   -- questions: {"stem","figure","options":[{"label","text"}],"answer":{...}} (JSON)
-);
-CREATE INDEX IF NOT EXISTS ix_chunks_concept ON chunks(concept_id, content_type);
-CREATE INDEX IF NOT EXISTS ix_chunks_chapter ON chunks(chapter_id, content_type);
-CREATE INDEX IF NOT EXISTS ix_chunks_fp ON chunks(fingerprint);
-CREATE INDEX IF NOT EXISTS ix_chunks_question ON chunks(is_question, concept_id);
-
-CREATE TABLE IF NOT EXISTS chunk_concepts (
-  content_id TEXT,
-  concept_id TEXT,
-  role       TEXT,
-  PRIMARY KEY (content_id, concept_id)
-);
-CREATE INDEX IF NOT EXISTS ix_chunk_concepts_concept ON chunk_concepts(concept_id);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  body, heading, concept, tokenize='porter unicode61'
-);
+# The content row as the pipeline reads it. `c` is public.content.
+CHUNK_COLUMNS = """
+    c.content_id, c.content_type, c.subject, c.chapter_id, c.chapter, c.unit,
+    c.primary_concept_id AS concept_id, c.secondary_concepts AS secondary,
+    c.source_book, c.source_ref, c.license, c.difficulty, c.question_type, c.target_exam,
+    coalesce(c.in_syllabus, true)::int AS in_syllabus, coalesce(c.has_solution, false)::int AS has_solution,
+    coalesce(c.is_question, false)::int AS is_question, c.heading, c.core_text,
+    coalesce(c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
 """
 
-LEDGER_SCHEMA = """
-PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS served (
-  user_id     TEXT,
-  content_id  TEXT,
-  concept_id  TEXT,
-  content_type TEXT,
-  purpose     TEXT,
-  fingerprint TEXT,
-  served_at   REAL,
-  times       INTEGER DEFAULT 1,
-  PRIMARY KEY (user_id, content_id)
-);
-CREATE INDEX IF NOT EXISTS ix_served_user ON served(user_id, served_at DESC);
-CREATE INDEX IF NOT EXISTS ix_served_fp ON served(user_id, fingerprint);
-CREATE INDEX IF NOT EXISTS ix_served_concept ON served(user_id, concept_id);
-"""
 
-_local = threading.local()
+class RetrievalUnavailable(RuntimeError):
+    """The retrieval database is not configured or not reachable."""
 
 
-def _connect(path: Path, schema: str | None = None, *, read_only: bool = False) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if read_only and path.exists():
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
-    else:
-        conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    if schema and not read_only:
-        conn.executescript(schema)
-    return conn
+# ── connection ────────────────────────────────────────────────────────────────
+_pool = None
+_pool_lock = threading.Lock()
 
 
-def corpus(read_only: bool = True) -> sqlite3.Connection:
-    """Per-thread read connection to the corpus index."""
-    key = "corpus_ro" if read_only else "corpus_rw"
-    conn = getattr(_local, key, None)
-    if conn is None:
-        conn = _connect(CORPUS_DB, None if read_only else SCHEMA, read_only=read_only)
-        setattr(_local, key, conn)
-    return conn
+def database_url() -> str:
+    return os.getenv("RETRIEVAL_DATABASE_URL", "").strip()
 
 
-def ledger() -> sqlite3.Connection:
-    conn = getattr(_local, "ledger", None)
-    if conn is None:
-        conn = _connect(LEDGER_DB, LEDGER_SCHEMA)
-        setattr(_local, "ledger", conn)
-    return conn
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                url = database_url()
+                if not url:
+                    raise RetrievalUnavailable("RETRIEVAL_DATABASE_URL is not set")
+                from psycopg2.pool import ThreadedConnectionPool
+
+                _pool = ThreadedConnectionPool(1, int(os.getenv("RETRIEVAL_DB_POOL", "8")), url, connect_timeout=10)
+    return _pool
 
 
-def index_exists() -> bool:
-    return CORPUS_DB.exists() and VECTORS.exists()
+@contextmanager
+def _cursor():
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    pool = _get_pool()
+    conn = pool.getconn()
+    broken = False
+    try:
+        conn.autocommit = True  # read path; works through Supabase's transaction pooler
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            yield cur
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        broken = True
+        raise
+    finally:
+        pool.putconn(conn, close=broken or bool(conn.closed))
 
 
-# ── vectors ───────────────────────────────────────────────────────────────────
-_vectors: np.ndarray | None = None
-_concept_vectors: np.ndarray | None = None
+def query(sql: str, params: Sequence[Any] | dict | None = None) -> list[dict[str, Any]]:
+    """Run one read query against the retrieval database. Retries once on a dropped connection."""
+    import psycopg2
+
+    for attempt in (1, 2):
+        try:
+            with _cursor() as cur:
+                cur.execute(sql, params)
+                return [dict(r) for r in cur.fetchall()] if cur.description else []
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            if attempt == 2:
+                raise
+    return []
 
 
-def vectors() -> np.ndarray:
-    global _vectors
-    if _vectors is None:
-        _vectors = np.load(VECTORS)
-    return _vectors
+def parse_vector(raw: Any) -> np.ndarray:
+    """pgvector text ('[0.1,0.2,...]') -> float32 array."""
+    if raw is None:
+        return np.zeros(embedder.DIM, dtype=np.float32)
+    if isinstance(raw, str):
+        return np.fromstring(raw.strip("[]"), sep=",", dtype=np.float32)
+    return np.asarray(raw, dtype=np.float32)
 
 
-def concept_vectors() -> np.ndarray:
-    global _concept_vectors
-    if _concept_vectors is None:
-        _concept_vectors = np.load(CONCEPT_VECTORS)
-    return _concept_vectors
+# ── embedding contract ────────────────────────────────────────────────────────
+def verify_embedding_contract() -> dict[str, Any]:
+    """Refuse to serve when stored vectors are not from embedder.MODEL_ID / embedder.DIM."""
+    width = query(
+        "select format_type(atttypid, atttypmod) as t from pg_attribute"
+        " where attrelid = 'public.content'::regclass and attname = 'embedding'"
+    )
+    found = width[0]["t"] if width else None
+    if found != f"vector({embedder.DIM})":
+        raise embedder.EmbeddingMismatch(f"content.embedding is {found}, embedder is {embedder.DIM}-d")
+    models = query(
+        "select embed_model, count(*) as n from public.content where embedding is not null group by 1"
+        " union all "
+        "select embed_model, count(*) as n from public.concepts where embedding is not null group by 1"
+    )
+    foreign = {r["embed_model"]: r["n"] for r in models if r["embed_model"] != embedder.MODEL_ID}
+    if foreign:
+        raise embedder.EmbeddingMismatch(
+            f"retrieval DB holds vectors from {foreign}; queries use {embedder.MODEL_ID}. Run `make push`."
+        )
+    return {"model": embedder.MODEL_ID, "dimension": embedder.DIM}
+
+
+# ── in-process caches (concepts, chapters, topics) ────────────────────────────
+_cache: dict[str, Any] = {}
+_cache_lock = threading.Lock()
+
+
+def _version() -> str:
+    rows = query("select value from public.retrieval_meta where key = 'built_at'")
+    return rows[0]["value"] if rows else ""
+
+
+def _fresh() -> dict[str, Any]:
+    """The cache, reloaded when a push has landed since it was filled."""
+    now = time.time()
+    if _cache and now - _cache["checked_at"] < CACHE_CHECK_SECONDS:
+        return _cache
+    with _cache_lock:
+        if _cache and now - _cache["checked_at"] < CACHE_CHECK_SECONDS:
+            return _cache
+        version = _version()
+        if _cache and _cache.get("version") == version:
+            _cache["checked_at"] = now
+            return _cache
+        rows = query(
+            "select concept_id, concept_name as name, definition, chapter_id, chapter, unit, subject,"
+            " coalesce(in_syllabus, true)::int as in_syllabus, ord, coalesce(aliases, '[]'::jsonb)::text as aliases,"
+            " source, embedding::text as embedding from public.concepts order by ord nulls last, concept_id"
+        )
+        vecs = np.zeros((len(rows), embedder.DIM), dtype=np.float32)
+        for i, r in enumerate(rows):
+            vecs[i] = parse_vector(r.pop("embedding"))
+            r["vec_row"] = i  # row in concept_vectors(); valid for this cache generation only
+        chapters = query(
+            "select chapter_id, subject, title, volume, unit, jee_unit, coalesce(in_syllabus, true)::int as in_syllabus,"
+            " ord from public.chapters order by ord nulls last, chapter_id"
+        )
+        topics = query(
+            "select subject, unit, unit_ord, topic, topic_ord, concept_id, chapter_id, created::int as created,"
+            " material from public.syllabus_topics order by subject, unit_ord, topic_ord"
+        )
+        generation = _cache.get("generation", 0) + 1
+        _cache.clear()
+        _cache.update(
+            version=version, checked_at=now, concepts=rows, concept_vectors=vecs,
+            by_id={r["concept_id"]: r for r in rows}, chapters=chapters, topics=topics,
+            generation=generation,
+        )
+        return _cache
+
+
+def cache_generation() -> int:
+    """Bumped whenever the concept cache is reloaded. Anything derived from concept rows or
+    `vec_row` (the resolver's lexicon) rebuilds when this changes — it never calls back in here."""
+    return _fresh()["generation"]
 
 
 def reset_caches() -> None:
-    global _vectors, _concept_vectors
-    _vectors = None
-    _concept_vectors = None
-    for key in ("corpus_ro", "corpus_rw", "ledger"):
-        conn = getattr(_local, key, None)
-        if conn is not None:
-            conn.close()
-            setattr(_local, key, None)
+    with _cache_lock:
+        _cache.clear()
+    with _ledger_lock:
+        _ledger.clear()
 
 
-# ── meta ──────────────────────────────────────────────────────────────────────
+def index_exists() -> bool:
+    """True when the retrieval database is configured, reachable and holds a corpus."""
+    try:
+        return bool(_fresh()["concepts"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("retrieval database unavailable: %s", str(exc)[:200])
+        return False
+
+
 def meta() -> dict[str, Any]:
     try:
-        rows = corpus().execute("SELECT key, value FROM meta").fetchall()
-    except sqlite3.Error:
+        rows = query("select key, value from public.retrieval_meta")
+    except Exception:  # noqa: BLE001
         return {}
     out: dict[str, Any] = {}
     for row in rows:
         try:
             out[row["key"]] = json.loads(row["value"])
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             out[row["key"]] = row["value"]
     return out
 
 
-# ── reads used by retrieval ───────────────────────────────────────────────────
+# ── concepts / graph ──────────────────────────────────────────────────────────
+def concept_vectors() -> np.ndarray:
+    """(n_concepts, DIM), row i = all_concepts()[i] (`vec_row`)."""
+    return _fresh()["concept_vectors"]
+
+
 def concept(concept_id: str) -> dict[str, Any] | None:
-    row = corpus().execute(
-        "SELECT * FROM concepts WHERE concept_id = ?", (concept_id,)
-    ).fetchone()
+    row = _fresh()["by_id"].get(concept_id)
     return dict(row) if row else None
 
 
 def concepts_by_ids(ids: Sequence[str]) -> list[dict[str, Any]]:
-    if not ids:
-        return []
-    marks = ",".join("?" * len(ids))
-    rows = corpus().execute(
-        f"SELECT * FROM concepts WHERE concept_id IN ({marks})", tuple(ids)
-    ).fetchall()
-    order = {cid: i for i, cid in enumerate(ids)}
-    return sorted((dict(r) for r in rows), key=lambda r: order.get(r["concept_id"], 999))
+    by_id = _fresh()["by_id"]
+    return [dict(by_id[c]) for c in dict.fromkeys(ids) if c in by_id]
 
 
 def all_concepts() -> list[dict[str, Any]]:
-    return [dict(r) for r in corpus().execute("SELECT * FROM concepts ORDER BY ord, concept_id")]
+    return [dict(r) for r in _fresh()["concepts"]]
+
+
+def chapters() -> list[dict[str, Any]]:
+    return [dict(r) for r in _fresh()["chapters"]]
+
+
+def syllabus_topics(subject: str | None = None) -> list[dict[str, Any]]:
+    return [dict(r) for r in _fresh()["topics"] if not subject or r["subject"] == subject]
 
 
 def prerequisites(concept_id: str, max_depth: int = 2) -> list[dict[str, Any]]:
-    """Concepts this one depends on, closest first, breadth-first to max_depth."""
-    seen: dict[str, int] = {}
-    frontier = [concept_id]
-    for hop in range(1, max_depth + 1):
-        if not frontier:
-            break
-        marks = ",".join("?" * len(frontier))
-        rows = corpus().execute(
-            f"SELECT concept_id, requires FROM concept_edges WHERE concept_id IN ({marks})",
-            tuple(frontier),
-        ).fetchall()
-        nxt: list[str] = []
-        for row in rows:
-            dep = row["requires"]
-            if dep == concept_id or dep in seen:
-                continue
-            seen[dep] = hop
-            nxt.append(dep)
-        frontier = nxt
-    if not seen:
+    """Concepts this one depends on, closest first, breadth-first to max_depth (one query)."""
+    if not concept_id:
         return []
-    details = {c["concept_id"]: c for c in concepts_by_ids(list(seen))}
-    out = [
-        {
-            "concept_id": cid,
-            "concept_name": details.get(cid, {}).get("name", cid),
-            "hop_count": hop,
-        }
-        for cid, hop in seen.items()
+    rows = query(
+        """
+        with recursive walk(concept_id, hop) as (
+            select requires, 1 from public.concept_edges where concept_id = %(c)s
+            union
+            select e.requires, w.hop + 1 from public.concept_edges e
+            join walk w on e.concept_id = w.concept_id where w.hop < %(d)s
+        )
+        select concept_id, min(hop) as hop_count from walk where concept_id <> %(c)s
+        group by concept_id order by 2, 1
+        """,
+        {"c": concept_id, "d": max_depth},
+    )
+    by_id = _fresh()["by_id"]
+    return [
+        {"concept_id": r["concept_id"], "concept_name": by_id.get(r["concept_id"], {}).get("name", r["concept_id"]),
+         "hop_count": int(r["hop_count"])}
+        for r in rows
     ]
-    out.sort(key=lambda r: r["hop_count"])
-    return out
 
 
 def dependents(concept_id: str, limit: int = 12) -> list[str]:
-    rows = corpus().execute(
-        "SELECT concept_id FROM concept_edges WHERE requires = ? LIMIT ?",
-        (concept_id, limit),
-    ).fetchall()
+    rows = query("select concept_id from public.concept_edges where requires = %s limit %s", (concept_id, limit))
     return [r["concept_id"] for r in rows]
 
 
+# ── content ───────────────────────────────────────────────────────────────────
 def chunks_by_id_prefix(prefix: str, limit: int = 40) -> list[dict[str, Any]]:
     """Rows whose content_id starts with `prefix`, in id order (paper, then question)."""
-    rows = corpus().execute(
-        "SELECT * FROM chunks WHERE content_id LIKE ? ESCAPE '\\' ORDER BY content_id LIMIT ?",
-        (prefix.replace("_", "\\_") + "%", limit),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    escaped = prefix.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+    return query(
+        f"select {CHUNK_COLUMNS} from public.content c where c.content_id like %s order by c.content_id limit %s",
+        (escaped + "%", limit),
+    )
 
 
 def chunks_by_ids(ids: Sequence[str]) -> list[dict[str, Any]]:
+    ids = [i for i in dict.fromkeys(ids) if i]
     if not ids:
         return []
-    marks = ",".join("?" * len(ids))
-    rows = corpus().execute(
-        f"SELECT * FROM chunks WHERE content_id IN ({marks})", tuple(ids)
-    ).fetchall()
+    rows = query(f"select {CHUNK_COLUMNS} from public.content c where c.content_id = any(%s)", (ids,))
     order = {cid: i for i, cid in enumerate(ids)}
-    return sorted((dict(r) for r in rows), key=lambda r: order.get(r["content_id"], 10**6))
+    return sorted(rows, key=lambda r: order.get(r["content_id"], 10**6))
 
 
-# ── ledger (novelty) ──────────────────────────────────────────────────────────
-def mark_served(
-    user_id: str,
-    items: Iterable[dict[str, Any]],
-    purpose: str = "served",
-) -> int:
-    rows = [
-        (
-            user_id,
-            it.get("content_id"),
-            it.get("concept_id"),
-            it.get("content_type"),
-            purpose,
-            it.get("fingerprint"),
-            time.time(),
-        )
-        for it in items
-        if it.get("content_id")
-    ]
-    if not user_id or not rows:
-        return 0
-    conn = ledger()
-    durable_state.hydrate_ledger(conn, user_id)
-    with conn:
-        conn.executemany(
-            """
-            INSERT INTO served (user_id, content_id, concept_id, content_type, purpose,
-                                fingerprint, served_at, times)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(user_id, content_id) DO UPDATE SET
-                served_at = excluded.served_at,
-                purpose   = excluded.purpose,
-                times     = served.times + 1
-            """,
-            rows,
-        )
-    durable_state.copy_served(conn, user_id, (row[1] for row in rows))
-    return len(rows)
-
-
-def _user_ledger(user_id: str) -> sqlite3.Connection:
-    conn = ledger()
-    durable_state.hydrate_ledger(conn, user_id)
-    return conn
-
-
-def served_ids(user_id: str, concept_ids: Sequence[str] | None = None) -> dict[str, float]:
-    """content_id -> last served timestamp, optionally scoped to concepts."""
-    if not user_id:
+def content_vectors(ids: Sequence[str]) -> dict[str, np.ndarray]:
+    """content_id -> embedding, for a shortlist (MMR). Never called for a whole pool."""
+    if not ids:
         return {}
-    sql = "SELECT content_id, served_at FROM served WHERE user_id = ?"
-    params: list[Any] = [user_id]
-    if concept_ids:
-        marks = ",".join("?" * len(concept_ids))
-        sql += f" AND concept_id IN ({marks})"
-        params.extend(concept_ids)
-    return {r["content_id"]: r["served_at"] for r in _user_ledger(user_id).execute(sql, params)}
+    rows = query("select content_id, embedding::text as e from public.content where content_id = any(%s)", (list(ids),))
+    return {r["content_id"]: parse_vector(r["e"]) for r in rows}
 
 
-def served_fingerprints(user_id: str, concept_ids: Sequence[str] | None = None) -> set[str]:
-    if not user_id:
-        return set()
-    sql = "SELECT DISTINCT fingerprint FROM served WHERE user_id = ? AND fingerprint IS NOT NULL"
-    params: list[Any] = [user_id]
-    if concept_ids:
-        marks = ",".join("?" * len(concept_ids))
-        sql += f" AND concept_id IN ({marks})"
-        params.extend(concept_ids)
-    return {r["fingerprint"] for r in _user_ledger(user_id).execute(sql, params) if r["fingerprint"]}
-
-
-def served_count(user_id: str) -> int:
-    row = _user_ledger(user_id).execute(
-        "SELECT count(*) AS n FROM served WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    return int(row["n"]) if row else 0
-
-
-def forget_served(user_id: str, concept_id: str | None = None) -> int:
-    conn = ledger()
-    durable_state.forget_served(user_id, concept_id)
-    with conn:
-        if concept_id:
-            cur = conn.execute(
-                "DELETE FROM served WHERE user_id = ? AND concept_id = ?", (user_id, concept_id)
-            )
-        else:
-            cur = conn.execute("DELETE FROM served WHERE user_id = ?", (user_id,))
-    return cur.rowcount
+def questions_in_area(
+    column: str,
+    value: str,
+    types: Sequence[str],
+    difficulty: int,
+    *,
+    exclude_ids: Iterable[str] = (),
+    keywords: Sequence[str] = (),
+    limit: int = 1,
+) -> list[dict[str, Any]]:
+    """Solved, in-syllabus questions of a chapter or JEE unit: ones naming the topic first, then
+    nearest the target difficulty. Excluded ids are filtered in the database."""
+    if column not in {"chapter_id", "unit"} or not value:
+        return []
+    patterns = [f"%{k.lower()}%" for k in keywords if k]
+    return query(
+        f"""select {CHUNK_COLUMNS} from public.content c
+            where c.{column} = %(v)s and c.content_type = any(%(types)s)
+              and c.has_solution and coalesce(c.in_syllabus, true)
+              and not (c.content_id = any(%(ex)s))
+            order by (lower(c.core_text) like any(%(kw)s)) desc,
+                     abs(coalesce(c.difficulty, 2) - %(d)s), c.content_id
+            limit %(n)s""",
+        {"v": value, "types": list(types), "ex": list(exclude_ids), "kw": patterns or ["\x00"],
+         "d": difficulty, "n": limit},
+    )
 
 
 def unseen_question_count(
@@ -403,15 +356,101 @@ def unseen_question_count(
     """
     if not concept_id or not content_types:
         return 0, 0
-    marks = ",".join("?" * len(content_types))
-    sql = (
-        f"SELECT content_id FROM chunks WHERE concept_id = ? AND content_type IN ({marks})"
-    )
-    params: list[Any] = [concept_id, *content_types]
+    sql = "select content_id from public.content where primary_concept_id = %s and content_type = any(%s)"
     if require_solution:
-        sql += " AND has_solution = 1"
-    ids = [r["content_id"] for r in corpus().execute(sql, params)]
+        sql += " and has_solution"
+    ids = [r["content_id"] for r in query(sql, (concept_id, list(content_types)))]
     if not ids:
         return 0, 0
     served = set(served_ids(user_id)) if user_id else set()
     return sum(1 for cid in ids if cid not in served), len(ids)
+
+
+# ── ledger (novelty) — user-data Supabase, cached per learner ─────────────────
+_ledger: dict[str, dict[str, Any]] = {}   # user_id -> {"loaded": ts, "rows": {content_id: row}}
+_ledger_lock = threading.Lock()
+
+
+def _user_rows(user_id: str) -> dict[str, dict[str, Any]]:
+    from services import durable_state
+
+    now = time.time()
+    entry = _ledger.get(user_id)
+    if entry and now - entry["loaded"] < LEDGER_REFRESH_SECONDS:
+        return entry["rows"]
+    with _ledger_lock:
+        entry = _ledger.get(user_id)
+        if entry and now - entry["loaded"] < LEDGER_REFRESH_SECONDS:
+            return entry["rows"]
+        saved = durable_state.load_served(user_id)
+        rows = dict(entry["rows"]) if entry else {}
+        if saved is not None:  # None = the user DB was unreachable: keep what this process knows
+            for r in saved:
+                prior = rows.get(r["content_id"])
+                if prior is None or (r.get("served_at") or 0) >= (prior.get("served_at") or 0):
+                    rows[r["content_id"]] = r
+        _ledger[user_id] = {"loaded": now, "rows": rows}
+        return rows
+
+
+def mark_served(user_id: str, items: Iterable[dict[str, Any]], purpose: str = "served") -> int:
+    from services import durable_state
+
+    if not user_id:
+        return 0
+    rows = _user_rows(user_id)
+    written = []
+    with _ledger_lock:
+        for it in items:
+            cid = it.get("content_id")
+            if not cid:
+                continue
+            prior = rows.get(cid)
+            row = {
+                "user_id": user_id, "content_id": cid, "concept_id": it.get("concept_id") or it.get("primary_concept_id"),
+                "content_type": it.get("content_type"), "purpose": purpose, "fingerprint": it.get("fingerprint"),
+                "served_at": time.time(), "times": (prior or {}).get("times", 0) + 1,
+            }
+            rows[cid] = row
+            written.append(row)
+    if written:
+        durable_state.save_served(written)
+    return len(written)
+
+
+def served_ids(user_id: str, concept_ids: Sequence[str] | None = None) -> dict[str, float]:
+    """content_id -> last served timestamp, optionally scoped to concepts."""
+    if not user_id:
+        return {}
+    scope = set(concept_ids or ())
+    return {
+        cid: float(r.get("served_at") or 0.0)
+        for cid, r in _user_rows(user_id).items()
+        if not scope or r.get("concept_id") in scope
+    }
+
+
+def served_fingerprints(user_id: str, concept_ids: Sequence[str] | None = None) -> set[str]:
+    if not user_id:
+        return set()
+    scope = set(concept_ids or ())
+    return {
+        r["fingerprint"] for r in _user_rows(user_id).values()
+        if r.get("fingerprint") and (not scope or r.get("concept_id") in scope)
+    }
+
+
+def served_count(user_id: str) -> int:
+    return len(_user_rows(user_id)) if user_id else 0
+
+
+def forget_served(user_id: str, concept_id: str | None = None) -> int:
+    from services import durable_state
+
+    rows = _user_rows(user_id)
+    with _ledger_lock:
+        gone = [cid for cid, r in rows.items() if not concept_id or r.get("concept_id") == concept_id]
+        for cid in gone:
+            rows.pop(cid, None)
+    durable_state.forget_served(user_id, concept_id)
+    return len(gone)

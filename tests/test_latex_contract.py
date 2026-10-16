@@ -9,7 +9,6 @@ choke point and the stored corpus.
 from __future__ import annotations
 
 import re
-import sqlite3
 
 import pytest
 
@@ -123,10 +122,8 @@ def test_corpus_text_has_no_residual_latex_issues() -> None:
     from retrieval import store
 
     if not store.index_exists():
-        pytest.skip("local index not built")
-    conn = sqlite3.connect(store.CORPUS_DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT content_id, core_text, solution FROM chunks").fetchall()
+        pytest.skip("retrieval database not configured")
+    rows = store.query("select content_id, core_text, coalesce(solution, '') as solution from public.content")
     bad = [
         (row["content_id"], find_latex_issues(row["core_text"] or "") or find_latex_issues(row["solution"] or ""))
         for row in rows
@@ -150,14 +147,12 @@ def test_corpus_lines_have_balanced_inline_delimiters() -> None:
     from retrieval import store
 
     if not store.index_exists():
-        pytest.skip("local index not built")
-    conn = sqlite3.connect(store.CORPUS_DB)
-    conn.row_factory = sqlite3.Row
+        pytest.skip("retrieval database not configured")
     display = re.compile(r"\$\$[\s\S]*?\$\$")
     unescaped = re.compile(r"(?<!\\)\$")
 
     offenders: list[tuple[str, str]] = []
-    for row in conn.execute("SELECT content_id, core_text, solution FROM chunks"):
+    for row in store.query("select content_id, core_text, coalesce(solution, '') as solution from public.content"):
         for field in ("core_text", "solution"):
             body = display.sub(" ", row[field] or "")
             for line in body.split("\n"):

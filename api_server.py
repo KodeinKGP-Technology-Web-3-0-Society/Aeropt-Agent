@@ -101,31 +101,26 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Load the local retrieval index before the first student turn, not during it."""
-    if config.supabase_retrieval():
-        try:
-            from retrieval import supabase_retriever
+    """Check the retrieval database and its embedding contract before the first student turn."""
+    from retrieval import embedder
+    from retrieval import service as retrieval_service
+    from retrieval import store as retrieval_store
 
-            result = supabase_retriever.warm()
-            logging.getLogger("aeropt.startup").info("Supabase cloud retrieval: %s", result)
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger("aeropt.startup").warning("Supabase retrieval warm-up failed: %s", exc)
-    elif config.local_retrieval():
-        if os.getenv("AEROPT_ENV", "").strip().lower() == "production":
-            from retrieval import store as retrieval_store
+    production = os.getenv("AEROPT_ENV", "").strip().lower() == "production"
+    log = logging.getLogger("aeropt.startup")
+    try:
+        contract = retrieval_store.verify_embedding_contract()
+        result = retrieval_service.warm()
+        log.warning("retrieval database: %s %s", contract, retrieval_service.status() if result.get("warmed") else result)
+    except embedder.EmbeddingMismatch:
+        raise  # vectors from another model rank noise; never serve on them
+    except Exception as exc:  # noqa: BLE001
+        if production:
+            raise RuntimeError(f"Retrieval database unavailable: {exc}") from exc
+        log.warning("retrieval database unavailable (tutor answers ungrounded): %s", exc)
+    import memory
 
-            if not retrieval_store.index_exists():
-                raise RuntimeError(f"Local retrieval index missing under {retrieval_store.INDEX_DIR}.")
-        try:
-            from retrieval import service as retrieval_service
-
-            result = retrieval_service.warm()
-            logging.getLogger("aeropt.startup").warning(
-                "local retrieval index: %s",
-                retrieval_service.status() if result.get("warmed") else result,
-            )
-        except Exception as exc:  # noqa: BLE001 — a cold index must not stop the server
-            logging.getLogger("aeropt.startup").warning("local retrieval warm-up failed: %s", exc)
+    memory.start_sweeper()  # no-op when MEMORY_MODE=off
     yield
     from services import durable_state
 
@@ -529,6 +524,9 @@ def _store_turn_presentation(
             session_id,
             turn_index,
         )
+    import memory
+
+    memory.on_turn_persisted(str(result.get("user_id") or ""), session_id)
 
 
 

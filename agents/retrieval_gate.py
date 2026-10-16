@@ -61,23 +61,6 @@ def is_meta_repair_turn(query: str, recent_turns: list) -> bool:
         return False
 
 def should_skip_retrieval(state: Dict[str, Any]) -> bool:
-    # The local backend gates deterministically (retrieval/gate.py) — no model call,
-    # four outcomes instead of two, and the concept check happens after resolution.
-    if config.local_retrieval():
-        from retrieval.gate import decide
-
-        if state.get("_force_retrieval"):
-            return False
-        decision = decide(
-            str(state.get("query") or ""),
-            recent_turns=list(state.get("recent_turns") or []),
-            state=state,
-        )
-        if decision.action in {"skip", "clarify"}:
-            logger.info("[RetrievalGate] Skipping retrieval: %s", decision.reason)
-            return True
-        return False
-
     # 1. Unresolved primary concept — nothing to retrieve against. This one
     #    holds even under _force_retrieval: it is a data fact, not a heuristic.
     primary_id = state.get("primary_concept_id")

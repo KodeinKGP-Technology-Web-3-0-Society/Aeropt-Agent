@@ -506,11 +506,8 @@ def _nearby_question(concept_id: str, served: set, difficulty: int, types: tuple
     chapter_id, unit = _concept_area(concept_id)
     try:
         from retrieval import store
-
-        conn = store.corpus()
     except Exception:
         return None
-    marks = ",".join("?" * len(types))
     try:
         name = (store.concept(concept_id) or {}).get("name") or concept_id
     except Exception:
@@ -521,19 +518,14 @@ def _nearby_question(concept_id: str, served: set, difficulty: int, types: tuple
     for column, value in (("chapter_id", chapter_id), ("unit", unit)):
         if not value:
             continue
-        rows = conn.execute(
-            f"""SELECT * FROM chunks WHERE {column} = ? AND content_type IN ({marks})
-                AND has_solution = 1 AND in_syllabus = 1
-                ORDER BY ABS(COALESCE(CAST(difficulty AS INTEGER), 2) - ?), content_id""",
-            (value, *types, difficulty),
-        ).fetchall()
-        rows = sorted(rows, key=lambda r: not any(k in (r["core_text"] or "").lower() for k in keys))
-        for r in rows:
-            row = dict(r)
-            if row["content_id"] not in served:
-                row.setdefault("citation", f"{row.get('source_book')} — {row.get('source_ref')}")
-                row.setdefault("primary_concept_id", row.get("concept_id"))
-                return row
+        try:
+            rows = store.questions_in_area(column, value, types, difficulty, exclude_ids=served, keywords=keys)
+        except Exception:
+            return None
+        for row in rows:
+            row.setdefault("citation", f"{row.get('source_book')} — {row.get('source_ref')}")
+            row.setdefault("primary_concept_id", row.get("concept_id"))
+            return row
     return None
 
 
@@ -765,7 +757,15 @@ def complete_study_session(args: CompleteSessionArgs, ctx: ToolContext) -> Dict[
         payload={"questions_served": questions_served, "questions_correct": questions_correct},
     )
     _close_pending_reviews(ctx)
-    _remember_session(ctx, outcome, questions_served, questions_correct, difficulty)
+    import memory
+
+    if memory.is_on():
+        # Memory v2: the session becomes an episode whose numbers come from the
+        # ledger, instead of a "3/5 correct" fact that is stale after the next attempt.
+        memory.close_session(str(ctx.state.get("session_id") or ctx.session_id or ""), ctx.user_id,
+                             reason="study session completed")
+    else:
+        _remember_session(ctx, outcome, questions_served, questions_correct, difficulty)
 
     ctx.stage(current_phase="evaluation", phase_transition="evaluation")
     ctx.state.update(ctx.updates)

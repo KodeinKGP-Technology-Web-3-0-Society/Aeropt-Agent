@@ -1,4 +1,4 @@
-.PHONY: cursor-gateway cursor-gateway-test run-cursor ci test deploy ingest-local index index-fetch retrieval-bench latex-fixture exams ncert hcverma extract-status
+.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status
 
 ci:
 	bash ci/run.sh
@@ -9,31 +9,19 @@ test:
 deploy:
 	bash ci/deploy-local.sh
 
-ingest-local:
-	.venv/bin/python -m local_ingest.run
-
-# Local retrieval index: derive the syllabus + corpus from the sources, embed, write
-# .local-run/index and mirror public.content. Rebuilds in seconds; never touches Aura
-# or a hosted Supabase project.
-index:
-	.venv/bin/python -m local_ingest.build_index
-
-# Same, but download any missing OpenStax modules first.
-index-fetch:
-	.venv/bin/python -m local_ingest.build_index --fetch
-
 # Official JEE Advanced papers + official final keys -> verified questions
 # (local_ingest/exams). Page images are read by a Cursor model (CURSOR_EXTRACT_API_KEY in
 # cursor_gateway/.env); answers come only from the key's text layer. Cached: a re-run
-# only pays for new pages. Then `make index`. YEARS="2025 2026" limits the run.
+# only pays for new pages. Then `make push`. YEARS="2025 2026" limits the run.
 exams:
 	.venv/bin/python -m local_ingest.exams $(if $(YEARS),--years $(YEARS),)
 
 # NCERT Physics XI + XII -> theory, worked examples, exercises (local_ingest/ncert, same
 # engine as exams). ~625 pages; `.venv/bin/python -m local_ingest.ncert --estimate` first.
-# CHAPTERS="leph103 leph201" limits the run. Then `make index`.
+# CHAPTERS="leph103 leph201" limits the run. Then `make push`.
 ncert:
-	.venv/bin/python -m local_ingest.ncert $(if $(CHAPTERS),--chapters $(CHAPTERS),)
+	.venv/bin/python -m local_ingest.ncert $(if $(CHAPTERS),--chapters $(CHAPTERS),) $(if $(SUBJECT),--subject $(SUBJECT),)
+
 
 # H.C. Verma: verify the sponsor's CSV rows, then read the PDF-only chapters (same reader).
 hcverma:
@@ -43,6 +31,20 @@ hcverma:
 # Live progress of exams/ncert runs, from the caches:  watch -n 30 make extract-status
 extract-status:
 	@.venv/bin/python -m local_ingest.extract.status
+
+# The retrieval corpus: derive (physics: OpenStax, chemistry: NCERT) -> embed with
+# retrieval/embedder.py (the only model) -> upsert into the retrieval Postgres
+# (RETRIEVAL_DATABASE_URL). There is no local index. A non-localhost URL needs ALLOW_HOSTED=1.
+# Unchanged rows are not rewritten. `make push-dry` diffs and rolls back.
+push:
+	.venv/bin/python -m local_ingest.push_index $(if $(ALLOW_HOSTED),--allow-hosted,) $(if $(PRUNE),--prune,) $(if $(SUBJECT),--subject $(SUBJECT),)
+
+push-dry:
+	.venv/bin/python -m local_ingest.push_index --dry-run $(if $(ALLOW_HOSTED),--allow-hosted,) $(if $(PRUNE),--prune,)
+
+# Same, downloading any missing OpenStax modules first.
+push-fetch:
+	.venv/bin/python -m local_ingest.push_index --fetch $(if $(ALLOW_HOSTED),--allow-hosted,)
 
 retrieval-bench:
 	.venv/bin/python -m retrieval.cli --bench

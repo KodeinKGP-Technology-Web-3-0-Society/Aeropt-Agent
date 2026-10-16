@@ -1,15 +1,12 @@
-"""A Neo4j-shaped client backed by the local index.
+"""The graph client: the Neo4j-shaped method surface, answered from the retrieval Postgres.
 
 Four call sites outside the retriever talk to the graph directly — follow-up
 suggestions, `generate_suggestions`, `search_knowledge_graph` and quiz step
-decomposition. With `RETRIEVAL_BACKEND=local` there is no Neo4j running, so rather
-than teach each of them a second data access style, this object answers the same
-method calls from SQLite.
+decomposition. They keep their method calls; the data comes from the Supabase
+retrieval database through retrieval/store.py (the Aura graph is no longer used).
 
-`vector_search` is the one method whose contract genuinely differs: the hosted one
-takes a 3072-d Gemini vector, this one embeds locally. Pass `query_text` and it does
-the right thing; pass a vector of the wrong width and it says so instead of returning
-silent nonsense.
+`vector_search` embeds with retrieval.embedder (the corpus's model). Pass `query_text`;
+a vector of another width is refused instead of returning silent nonsense.
 
     from retrieval.local_graph import graph
     graph.get_content_ids_for_concept("torque", content_type="practice")
@@ -74,22 +71,20 @@ class LocalGraphClient:
         difficulty_max: int = 3,
         limit: int = 10,
     ) -> List[str]:
-        marks = ",".join("?" * len(seen_ids)) if seen_ids else ""
-        sql = """
-            SELECT cc.content_id AS content_id, c.difficulty AS difficulty,
-                   c.content_type AS content_type
-            FROM chunk_concepts cc
-            JOIN chunks c ON c.content_id = cc.content_id
-            WHERE cc.concept_id = ?
-              AND (c.difficulty IS NULL OR c.difficulty <= ?)
-        """
-        params: List[Any] = [concept_id, difficulty_max]
-        if seen_ids:
-            sql += f" AND cc.content_id NOT IN ({marks})"
-            params.extend(seen_ids)
-        sql += " GROUP BY cc.content_id ORDER BY c.difficulty ASC, c.content_type ASC LIMIT ?"
-        params.append(limit)
-        return [r["content_id"] for r in store.corpus().execute(sql, params)]
+        rows = store.query(
+            """
+            select cc.content_id from public.chunk_concepts cc
+            join public.content c on c.content_id = cc.content_id
+            where cc.concept_id = %(c)s
+              and (c.difficulty is null or c.difficulty <= %(d)s)
+              and not (cc.content_id = any(%(seen)s))
+            group by cc.content_id, c.difficulty, c.content_type
+            order by c.difficulty asc nulls first, c.content_type asc
+            limit %(n)s
+            """,
+            {"c": concept_id, "d": difficulty_max, "seen": list(seen_ids or []), "n": limit},
+        )
+        return [r["content_id"] for r in rows]
 
     # ── Vector similarity ─────────────────────────────────────────────────────
     def vector_search(
@@ -99,42 +94,29 @@ class LocalGraphClient:
         candidate_ids: Optional[Sequence[str]] = None,
         query_text: str = "",
     ) -> List[Dict[str, Any]]:
-        dim = int(store.vectors().shape[1])
         if query_text:
             qvec = embedder.encode_one(query_text)
-        elif query_vector is not None and len(query_vector) == dim:
+        elif query_vector is not None and len(query_vector) == embedder.DIM:
             vec = np.asarray(query_vector, dtype=np.float32)
-            norm = float(np.linalg.norm(vec)) or 1.0
-            qvec = vec / norm
+            qvec = vec / (float(np.linalg.norm(vec)) or 1.0)
         else:
-            raise ValueError(
-                f"local vector_search needs query_text, or a {dim}-d vector from "
-                f"retrieval.embedder (got {0 if query_vector is None else len(query_vector)}-d). "
-                "Hosted Gemini vectors are not comparable with the local index."
+            raise embedder.EmbeddingMismatch(
+                f"vector_search needs query_text, or a {embedder.DIM}-d vector from retrieval.embedder "
+                f"(got {0 if query_vector is None else len(query_vector)}-d)."
             )
-
-        conn = store.corpus()
+        params = {"qv": embedder.to_pg(qvec), "ids": list(candidate_ids or []), "k": top_k}
         if candidate_ids:
-            ids = list(candidate_ids)
-            rows: List[Dict[str, Any]] = []
-            for start in range(0, len(ids), 400):
-                batch = ids[start : start + 400]
-                marks = ",".join("?" * len(batch))
-                rows.extend(
-                    dict(r)
-                    for r in conn.execute(
-                        f"SELECT content_id, vec_row FROM chunks WHERE content_id IN ({marks})",
-                        tuple(batch),
-                    )
-                )
+            # Exact over the candidates: an ANN index walk followed by the id filter would drop rows.
+            sql = """with pool as materialized (
+                         select content_id, embedding from public.content
+                         where content_id = any(%(ids)s) and embedding is not null)
+                     select content_id, 1 - (embedding <=> %(qv)s::vector) as score from pool
+                     order by 2 desc limit %(k)s"""
         else:
-            rows = [dict(r) for r in conn.execute("SELECT content_id, vec_row FROM chunks")]
-        if not rows:
-            return []
-        mat = store.vectors()[[int(r["vec_row"]) for r in rows]]
-        scores = mat @ qvec
-        order = np.argsort(-scores)[:top_k]
-        return [{"content_id": rows[i]["content_id"], "score": float(scores[i])} for i in order]
+            sql = """select content_id, 1 - (embedding <=> %(qv)s::vector) as score from public.content
+                     where embedding is not null order by embedding <=> %(qv)s::vector limit %(k)s"""
+        rows = store.query(sql, params)
+        return [{"content_id": r["content_id"], "score": float(r["score"])} for r in rows]
 
     def ping(self) -> bool:
         return store.index_exists()
@@ -147,11 +129,5 @@ graph = LocalGraphClient()
 
 
 def graph_client():
-    """The graph client for the active backend."""
-    import config
-
-    if config.local_retrieval():
-        return graph
-    from db.neo4j_client import graph_db
-
-    return graph_db
+    """The graph client. One backend: the retrieval Postgres."""
+    return graph

@@ -240,15 +240,15 @@ costs grounding. `AEROPT_GATE_LLM=1` restores the classifier for the ambiguous m
 | `local_ingest/syllabus.py` | chapters, concepts, prerequisite graph, JEE mapping |
 | `local_ingest/reference_notes.py` | authored notes for topics no source teaches, and the JEE optics convention |
 | `local_ingest/corpus.py` | every item from every source + concept mapping |
-| `local_ingest/build_index.py` | orchestration, SQLite + vectors, Postgres mirror, report |
-| `retrieval/embedder.py` | static (or Gemini) embeddings |
-| `retrieval/store.py` | SQLite schema, reads, the served ledger |
+| `local_ingest/push_index.py` | orchestration, builds corpus + embeddings into Postgres (`make push`) |
+| `retrieval/embedder.py` | static embeddings (`minishlab/potion-base-8M`, 256-d) |
+| `retrieval/store.py` | Postgres schema pool, in-memory caches, queries |
 | `retrieval/gate.py` | does this turn need retrieval |
 | `retrieval/resolver.py` | query → concept, with graded evidence |
-| `retrieval/search.py` | scope → BM25 + dense → fusion → novelty → MMR |
+| `retrieval/search.py` | scope → pgvector + tsvector → fusion → novelty → MMR |
 | `retrieval/service.py` | the public API and the grounding pack |
 | `retrieval/bridge.py` | GraphRAG-shaped adapter for the existing graph |
-| `retrieval/local_graph.py` | Neo4j-shaped client over the index, for follow-ups, suggestions, quiz decomposition and `search_knowledge_graph` |
+| `retrieval/local_graph.py` | Graph client over Postgres for follow-ups, suggestions, and `search_knowledge_graph` |
 | `retrieval/cli.py` | inspect, bench, clear a ledger |
 | `tests/test_retrieval_local.py` | the four guarantees, asserted |
 
@@ -286,23 +286,41 @@ so both pipelines run and KaTeX picks the winner.
 
 ## The rest of the agent
 
-Four call sites talked to Neo4j directly — follow-up suggestions,
-`generate_suggestions`, quiz step decomposition and `search_knowledge_graph`. They now
-ask `retrieval.local_graph.graph_client()`, which hands back the Aura client when
-`RETRIEVAL_BACKEND=neo4j` and a SQLite-backed object with the same method names when
-it is `local`. So the local setup needs no Neo4j at all, and nothing in the agent had
-to learn a second data-access style.
+All graph and search call sites — follow-up suggestions, `generate_suggestions`, quiz step
+decomposition, `search_knowledge_graph`, and tutor tools — query Postgres directly through
+`retrieval.local_graph.graph_client()` and `retrieval.store`. Neo4j Aura and local SQLite indices
+have been completely removed.
 
-One contract does differ, deliberately: `vector_search` refuses a 3072-d Gemini vector
-against the 256-d local index instead of ranking noise, and `search_knowledge_graph`
-embeds with whichever model built the index it is querying.
+The single embedding model is `minishlab/potion-base-8M` (`DIM = 256`), enforced in
+`retrieval/embedder.py` via `to_pg()`. Queries and chunks exist in the exact same vector space.
 
 ## Rebuilding after changing a source
 
 ```bash
-make index            # ~4 s: re-derives the syllabus and the whole corpus
+make push             # builds/updates local Postgres (or make push-dry)
 .venv/bin/python -m pytest tests/test_retrieval_local.py
 ```
 
 The build prints per-unit coverage, weak concept mappings and any in-scope concept
 left with no material — read that report, it is the quality signal.
+
+## Postgres + pgvector corpus (`make push`)
+
+`local_ingest/push_index.py` builds the corpus **directly into Postgres** (`RETRIEVAL_DATABASE_URL`) —
+derives syllabus → items → concept mapping → embeddings, without any intermediate SQLite or `.npy` files.
+
+- Schema: `db/migrations/017_retrieval_pgvector.sql` (additive, idempotent; run on the *retrieval* project).
+  `content.embedding` / `concepts.embedding` are `vector(256)` with HNSW cosine indexes (`hnsw.ef_search=100`);
+  `embed_model` is stored per row with a CHECK constraint.
+- Embeddings are generated during ingestion using the explicit static model (`minishlab/potion-base-8M`),
+  guaranteeing exact embedding space alignment with runtime queries.
+- `RETRIEVAL_DATABASE_URL=postgresql://… make push`. Rows are written only when their content hash changes,
+  so a re-push of an unchanged corpus writes 0 rows. `make push-dry` diffs and rolls back. `PRUNE=1` deletes
+  rows of the pushed subjects that the build no longer produces. Non-localhost URLs require `ALLOW_HOSTED=1`.
+- Subjects: Physics (12,933 items) and Chemistry (NCERT Class XI & XII, 19 chapters, 405 concepts, 1,941 items).
+  Concepts are derived strictly per chapter, ensuring 0 cross-subject links.
+- Full pipeline in Postgres: `gate` → `resolver` (dense cosine similarity against `concepts.embedding`) →
+  `search` (pgvector cosine distance for dense scoring + `ts_rank_cd` over `content.fts` for lexical scoring,
+  fused via Reciprocal Rank Fusion) → novelty check (`served_items` in user DB) → MMR re-ranking.
+- High performance: in-process caching of concepts, chapters, and topics in `retrieval/store.py` with automatic
+  invalidation when `retrieval_meta.built_at` changes; typical query round trips take ~10–15 ms locally.

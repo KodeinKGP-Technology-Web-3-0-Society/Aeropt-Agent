@@ -2,7 +2,7 @@
 
     .venv/bin/python -m local_ingest.architect            # questions the rules could not structure
     .venv/bin/python -m local_ingest.architect --limit 20
-    make index                                            # picks up the cached results
+    make push                                             # picks up the cached results
 
 local_ingest/structure.py structures almost every question by rule (the source's own fields, or
 a maths-safe split). What is left — a stem with options run together, a figure description
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -45,15 +44,14 @@ Question:
 Return only JSON: {{"stem": "...", "figure": "...", "options": [{{"label": "A", "text": "..."}}, ...] or null, "parts": [{{"label": "a", "text": "..."}}, ...] or null}}"""
 
 
-def candidates(limit: int | None) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(store.CORPUS_DB)
-    conn.row_factory = sqlite3.Row
-    rows = [r for r in conn.execute("SELECT content_id, core_text, structured FROM chunks WHERE is_question = 1")
-            if r["structured"] and json.loads(r["structured"]).get("built_by") == "plain"]
+def candidates(limit: int | None) -> list[dict]:
+    rows = [r for r in store.query("select content_id, core_text, structured::text as structured from public.content"
+                                   " where is_question and structured is not null order by content_id")
+            if json.loads(r["structured"]).get("built_by") == "plain"]
     return rows[:limit] if limit else rows
 
 
-def architect(row: sqlite3.Row) -> dict:
+def architect(row: dict) -> dict:
     text = row["core_text"]
     try:
         reply = reader.ask(PROMPT.format(text=text), None, cache_dir=CACHE, version=VERSION, name=row["content_id"])
@@ -87,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     structure.ARCHITECT.parent.mkdir(parents=True, exist_ok=True)
     structure.ARCHITECT.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in existing.values()))
     ok = sum(1 for r in existing.values() if "structured" in r)
-    print(f"\n{ok} structured by the architect and validated; the rest stay plain. Run `make index`.")
+    print(f"\n{ok} structured by the architect and validated; the rest stay plain. Run `make push`.")
     return 0
 
 

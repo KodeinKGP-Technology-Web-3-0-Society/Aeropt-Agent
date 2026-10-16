@@ -1,9 +1,9 @@
 """Supabase copies of the agent's local state, for hosts whose disk is wiped on restart.
 
-With `AEROPT_DURABLE_STATE=supabase` (Hugging Face Spaces), three local stores
-keep working exactly as they do on disk and are also kept in Supabase:
+With `AEROPT_DURABLE_STATE=supabase` (Hugging Face Spaces), two local stores
+keep working exactly as they do on disk and are also kept in Supabase
+(the novelty ledger is not one of them any more: it lives only in `public.served_items`):
 
-- the novelty ledger (`retrieval/store.py`, SQLite) → `public.served_items`
 - carry sessions (`carry_store.py`, JSON files)    → `public.carry_sessions`
 - compiled diagrams (`services/diagrams.py`, SVG)  → Storage bucket `diagrams`
 
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -33,8 +32,6 @@ _PAGE = 1000
 
 _executor: Optional[ThreadPoolExecutor] = None
 _executor_lock = threading.Lock()
-_hydrated: set[str] = set()
-_hydrate_lock = threading.Lock()
 
 
 def enabled() -> bool:
@@ -63,68 +60,45 @@ def _background(fn: Callable[..., Any], *args: Any) -> None:
 
 
 # ── novelty ledger ────────────────────────────────────────────────────────────
+# The ledger's only home is `public.served_items` in the user-data project (there is no
+# local SQLite copy any more); retrieval/store.py keeps a per-learner in-process cache.
+# So this part is always on whenever the user DB is configured, not gated by enabled().
 _LEDGER_COLUMNS = ("user_id", "content_id", "concept_id", "content_type", "purpose",
                    "fingerprint", "served_at", "times")
 
 
-def hydrate_ledger(conn: sqlite3.Connection, user_id: str) -> None:
-    """Load a learner's saved ledger into local SQLite once per process."""
-    if not enabled() or not user_id or user_id in _hydrated:
-        return
-    with _hydrate_lock:
-        if user_id in _hydrated:
-            return
-        try:
-            rows: list[Dict[str, Any]] = []
-            start = 0
-            while True:
-                page = (
-                    _client().table("served_items")
-                    .select(",".join(_LEDGER_COLUMNS))
-                    .eq("user_id", user_id)
-                    .range(start, start + _PAGE - 1)
-                    .execute()
-                ).data or []
-                rows.extend(page)
-                if len(page) < _PAGE:
-                    break
-                start += _PAGE
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ledger hydrate failed for a learner: %s", str(exc)[:200])
-            return
-        if rows:
-            with conn:
-                conn.executemany(
-                    """
-                    INSERT INTO served (user_id, content_id, concept_id, content_type, purpose,
-                                        fingerprint, served_at, times)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, content_id) DO UPDATE SET
-                        served_at = max(served.served_at, excluded.served_at),
-                        times     = max(served.times, excluded.times)
-                    """,
-                    [tuple(r.get(c) for c in _LEDGER_COLUMNS) for r in rows],
-                )
-        _hydrated.add(user_id)
+def _ledger_db() -> bool:
+    return bool(os.getenv("SUPABASE_URL", "").strip()) and os.getenv("AEROPT_LEDGER", "").strip().lower() != "memory"
 
 
-def copy_served(conn: sqlite3.Connection, user_id: str, content_ids: Iterable[str]) -> None:
-    """Copy the just-written ledger rows (with their updated `times`) to Supabase."""
-    if not enabled():
-        return
-    ids = [cid for cid in content_ids if cid]
-    if not user_id or not ids:
-        return
-    marks = ",".join("?" * len(ids))
-    rows = [
-        {c: r[c] for c in _LEDGER_COLUMNS}
-        for r in conn.execute(
-            f"SELECT {','.join(_LEDGER_COLUMNS)} FROM served WHERE user_id = ? AND content_id IN ({marks})",
-            (user_id, *ids),
-        )
-    ]
-    if rows:
-        _background(_upsert_served, rows)
+def load_served(user_id: str) -> Optional[list[Dict[str, Any]]]:
+    """A learner's saved ledger rows; None when the user DB could not be read."""
+    if not _ledger_db() or not user_id:
+        return [] if not _ledger_db() else None
+    rows: list[Dict[str, Any]] = []
+    start = 0
+    try:
+        while True:
+            page = (
+                _client().table("served_items")
+                .select(",".join(_LEDGER_COLUMNS))
+                .eq("user_id", user_id)
+                .range(start, start + _PAGE - 1)
+                .execute()
+            ).data or []
+            rows.extend(page)
+            if len(page) < _PAGE:
+                return rows
+            start += _PAGE
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ledger load failed for a learner: %s", str(exc)[:200])
+        return None
+
+
+def save_served(rows: list[Dict[str, Any]]) -> None:
+    """Write ledger rows through to the user DB in the background (a turn never waits)."""
+    if _ledger_db() and rows:
+        _background(_upsert_served, [{c: r.get(c) for c in _LEDGER_COLUMNS} for r in rows])
 
 
 def _upsert_served(rows: list[Dict[str, Any]]) -> None:
@@ -132,7 +106,7 @@ def _upsert_served(rows: list[Dict[str, Any]]) -> None:
 
 
 def forget_served(user_id: str, concept_id: Optional[str]) -> None:
-    if enabled() and user_id:
+    if _ledger_db() and user_id:
         _background(_delete_served, user_id, concept_id)
 
 
@@ -219,4 +193,3 @@ def drain() -> None:
 
 def reset_for_tests() -> None:
     drain()
-    _hydrated.clear()

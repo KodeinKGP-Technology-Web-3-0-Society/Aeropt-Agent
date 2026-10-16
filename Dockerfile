@@ -1,11 +1,12 @@
-# Aeropt agent (tutor) — FastAPI + local retrieval index, one process.
+# Aeropt agent (tutor) — FastAPI, one process. Retrieval reads the Supabase retrieval
+# Postgres (RETRIEVAL_DATABASE_URL in the env file); there is no index in the image.
 #   docker build -t aeropt-agent .
 #   docker run --rm -p 7860:7860 --env-file .env.prod aeropt-agent
 #
-# The build context must contain the local index (gitignored, built by `make index`):
-#   .local-run/index/{corpus.sqlite3,vectors.npy,concept_vectors.npy}
+# The build context must contain the query embedding model (gitignored; snapshotted by
+# `make push`), so a query embeds offline in the same space as the corpus:
 #   .local-run/models/potion-base-8M/
-# deploy/push_space.sh stages exactly that (licence-filtered) for Hugging Face.
+# deploy/push_space.sh stages exactly that for Hugging Face.
 
 FROM python:3.12-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -21,16 +22,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=7860 \
-    RETRIEVAL_BACKEND=local \
-    AEROPT_EMBED_BACKEND=static \
-    AEROPT_LEDGER_PATH=/tmp/aeropt/ledger.sqlite3 \
     AEROPT_CARRY_DIR=/tmp/aeropt/carry \
     AEROPT_DIAGRAM_DIR=/tmp/aeropt/diagrams \
-    HF_HUB_OFFLINE=1 \
-    NEO4J_URI=neo4j://unused.invalid:7687 \
-    NEO4J_USER=unused \
-    NEO4J_PASSWORD=unused
-# config.py requires NEO4J_*; with RETRIEVAL_BACKEND=local the driver never connects.
+    HF_HUB_OFFLINE=1
 
 # Diagrams: tectonic (static LaTeX engine, fetches packages on first use) and
 # pdftocairo. Without them draw_diagram reports "not installed" and the tutor
@@ -50,9 +44,8 @@ COPY requirements.txt .
 RUN pip install --no-index --find-links=/wheels -r requirements.txt && rm -rf /wheels
 
 COPY --chown=user:user . .
-RUN test -f .local-run/index/corpus.sqlite3 && test -f .local-run/index/vectors.npy \
- && test -f .local-run/models/potion-base-8M/model.safetensors \
- || (echo "Build context has no retrieval index; run make index (or deploy/push_space.sh)." && exit 1)
+RUN test -f .local-run/models/potion-base-8M/model.safetensors \
+ || (echo "Build context has no embedding model; run make push (or deploy/push_space.sh)." && exit 1)
 
 USER user
 # Fetch tectonic's LaTeX packages now: on first use they download for over a

@@ -15,7 +15,10 @@ Order matters and each stage earns its place:
 5. **Diversity (MMR).** Five paraphrases of one paragraph teach nothing that one
    does, so near-identical survivors are suppressed.
 
-Everything is local: one SQLite query plus a couple of numpy dot products.
+Storage is the Supabase retrieval Postgres (retrieval/store.py): stages 1–2 are one SQL
+query per widening step (pgvector cosine + Postgres full text, scored in the database);
+fusion, novelty and MMR run here over that candidate list. Full rows and vectors are fetched
+only for the final shortlist.
 """
 
 from __future__ import annotations
@@ -162,6 +165,12 @@ def _scope_concepts(
     return [c for c in dict.fromkeys(ids) if c], "chapter"
 
 
+def _terms(text: str) -> str:
+    """Content words of the query, for `public.or_tsquery` (which ORs them)."""
+    match = _fts_query(text)
+    return " ".join(t.strip('"') for t in match.split(" OR ")) if match else ""
+
+
 def _fetch_candidates(
     concept_ids: Sequence[str],
     types: Sequence[str],
@@ -170,74 +179,59 @@ def _fetch_candidates(
     require_solution: bool = False,
     in_syllabus_only: bool = True,
     limit: int = MAX_CANDIDATES,
+    query: str = "",
+    qvec: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
+    """Candidates linked to the concepts, with `dense` (cosine) and `lexical` (full-text) scores.
+
+    Light rows only — no text or vectors — so a 600-row pool is one small round trip. The
+    lexical score is computed over the candidates only: ranking the whole corpus first and
+    intersecting afterwards silently drops any candidate outside the global top-N.
+    """
     if not concept_ids or not types:
         return []
-    conn = store.corpus()
-    marks_c = ",".join("?" * len(concept_ids))
-    marks_t = ",".join("?" * len(types))
-    params: list[Any] = [*concept_ids, *types]
-    sql = f"""
-        SELECT c.*, cc.role AS concept_role
-        FROM chunk_concepts cc
-        JOIN chunks c ON c.content_id = cc.content_id
-        WHERE cc.concept_id IN ({marks_c})
-          AND c.content_type IN ({marks_t})
-    """
+    params: dict[str, Any] = {
+        "ids": list(concept_ids), "types": list(types), "limit": limit,
+        "qv": embedder.to_pg(qvec) if qvec is not None else None, "terms": _terms(query),
+    }
+    where = ["cc.concept_id = any(%(ids)s)", "c.content_type = any(%(types)s)"]
     if require_solution:
-        sql += " AND c.has_solution = 1"
+        where.append("c.has_solution")
     if in_syllabus_only:
-        sql += " AND c.in_syllabus = 1"
+        where.append("coalesce(c.in_syllabus, true)")
     exams = EXAM_ALLOWED.get((target_exam or "").upper())
     if exams:
-        marks_e = ",".join("?" * len(exams))
-        sql += f" AND c.target_exam IN ({marks_e})"
-        params.extend(exams)
+        where.append("c.target_exam = any(%(exams)s)")
+        params["exams"] = list(exams)
+    dense = "1 - (c.embedding <=> %(qv)s::vector)" if qvec is not None else "0.0"
+    lexical = (
+        "case when c.fts @@ public.or_tsquery(%(terms)s)"
+        " then ts_rank_cd(c.fts, public.or_tsquery(%(terms)s), 1) else 0 end"
+        if params["terms"] else "0.0"
+    )
     # A primary-concept chunk is about the concept; a secondary one merely touches it.
-    sql += """
-        GROUP BY c.content_id
-        ORDER BY MIN(CASE cc.role WHEN 'primary' THEN 0 ELSE 1 END), c.difficulty, c.content_id
-        LIMIT ?
+    sql = f"""
+        select c.content_id, c.content_type, c.subject, c.chapter_id, c.chapter, c.unit,
+               c.primary_concept_id as concept_id, c.difficulty, c.license, c.fingerprint,
+               c.target_exam, coalesce(c.has_solution, false)::int as has_solution,
+               case min(case cc.role when 'primary' then 0 else 1 end) when 0 then 'primary' else 'secondary' end
+                 as concept_role,
+               {dense} as dense,
+               max({lexical}) as lexical
+        from public.chunk_concepts cc join public.content c on c.content_id = cc.content_id
+        where {' and '.join(where)}
+        group by c.content_id
+        order by min(case cc.role when 'primary' then 0 else 1 end), c.difficulty, c.content_id
+        limit %(limit)s
     """
-    params.append(limit)
-    return [dict(r) for r in conn.execute(sql, params)]
+    return store.query(sql, params)
 
 
-def _lexical_ranks(query: str, allowed: Sequence[str]) -> tuple[dict[str, float], str]:
-    """BM25 over the candidate set only.
-
-    Ranking the whole corpus first and intersecting afterwards silently drops any
-    candidate outside the global top-N — the exact failure the Neo4j client had to
-    work around with a full-corpus fetch_k. Restricting the MATCH to the candidates
-    means a chunk competes against its real rivals, not against all 10,000.
-    """
-    match = _fts_query(query)
-    if not match or not allowed:
-        return {}, ""
-    conn = store.corpus()
-    ids = list(allowed)
-    scored: list[tuple[str, float]] = []
-    # SQLite's parameter ceiling is well above this, but chunk anyway to stay safe.
-    for start in range(0, len(ids), 400):
-        batch = ids[start : start + 400]
-        marks = ",".join("?" * len(batch))
-        try:
-            rows = conn.execute(
-                f"""
-                SELECT c.content_id AS content_id, bm25(chunks_fts, 4.0, 2.0, 1.0) AS score
-                FROM chunks_fts
-                JOIN chunks c ON c.rowid = chunks_fts.rowid
-                WHERE chunks_fts MATCH ? AND c.content_id IN ({marks})
-                ORDER BY score
-                """,
-                (match, *batch),
-            ).fetchall()
-        except Exception:  # noqa: BLE001 — a malformed MATCH must not fail the turn
-            return {}, match
-        # bm25() returns negative numbers, smaller = better.
-        scored.extend((r["content_id"], -float(r["score"])) for r in rows)
-    scored.sort(key=lambda kv: -kv[1])
-    return dict(scored[:FTS_LIMIT]), match
+def _lexical_ranks(rows: Sequence[dict[str, Any]]) -> dict[str, float]:
+    """content_id -> full-text score for the candidates that matched, best FTS_LIMIT."""
+    scored = sorted(((r["content_id"], float(r["lexical"] or 0.0)) for r in rows if r.get("lexical")),
+                    key=lambda kv: -kv[1])
+    return dict(scored[:FTS_LIMIT])
 
 
 def _mmr(
@@ -304,6 +298,7 @@ def search(
 
     best: SearchResult | None = None
     min_candidates = max(top_k * 4, 12)
+    qvec = embedder.encode_one(query)
 
     for family in families:
         types = TYPE_FAMILIES.get(family, TYPE_FAMILIES["any"])
@@ -331,6 +326,8 @@ def search(
                     target_exam=target_exam,
                     require_solution=solution_required,
                     in_syllabus_only=in_syllabus_only,
+                    query=query,
+                    qvec=qvec,
                 ):
                     if row["content_id"] in seen_rows:
                         continue
@@ -407,12 +404,9 @@ def _rank(
     concept_first: str = "",
 ) -> SearchResult:
     ids = [r["content_id"] for r in rows]
-    lexical, match_terms = _lexical_ranks(query, ids)
-
-    vecs = store.vectors()
-    rowvecs = vecs[[int(r["vec_row"]) for r in rows]]
-    qvec = embedder.encode_one(query)
-    dense = rowvecs @ qvec
+    lexical = _lexical_ranks(rows)
+    match_terms = _fts_query(query)
+    dense = np.asarray([float(r.get("dense") or 0.0) for r in rows], dtype=np.float32)
 
     dense_order = np.argsort(-dense)
     rank_dense = {ids[i]: pos for pos, i in enumerate(dense_order)}
@@ -476,12 +470,18 @@ def _rank(
 
     shortlist = kept[: max(top_k * 6, 24)]
     scores_arr = np.asarray(kept_scores[: len(shortlist)], dtype=np.float32)
-    chosen = (
-        _mmr(shortlist, vecs[[int(rows[i]["vec_row"]) for i in range(len(rows))]], top_k,
-             base_scores=scores_arr)
-        if diversify and len(shortlist) > 1
-        else shortlist[:top_k]
-    )
+    # Full text and vectors for the shortlist only (one query), then diversify over it.
+    full = {r["content_id"]: r for r in store.chunks_by_ids([ids[i] for i in shortlist])}
+    for i in shortlist:
+        if ids[i] in full:
+            rows[i] = {**full[ids[i]], "concept_role": rows[i].get("concept_role"), "dense": rows[i].get("dense")}
+    if diversify and len(shortlist) > 1:
+        vec_of = store.content_vectors([ids[i] for i in shortlist])
+        mat = np.stack([vec_of.get(ids[i], np.zeros(embedder.DIM, dtype=np.float32)) for i in shortlist])
+        picked = _mmr(list(range(len(shortlist))), mat, top_k, base_scores=scores_arr)
+        chosen = [shortlist[p] for p in picked]
+    else:
+        chosen = shortlist[:top_k]
     # Theory leads with NCERT when NCERT has a strong candidate: it is what JEE is set from
     # and uses JEE notation and sign conventions. A weight could not do this — OpenStax
     # passages titled exactly like the query out-scored NCERT's section on the same idea.
@@ -520,75 +520,45 @@ def global_probe(query: str, top_k: int = 20, in_syllabus_only: bool = True) -> 
     Concept-name similarity alone cannot resolve "block sliding down a rough incline,
     angle of repose": no concept is named that. The chunks that match it are all
     friction chunks, so the material itself votes for the concept. This is the
-    retrieve-then-resolve path, and it costs one FTS query plus one 10k x 256 dot
-    product — about a millisecond.
+    retrieve-then-resolve path: one query — the HNSW nearest neighbours and the
+    full-text top matches, unioned and scored in the database.
     """
-    conn = store.corpus()
-    match = _fts_query(query)
-    lexical: dict[str, float] = {}
-    if match:
-        try:
-            rows = conn.execute(
-                """
-                SELECT c.content_id AS content_id, bm25(chunks_fts, 4.0, 2.0, 1.0) AS score
-                FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid
-                WHERE chunks_fts MATCH ? AND (c.in_syllabus = 1 OR ? = 0)
-                ORDER BY score LIMIT ?
-                """,
-                (match, int(in_syllabus_only), top_k * 4),
-            ).fetchall()
-            lexical = {r["content_id"]: -float(r["score"]) for r in rows}
-        except Exception:  # noqa: BLE001
-            lexical = {}
-
-    qvec = embedder.encode_one(query)
-    sims = store.vectors() @ qvec
-    dense_rows = np.argsort(-sims)[: top_k * 4]
-    dense_ids = conn.execute(
-        f"SELECT content_id, concept_id, chapter, vec_row, in_syllabus FROM chunks "
-        f"WHERE vec_row IN ({','.join('?' * len(dense_rows))})",
-        tuple(int(r) for r in dense_rows),
-    ).fetchall()
-    by_id = {r["content_id"]: dict(r) for r in dense_ids}
-
-    if lexical:
-        marks = ",".join("?" * len(lexical))
-        for row in conn.execute(
-            f"SELECT content_id, concept_id, chapter, vec_row, in_syllabus FROM chunks "
-            f"WHERE content_id IN ({marks})",
-            tuple(lexical),
-        ):
-            by_id.setdefault(row["content_id"], dict(row))
-
-    rank_dense = {
-        by_id[cid]["content_id"]: pos
-        for pos, cid in enumerate(
-            sorted(
-                (r["content_id"] for r in by_id.values() if r["vec_row"] is not None),
-                key=lambda cid: -float(sims[int(by_id[cid]["vec_row"])]),
-            )
-        )
-    }
-    rank_lex = {
-        cid: pos for pos, (cid, _s) in enumerate(sorted(lexical.items(), key=lambda kv: -kv[1]))
-    }
+    n = top_k * 4
+    terms = _terms(query)
+    syllabus = "and coalesce(in_syllabus, true)" if in_syllabus_only else ""
+    lexical_cte = (
+        f"""select content_id, ts_rank_cd(fts, q, 1) as lex
+            from public.content, public.or_tsquery(%(terms)s) q
+            where q is not null and fts @@ q {syllabus} order by 2 desc limit %(n)s"""
+        if terms else "select null::text as content_id, null::float4 as lex where false"
+    )
+    rows = store.query(
+        f"""
+        with d as (
+            select content_id from public.content
+            where embedding is not null {syllabus}
+            order by embedding <=> %(qv)s::vector limit %(n)s
+        ),
+        l as ({lexical_cte})
+        select c.content_id, c.primary_concept_id as concept_id, c.chapter,
+               coalesce(c.in_syllabus, true) as in_syllabus,
+               1 - (c.embedding <=> %(qv)s::vector) as dense, l.lex
+        from (select content_id from d union select content_id from l) u
+        join public.content c using (content_id)
+        left join l using (content_id)
+        """,
+        {"qv": embedder.to_pg(embedder.encode_one(query)), "terms": terms, "n": n},
+    )
+    rank_dense = {r["content_id"]: pos for pos, r in enumerate(sorted(rows, key=lambda r: -float(r["dense"] or 0)))}
+    lexed = sorted((r for r in rows if r["lex"] is not None), key=lambda r: -float(r["lex"]))
+    rank_lex = {r["content_id"]: pos for pos, r in enumerate(lexed)}
     scored = []
-    for cid, row in by_id.items():
-        if in_syllabus_only and not row["in_syllabus"]:
+    for r in rows:
+        if in_syllabus_only and not r["in_syllabus"]:
             continue
-        score = 0.0
-        if cid in rank_dense:
-            score += 1.0 / (RRF_K + rank_dense[cid])
-        if cid in rank_lex:
-            score += 1.0 / (RRF_K + rank_lex[cid])
-        scored.append(
-            {
-                "content_id": cid,
-                "concept_id": row["concept_id"],
-                "chapter": row["chapter"],
-                "score": score,
-                "dense": float(sims[int(row["vec_row"])]) if row["vec_row"] is not None else 0.0,
-            }
-        )
+        cid = r["content_id"]
+        score = 1.0 / (RRF_K + rank_dense[cid]) + (1.0 / (RRF_K + rank_lex[cid]) if cid in rank_lex else 0.0)
+        scored.append({"content_id": cid, "concept_id": r["concept_id"], "chapter": r["chapter"],
+                       "score": score, "dense": float(r["dense"] or 0.0)})
     scored.sort(key=lambda r: -r["score"])
     return scored[:top_k]

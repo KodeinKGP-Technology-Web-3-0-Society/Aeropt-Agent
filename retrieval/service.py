@@ -532,14 +532,12 @@ def forget(user_id: str, concept_id: str = "") -> int:
 
 
 def warm() -> dict[str, Any]:
-    """Load the static model, the vectors and the concept lexicon up front.
+    """Load the embedding model, the concept cache and the lexicon, and open the pool, up front.
 
-    First call costs ~350 ms (model load plus a 10k x 256 matrix); every call after
-    it is single-digit milliseconds. Paying that at startup keeps it off the first
-    student's turn.
+    Paying that at startup keeps it off the first student's turn.
     """
     if not store.index_exists():
-        return {"warmed": False, "reason": "no local index"}
+        return {"warmed": False, "reason": "retrieval database unavailable"}
     started = time.perf_counter()
     retrieve("warm up the local retrieval index", user_id="", mark=False)
     return {"warmed": True, "took_ms": round((time.perf_counter() - started) * 1000, 1)}
@@ -547,6 +545,6 @@ def warm() -> dict[str, Any]:
 
 def status() -> dict[str, Any]:
     if not store.index_exists():
-        return {"ready": False, "reason": "local index not built; run python -m local_ingest.build_index"}
+        return {"ready": False, "reason": "retrieval database unavailable (RETRIEVAL_DATABASE_URL; fill with make push)"}
     meta = store.meta()
     return {"ready": True, **meta}

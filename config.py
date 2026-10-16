@@ -15,22 +15,20 @@ _ROOT = Path(__file__).resolve().parent
 load_dotenv(_ROOT / ".env")
 load_dotenv(_ROOT / ".env.local", override=True)
 
-# Fix SSL certificate verification for Neo4j Aura on Windows.
-# Must be set before the neo4j driver is imported anywhere.
+# Fix SSL certificate verification on Windows.
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
-
-# ── Neo4j (Optional: only needed if RETRIEVAL_BACKEND=neo4j) ──────────────────
-NEO4J_URI = os.getenv("NEO4J_URI", "")
-NEO4J_USER = os.getenv("NEO4J_USER", "")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 
 # ── Supabase (User DB) ────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "physics-diagrams")
 
-# ── Supabase (Retrieval DB: Concepts, Content Chunks, Vector RPCs) ─────────────
+# ── Supabase (Retrieval DB: the corpus) ───────────────────────────────────────
+# A separate Supabase project. The agent reads it over Postgres (retrieval/store.py);
+# `make push` (local_ingest/push_index.py) is its only writer. The REST URL/key are kept
+# for db.retrieval_client, which a few catalogue reads still use.
+RETRIEVAL_DATABASE_URL = os.getenv("RETRIEVAL_DATABASE_URL", "").strip()
 RETRIEVAL_SUPABASE_URL = os.getenv("RETRIEVAL_SUPABASE_URL", SUPABASE_URL)
 RETRIEVAL_SUPABASE_KEY = os.getenv("RETRIEVAL_SUPABASE_KEY", SUPABASE_KEY)
 
@@ -71,8 +69,8 @@ QUIZ_FALLBACK_MODELS = FALLBACK_MODELS
 SOCRATIC_FALLBACK_MODELS = FALLBACK_MODELS
 SMALL_MODEL_FALLBACK = FALLBACK_MODELS
 
-# Embedding (GraphRAG Retriever only) — no chat LLM
-EMBEDDING_MODEL = "gemini-embedding-2"
+# Embeddings: retrieval/embedder.py is the single source (model id, dimension). Nothing
+# here may name another embedding model.
 
 # ── Speculative prefetch cache (optional) ─────────────────────────────────────
 # api_server.py warms retrieval for the follow-up a student is most likely to
@@ -85,35 +83,6 @@ EMBEDDING_MODEL = "gemini-embedding-2"
 # request handler and the student got the generic failure message. The CLI path
 # was unaffected, which is why the graph could look healthy while chat was not.
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
-
-# ── Retrieval backend ─────────────────────────────────────────────────────────
-# "neo4j"  the deployed path: Neo4j Aura graph + Gemini query embeddings.
-# "local"  the local path: SQLite + FTS5 + static embeddings under .local-run/index,
-#          built by `python -m local_ingest.build_index`. No network per query
-#          (~6 ms warm vs ~1700 ms for embed + Aura vector search), and it carries
-#          the full derived syllabus rather than the three hand-mapped chapters.
-# "supabase" the cloud path: hosted Supabase pgvector + PostgreSQL syllabus graph.
-#
-# Set in .env.local or .env to choose the retrieval backend.
-RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "supabase").strip().lower()
-LOCAL_INDEX_DIR = os.getenv("AEROPT_INDEX_DIR", str(_ROOT / ".local-run" / "index"))
-
-
-def local_retrieval() -> bool:
-    return RETRIEVAL_BACKEND == "local"
-
-
-def supabase_retrieval() -> bool:
-    return RETRIEVAL_BACKEND == "supabase"
-
-
-# ── Neo4j vector index ────────────────────────────────────────────────────────
-NEO4J_VECTOR_INDEX = "content_vector_index"
-NEO4J_VECTOR_TOP_K = 5
-NEO4J_PREREQ_DEPTH = 3
-# Must be >= total Content nodes. Used as fetch_k when candidate_ids
-# filtering is active so no graph-filtered candidate is missed.
-NEO4J_CONTENT_CORPUS_SIZE = int(os.getenv("NEO4J_CONTENT_CORPUS_SIZE", "2000"))
 
 # ── Retrieval Confidence ──────────────────────────────────────────────────────
 # well-matched queries scored 0.7+, off-syllabus queries scored below 0.45 in calibration on 2026-09-09
@@ -147,6 +116,22 @@ STRUGGLE_STREAK_QUIZ_TRIGGER = 3
 
 # ── Context Manager ───────────────────────────────────────────────────────────
 CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
+
+# ── Memory (memory/, plan in MEMORY_AGENT.md) ─────────────────────────────────
+# off    = the pre-v2 behaviour, nothing new runs.
+# shadow = jobs run and write; prompts keep the old memory text, and the pack the
+#          new recall would have used is logged to var/memory_shadow.jsonl.
+# on     = the new recall pack goes into prompts.
+MEMORY_MODE = os.getenv("MEMORY_MODE", "shadow").strip().lower()
+MEMORY_MODEL = os.getenv("MEMORY_MODEL", CONTEXT_MANAGER_MODEL).strip()
+MEMORY_SUMMARY_MIN_ROWS = int(os.getenv("MEMORY_SUMMARY_MIN_ROWS", "8"))      # unsummarised chat_turns rows
+MEMORY_SUMMARY_MIN_CHARS = int(os.getenv("MEMORY_SUMMARY_MIN_CHARS", "6000"))
+MEMORY_WINDOW_MAX_ROWS = int(os.getenv("MEMORY_WINDOW_MAX_ROWS", "12"))        # raw turns in the prompt
+MEMORY_WINDOW_MAX_CHARS = int(os.getenv("MEMORY_WINDOW_MAX_CHARS", "9000"))
+MEMORY_IDLE_CLOSE_MINUTES = int(os.getenv("MEMORY_IDLE_CLOSE_MINUTES", "30"))
+MEMORY_SWEEP_EVERY_S = int(os.getenv("MEMORY_SWEEP_EVERY_S", "600"))
+MEMORY_PROMPT_BUDGET_CHARS = int(os.getenv("MEMORY_PROMPT_BUDGET_CHARS", "2500"))
+MEMORY_MAX_ACTIVE_FACTS = int(os.getenv("MEMORY_MAX_ACTIVE_FACTS", "200"))
 
 # ── Autonomous Learning Agent ─────────────────────────────────────────────────
 LEARNING_AGENT_MODEL = GEMINI_MODEL

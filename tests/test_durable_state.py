@@ -93,28 +93,27 @@ def remote(monkeypatch, tmp_path):
 
 def _restart(module):
     durable_state.drain()
-    durable_state._hydrated.clear()
     module.reset_caches()
 
 
-def test_ledger_survives_a_wiped_disk(remote, monkeypatch, tmp_path):
+def test_ledger_survives_a_restart(remote, monkeypatch):
+    """The ledger's only home is served_items; a new process reads it back."""
     from retrieval import store
 
-    monkeypatch.setattr(store, "LEDGER_DB", tmp_path / "a" / "ledger.sqlite3")
+    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("AEROPT_LEDGER", "supabase")
     store.reset_caches()
     item = {"content_id": "pyq_1", "concept_id": "torque", "content_type": "PYQ", "fingerprint": "fp1"}
     store.mark_served("u1", [item])
     store.mark_served("u1", [item])
 
-    _restart(store)
-    monkeypatch.setattr(store, "LEDGER_DB", tmp_path / "b" / "ledger.sqlite3")  # fresh container
+    _restart(store)  # fresh process: nothing cached
     assert set(store.served_ids("u1")) == {"pyq_1"}
     assert store.served_fingerprints("u1") == {"fp1"}
-    assert store.ledger().execute("SELECT times FROM served").fetchone()["times"] == 2
+    assert remote.tables["served_items"][0]["times"] == 2
 
     store.forget_served("u1")
     _restart(store)
-    monkeypatch.setattr(store, "LEDGER_DB", tmp_path / "c" / "ledger.sqlite3")
     assert store.served_ids("u1") == {}
     store.reset_caches()
 

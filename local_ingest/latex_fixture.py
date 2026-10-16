@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -39,17 +38,12 @@ def main() -> int:
     from retrieval import store
 
     if not store.index_exists():
-        raise SystemExit("no local index; run python -m local_ingest.build_index first")
+        raise SystemExit("retrieval database unavailable; set RETRIEVAL_DATABASE_URL and run `make push`")
 
-    conn = sqlite3.connect(store.CORPUS_DB)
-    conn.row_factory = sqlite3.Row
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            "SELECT content_id, content_type, core_text, solution FROM chunks "
-            "WHERE core_text LIKE '%$%' OR solution LIKE '%$%'"
-        )
-    ]
+    rows = store.query(
+        "select content_id, content_type, core_text, coalesce(solution, '') as solution from public.content"
+        " where core_text like '%$%' or solution like '%$%' order by content_id"
+    )
     random.seed(args.seed)
     rows = random.sample(rows, min(args.limit, len(rows)))
 

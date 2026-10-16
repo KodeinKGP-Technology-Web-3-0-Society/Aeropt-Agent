@@ -59,10 +59,12 @@ def _norm(text: str) -> str:
 
 
 def _lexicon() -> dict[str, Any]:
-    """Alias → concept lookups, built once per process from the index."""
+    """Alias → concept lookups, rebuilt whenever the store reloads its concept cache."""
+    generation = store.cache_generation()  # outside our lock: the store never calls back in here
     with _lock:
-        if _cache:
+        if _cache and _cache.get("generation") == generation:
             return _cache
+        _cache.clear()
         concepts = store.all_concepts()
         by_id = {c["concept_id"]: c for c in concepts}
         # rank 0 = the concept's own name, rank 1 = a section/module title that
@@ -97,6 +99,8 @@ def _lexicon() -> dict[str, Any]:
                 "chapters": chapters,
                 "units": units,
                 "rows": {c["concept_id"]: int(c["vec_row"]) for c in concepts},
+                "vectors": store.concept_vectors(),  # same generation as `rows`
+                "generation": generation,
             }
         )
         return _cache
@@ -193,7 +197,7 @@ def resolve(
     probe_text = text if len(words) > 3 else (text + context)
 
     qvec = embedder.encode_one(probe_text)
-    sims = store.concept_vectors() @ qvec
+    sims = lex["vectors"] @ qvec
     order = np.argsort(-sims)[: max(top_k, 8)]
     concepts = lex["concepts"]
     candidates = [

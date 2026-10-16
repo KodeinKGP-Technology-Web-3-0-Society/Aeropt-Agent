@@ -13,7 +13,6 @@ falls back to the old unscoped mapping for that question.
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +23,12 @@ VERSION = "c1"
 
 
 def chapters() -> list[tuple[str, str, str]]:
-    conn = sqlite3.connect(store.CORPUS_DB)
-    rows = conn.execute(
-        "SELECT chapter_id, title, jee_unit FROM chapters WHERE in_syllabus = 1 "
-        "AND volume <> 'JEE syllabus' ORDER BY CAST(ord AS INTEGER)"
-    ).fetchall()
-    conn.close()
-    return rows
+    """In-syllabus physics chapters (the book's, not the JEE-syllabus placeholders), curriculum order."""
+    return [
+        (c["chapter_id"], c["title"], c["jee_unit"])
+        for c in store.chapters()
+        if c["in_syllabus"] and c.get("volume") != "JEE syllabus" and c.get("subject", "Physics") == "Physics"
+    ]
 
 
 def classify(rows: list[dict[str, Any]], cache_dir: Path) -> dict[str, str]:

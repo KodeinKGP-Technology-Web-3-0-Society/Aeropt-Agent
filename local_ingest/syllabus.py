@@ -59,6 +59,7 @@ class Chapter:
     in_syllabus: bool
     order: int
     module_ids: list[str] = field(default_factory=list)
+    subject: str = "Physics"
 
 
 @dataclass
@@ -74,6 +75,7 @@ class Concept:
     order: int
     aliases: list[str] = field(default_factory=list)
     source: str = "glossary"
+    subject: str = "Physics"
 
 
 def _collection_tree(path: Path) -> tuple[str, list[tuple[str, str, list[str]]]]:
@@ -195,7 +197,26 @@ def build_chapters() -> list[Chapter]:
                     module_ids=module_ids,
                 )
             )
+    from local_ingest.ncert import catalog
+
+    for c in catalog.CHEMISTRY_CHAPTERS:
+
+        order += 1
+        chapters.append(
+            Chapter(
+                chapter_id=c.chapter_id,
+                title=c.title,
+                volume=c.book,
+                unit=c.unit,
+                jee_unit=c.unit,
+                in_syllabus=True,
+                order=order,
+                module_ids=[],
+                subject="Chemistry",
+            )
+        )
     return chapters
+
 
 
 def build_concepts(
@@ -307,8 +328,15 @@ def build_concepts(
 
 
 def build() -> dict[str, Any]:
+    """Physics from OpenStax, plus every NCERT-only subject (chemistry) from NCERT's headings."""
+    from local_ingest import ncert_syllabus
+
     chapters = build_chapters()
     concepts, requires, parsed = build_concepts(chapters)
+    other = ncert_syllabus.build()
+    known = {ch.chapter_id for ch in chapters}  # the NCERT catalog's chapters are already listed above
+    chapters += [ch for ch in other["chapters"] if ch.chapter_id not in known]
+    concepts += other["concepts"]
     return {
         "chapters": chapters,
         "concepts": concepts,

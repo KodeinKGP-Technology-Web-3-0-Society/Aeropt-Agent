@@ -61,9 +61,14 @@ def test_an_example_without_its_solution_is_dropped():
 
 
 def test_catalog_covers_both_classes():
-    codes = [c.code for c in catalog.CHAPTERS]
-    assert len(codes) == 28 and len(set(codes)) == 28
+    phy = catalog.select(subject="physics")
+    chem = catalog.select(subject="chemistry")
+    assert len(phy) == 28 and len(set(c.code for c in phy)) == 28
+    assert len(chem) == 19 and len(set(c.code for c in chem)) == 19
+    assert len(catalog.CHAPTERS) == 47
     assert CH.book == "NCERT Physics Class XII Part I"
+    chem_ch = catalog.select({"kech101"})[0]
+    assert chem_ch.book == "NCERT Chemistry Class XI Part I"
 
 
 def test_a_block_not_printed_on_its_page_is_rejected():

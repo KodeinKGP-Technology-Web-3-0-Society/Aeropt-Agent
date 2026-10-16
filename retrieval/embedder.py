@@ -1,40 +1,47 @@
-"""Embeddings for retrieval — local and fast by default.
+"""The one embedding model for retrieval. There is no second one and no switch.
 
-Why not the hosted setup: one Gemini `embed_content` call measured ~1175 ms, and
-it sat on the critical path of every turn (config.RETRIEVAL_TIMEOUT_MS documents
-exactly that). A static model2vec model embeds a query in well under a
-millisecond on CPU with no network at all, which is what makes the local pipeline
-answer in tens of milliseconds instead of seconds.
+    MODEL_ID = "minishlab/potion-base-8M"   static model2vec, 256-d, L2-normalised
 
-Static embeddings are weaker than a transformer per-vector, so search.py never
-relies on them alone: BM25 over FTS5 and the concept graph carry the precision,
-dense similarity carries the recall, and rank fusion combines them.
+Every vector in the retrieval database (`content.embedding`, `concepts.embedding`) and
+every query vector comes from this function, so the two always live in the same space:
 
-`AEROPT_EMBED_BACKEND=gemini` switches to the hosted embedding model when a
-build wants matched vectors with the Aura index. Vectors from different backends
-are never mixed: the model name and dimension are recorded in the index and
-checked at load.
+  * ingest  — `local_ingest/push_index.py` embeds with `encode()` and writes `embed_model`
+              beside each vector; the migration's CHECK constraint refuses any other model.
+  * query   — the retrieval pipeline embeds the student's text with `encode_one()`.
+  * startup — `retrieval.store.verify_embedding_contract()` compares the database's
+              recorded model and dimension with these constants and refuses to serve
+              on a mismatch (ranking noise is worse than an error).
+
+Changing the model is a deliberate migration, never an env var: new MODEL_ID/DIM here,
+a new `vector(N)` + CHECK in SQL, then a full `make push` (every row re-embeds because
+the model is part of each row's hash).
+
+Why a static model: a query embeds in well under a millisecond on CPU with no network
+(one Gemini embed call measured ~1175 ms). Static vectors are weaker per-vector, so the
+pipeline never relies on them alone — full-text ranking and the concept graph carry the
+precision, dense similarity the recall, and rank fusion combines them.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 import numpy as np
 
-STATIC_MODEL = os.getenv("AEROPT_STATIC_EMBED_MODEL", "minishlab/potion-base-8M")
-BACKEND = os.getenv("AEROPT_EMBED_BACKEND", "static").strip().lower()
+MODEL_ID = "minishlab/potion-base-8M"
+DIM = 256
 
-# The index build snapshots the static model here so a query never needs the
-# network — the whole point of the local backend.
-LOCAL_MODEL_DIR = Path(__file__).resolve().parents[1] / ".local-run" / "models" / STATIC_MODEL.split("/")[-1]
+# Snapshotted here so a query never needs the network (and the Docker image can run offline).
+LOCAL_MODEL_DIR = Path(__file__).resolve().parents[1] / ".local-run" / "models" / MODEL_ID.split("/")[-1]
 
 _lock = threading.Lock()
 _model = None
-_gemini = None
+
+
+class EmbeddingMismatch(RuntimeError):
+    """Stored vectors and query vectors would come from different models or widths."""
 
 
 def _static():
@@ -44,61 +51,50 @@ def _static():
             if _model is None:
                 from model2vec import StaticModel
 
-                source = str(LOCAL_MODEL_DIR) if (LOCAL_MODEL_DIR / "model.safetensors").exists() else STATIC_MODEL
+                source = str(LOCAL_MODEL_DIR) if (LOCAL_MODEL_DIR / "model.safetensors").exists() else MODEL_ID
                 _model = StaticModel.from_pretrained(source)
     return _model
 
 
 def model_name() -> str:
-    return STATIC_MODEL if BACKEND == "static" else os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
+    return MODEL_ID
 
 
 def dimension() -> int:
-    return int(encode(["dimension probe"]).shape[1])
+    return DIM
 
 
-def _gemini_encode(texts: Sequence[str]) -> np.ndarray:
-    global _gemini
-    if _gemini is None:
-        from google import genai
-
-        import config
-
-        _gemini = genai.Client(api_key=config.GEMINI_API_KEY)
-    model = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
-    rows = []
-    for text in texts:
-        result = _gemini.models.embed_content(model=model, contents=text[:8000] or "physics")
-        rows.append(list(result.embeddings[0].values))
-    return np.asarray(rows, dtype=np.float32)
-
-
-def encode(texts: Iterable[str], *, normalize: bool = True) -> np.ndarray:
-    """Embed texts into a float32 matrix, L2-normalised so dot product == cosine."""
+def encode(texts: Iterable[str]) -> np.ndarray:
+    """Embed texts into a float32 (n, DIM) matrix, L2-normalised so dot product == cosine."""
     items = [t if isinstance(t, str) and t.strip() else "physics" for t in texts]
     if not items:
-        return np.zeros((0, 1), dtype=np.float32)
-    if BACKEND == "gemini":
-        vecs = _gemini_encode(items)
-    else:
-        vecs = np.asarray(_static().encode(items), dtype=np.float32)
-    if normalize:
-        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        vecs = vecs / norms
-    return vecs.astype(np.float32, copy=False)
+        return np.zeros((0, DIM), dtype=np.float32)
+    vecs = np.asarray(_static().encode(items), dtype=np.float32)
+    if vecs.shape[1] != DIM:
+        raise EmbeddingMismatch(f"{MODEL_ID} produced {vecs.shape[1]}-d vectors, expected {DIM}")
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (vecs / norms).astype(np.float32, copy=False)
 
 
 def encode_one(text: str) -> np.ndarray:
     return encode([text])[0]
 
 
+def to_pg(vec: np.ndarray) -> str:
+    """pgvector text literal. Only vectors from this module should ever be written or queried."""
+    v = np.asarray(vec, dtype=np.float32)
+    if v.shape != (DIM,):
+        raise EmbeddingMismatch(f"vector of shape {v.shape}, expected ({DIM},) from {MODEL_ID}")
+    return "[" + ",".join(f"{x:.7g}" for x in v.tolist()) + "]"
+
+
 def snapshot_static_model() -> Path:
-    """Copy the static model into .local-run so runtime is fully offline."""
+    """Copy the model into .local-run so runtime is fully offline."""
     LOCAL_MODEL_DIR.mkdir(parents=True, exist_ok=True)
     if (LOCAL_MODEL_DIR / "model.safetensors").exists():
         return LOCAL_MODEL_DIR
     from model2vec import StaticModel
 
-    StaticModel.from_pretrained(STATIC_MODEL).save_pretrained(str(LOCAL_MODEL_DIR))
+    StaticModel.from_pretrained(MODEL_ID).save_pretrained(str(LOCAL_MODEL_DIR))
     return LOCAL_MODEL_DIR
