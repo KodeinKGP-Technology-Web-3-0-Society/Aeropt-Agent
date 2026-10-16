@@ -372,11 +372,73 @@ def test_close_pending_updates_only_the_newest_older_same_concept_row():
     assert filters["user_id"] == "user-a"
     assert filters["feedback_status"] == "pending"
 
-    assert _close(client, exclude_turn_index=8, is_correct=True) == "older"
+    # The same attempt must not close the next pending row.
+    assert _close(client, exclude_turn_index=8, is_correct=True) == "newer"
+    assert _stored(fake, "older")["feedback_status"] == "pending"
     assert _stored(fake, "newer")["feedback_outcome"] == "incorrect"
-    assert _close(client, exclude_turn_index=8, is_correct=True) is None
+
+    assert _close(client, exclude_turn_index=8, is_correct=True, attempt_id="attempt-2") == "older"
     assert _stored(fake, "older")["feedback_outcome"] == "correct"
     assert _stored(fake, "newer")["feedback_outcome"] == "incorrect"
+    assert _close(client, exclude_turn_index=8, attempt_id="attempt-2") == "older"
+
+
+def test_same_attempt_closes_at_most_one_pending_episode():
+    fake = FakeSupabase()
+    _seed(
+        fake,
+        _row(episode_id="first", created_at="2026-01-03T00:00:00+00:00"),
+        _row(
+            episode_id="second",
+            session_id="sess-2",
+            assistant_turn_index=4,
+            created_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    client = _client(fake)
+    assert _close(client, attempt_id="attempt-a", is_correct=False) == "first"
+    assert _stored(fake, "first")["feedback_status"] == "next_attempt"
+    assert _stored(fake, "first")["feedback_attempt_id"] == "attempt-a"
+    assert _stored(fake, "second")["feedback_status"] == "pending"
+
+    assert _close(client, attempt_id="attempt-a", is_correct=True) == "first"
+    assert _stored(fake, "second")["feedback_status"] == "pending"
+    assert _stored(fake, "first")["feedback_outcome"] == "incorrect"
+
+    assert _close(client, attempt_id="attempt-b", is_correct=True) == "second"
+    assert _stored(fake, "second")["feedback_status"] == "next_attempt"
+    assert _stored(fake, "second")["feedback_attempt_id"] == "attempt-b"
+    assert _stored(fake, "first")["feedback_status"] == "next_attempt"
+
+
+def test_retrieval_update_does_not_touch_feedback_columns():
+    fake = FakeSupabase()
+    _seed(
+        fake,
+        _row(
+            feedback_status="next_attempt",
+            feedback_outcome="incorrect",
+            feedback_attempt_id="attempt-a",
+            embedding=[0.1, 0.2],
+            embed_model="old-model",
+            retrieval_text="feedback=pending",
+        ),
+    )
+    client = _client(fake)
+    client.update_episode_retrieval(
+        user_id="user-a",
+        episode_id="ep-1",
+        retrieval_text="feedback=incorrect",
+        embedding=[0.9, 0.1],
+        embed_model="new-model",
+    )
+    stored = _stored(fake, "ep-1")
+    assert stored["retrieval_text"] == "feedback=incorrect"
+    assert stored["embedding"] == [0.9, 0.1]
+    assert stored["embed_model"] == "new-model"
+    assert stored["feedback_status"] == "next_attempt"
+    assert stored["feedback_outcome"] == "incorrect"
+    assert stored["feedback_attempt_id"] == "attempt-a"
 
 
 def test_close_pending_skips_the_current_turn_and_prefers_content():

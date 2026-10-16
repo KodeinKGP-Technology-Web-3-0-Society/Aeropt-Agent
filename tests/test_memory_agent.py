@@ -341,6 +341,39 @@ def test_retrieval_scoring(monkeypatch):
     assert retrieve_relevant_episodes("user-a", "torque", "torque") == [fake.candidates[0]]
 
 
+def test_null_embedding_is_zero_and_skipped_cosine_is_kept(monkeypatch):
+    fake = _patch_db(monkeypatch)
+    _patch_embed(monkeypatch, vector=[1.0, 0.0], model="test-model")
+
+    fake.candidates = [
+        _episode(episode_id="null-other", concept_id="friction", embedding=None, embed_model=None)
+    ]
+    assert retrieve_relevant_episodes("user-a", "torque", "torque") == []
+
+    fake.candidates = [
+        _episode(episode_id="null-same", concept_id="torque", embedding=None, embed_model=None)
+    ]
+    assert [row["episode_id"] for row in retrieve_relevant_episodes("user-a", "torque", "torque")] == ["null-same"]
+
+    fake.candidates = [
+        _episode(episode_id="other-model", concept_id="friction", embed_model="other-model", embedding=[0.0, 1.0])
+    ]
+    assert [row["episode_id"] for row in retrieve_relevant_episodes("user-a", "torque", "torque")] == ["other-model"]
+
+    fake.candidates = [
+        _episode(episode_id="short", concept_id="friction", embedding=[1.0])
+    ]
+    assert [row["episode_id"] for row in retrieve_relevant_episodes("user-a", "torque", "torque")] == ["short"]
+
+    _patch_embed(monkeypatch, fail=True)
+    fake.candidates = [
+        _episode(episode_id="uncompared", concept_id="friction", embedding=[0.0, 1.0]),
+        _episode(episode_id="also", concept_id="optics", embedding=None),
+    ]
+    found = {row["episode_id"] for row in retrieve_relevant_episodes("user-a", "torque", "torque")}
+    assert found == {"uncompared", "also"}
+
+
 def test_recency_formula_is_bounded():
     now = datetime.now(timezone.utc).isoformat()
     assert math.isclose(memory_agent._recency(now), 1.0, abs_tol=0.01)
@@ -376,6 +409,85 @@ def test_format_and_recall_node(monkeypatch):
     recalled = memory_recall_node(_state())
     assert recalled["episode_context"].startswith("Past experiences (this student, not course material):")
     assert "error" not in recalled
+
+
+def test_delayed_feedback_refreshes_retrieval_and_keeps_the_old_vector_on_embed_failure(monkeypatch):
+    from db.supabase_client import SupabaseClient
+    from tests.test_episodic_memory import FakeSupabase, _row, _seed, _stored
+
+    fake = FakeSupabase()
+    _seed(
+        fake,
+        _row(
+            episode_id="ep-old",
+            embedding=[0.2, 0.3],
+            embed_model="old-model",
+            retrieval_text="feedback=pending",
+            surface="chat",
+            task_type="doubt",
+            observed_outcome="taught",
+            actions=["tool:search"],
+            query_excerpt="sign of torque",
+        ),
+    )
+    client = SupabaseClient.__new__(SupabaseClient)
+    client.client = fake
+    client._memory_enabled = None
+    client._episodes_enabled = True
+    client._agent_used_is_narrow = False
+    client.redis = None
+    monkeypatch.setattr(memory_agent, "db", client)
+    _patch_embed(monkeypatch, vector=[0.4, 0.6], model="refreshed-model")
+
+    state = _state(has_graded_outcome=True, is_correct=False, attempt_id="attempt-a", interaction_count=4)
+    apply_delayed_feedback(state)
+    stored = _stored(fake, "ep-old")
+    assert stored["feedback_status"] == "next_attempt"
+    assert stored["feedback_outcome"] == "incorrect"
+    assert stored["feedback_attempt_id"] == "attempt-a"
+    assert "feedback=incorrect" in stored["retrieval_text"]
+    assert stored["embedding"] == [0.4, 0.6]
+    assert stored["embed_model"] == "refreshed-model"
+
+    other = _row(
+        episode_id="ep-next",
+        session_id="sess-2",
+        assistant_turn_index=4,
+        created_at="2026-01-01T00:00:00+00:00",
+        embedding=[9.0, 9.0],
+        embed_model="old-model",
+        retrieval_text="feedback=pending",
+    )
+    _seed(fake, other)
+    apply_delayed_feedback(state)
+    assert _stored(fake, "ep-next")["feedback_status"] == "pending"
+    assert _stored(fake, "ep-old")["feedback_outcome"] == "incorrect"
+
+    _patch_embed(monkeypatch, fail=True)
+    apply_delayed_feedback(_state(
+        has_graded_outcome=True,
+        is_correct=True,
+        attempt_id="attempt-b",
+        interaction_count=5,
+    ))
+    nxt = _stored(fake, "ep-next")
+    assert nxt["feedback_status"] == "next_attempt"
+    assert nxt["feedback_outcome"] == "correct"
+    assert nxt["embedding"] == [9.0, 9.0]
+    assert nxt["embed_model"] == "old-model"
+    assert "feedback=correct" in nxt["retrieval_text"]
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("retrieval write failed")
+
+    monkeypatch.setattr(client, "update_episode_retrieval", _boom)
+    apply_delayed_feedback(_state(
+        has_graded_outcome=True,
+        is_correct=False,
+        attempt_id="attempt-b",
+        interaction_count=5,
+    ))
+    assert _stored(fake, "ep-next")["feedback_status"] == "next_attempt"
 
 
 def test_public_functions_fail_open(monkeypatch):

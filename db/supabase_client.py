@@ -1377,6 +1377,22 @@ class SupabaseClient:
         if not self.episodes_enabled():
             return None
         try:
+            # One graded attempt closes at most one prior episode. A retry
+            # returns the row this attempt already closed.
+            if attempt_id:
+                prior = (
+                    self.client.table("episodic_memory")
+                    .select("episode_id")
+                    .eq("user_id", user_id)
+                    .eq("feedback_attempt_id", attempt_id)
+                    .eq("feedback_status", "next_attempt")
+                    .eq("status", "active")
+                    .limit(1)
+                    .execute()
+                )
+                already = (prior.data or [None])[0]
+                if already and already.get("episode_id"):
+                    return str(already["episode_id"])
             res = (
                 self.client.table("episodic_memory")
                 .select(
@@ -1428,6 +1444,58 @@ class SupabaseClient:
             if not updated.data:
                 return None
             return str(episode_id)
+        except Exception:
+            return None
+
+    def read_episode_retrieval_source(
+        self, user_id: str, episode_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Projection fields the Memory Agent needs to rebuild retrieval text.
+
+        Persistence only. Does not embed.
+        """
+        if not user_id or not episode_id or not self.episodes_enabled():
+            return None
+        try:
+            res = (
+                self.client.table("episodic_memory")
+                .select(
+                    "episode_id, user_id, surface, concept_id, task_type, "
+                    "observed_outcome, query_excerpt, actions, feedback_outcome, "
+                    "embedding, embed_model"
+                )
+                .eq("user_id", user_id)
+                .eq("episode_id", episode_id)
+                .eq("status", "active")
+                .limit(1)
+                .execute()
+            )
+            row = (res.data or [None])[0]
+            return row if isinstance(row, dict) else None
+        except Exception:
+            return None
+
+    def update_episode_retrieval(
+        self,
+        *,
+        user_id: str,
+        episode_id: str,
+        retrieval_text: str,
+        embedding: Any = None,
+        embed_model: Optional[str] = None,
+    ) -> None:
+        """Write retrieval fields for one episode. Does not touch feedback columns."""
+        if not user_id or not episode_id or not retrieval_text or not self.episodes_enabled():
+            return None
+        try:
+            self.client.table("episodic_memory").update(
+                {
+                    "retrieval_text": retrieval_text,
+                    "embedding": embedding,
+                    "embed_model": embed_model,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("episode_id", episode_id).eq("user_id", user_id).execute()
         except Exception:
             return None
 

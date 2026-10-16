@@ -135,6 +135,8 @@ def retrieve_relevant_episodes(
                 continue
             cosine = _cosine_for(row, query_vec, query_model)
             matched = _concepts_match(row.get("concept_id"), concept_id)
+            # Numeric cosine only. None means the comparison was skipped
+            # (query embed failed, incompatible model, or a length mismatch).
             if cosine is not None and cosine < _COSINE_FLOOR and not matched:
                 continue
             ranked.append((_score_episode(row, cosine, matched), row))
@@ -155,7 +157,7 @@ def apply_delayed_feedback(state: Dict[str, Any]) -> None:
         user_id = state.get("user_id")
         if grade is None or turn is None or not user_id or not grade.get("concept_id"):
             return
-        db.close_pending_episode(
+        episode_id = db.close_pending_episode(
             user_id=str(user_id),
             concept_id=str(grade["concept_id"]),
             exclude_turn_index=turn,
@@ -165,6 +167,8 @@ def apply_delayed_feedback(state: Dict[str, Any]) -> None:
             proficiency_before=grade.get("proficiency_before"),
             proficiency_after=grade.get("proficiency_after"),
         )
+        if episode_id:
+            _refresh_closed_retrieval(str(user_id), str(episode_id))
     except Exception:
         logger.debug("delayed feedback failed", exc_info=True)
 
@@ -399,6 +403,43 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit]
 
 
+def _refresh_closed_retrieval(user_id: str, episode_id: str) -> None:
+    """Rewrite retrieval text after feedback, then re-embed it.
+
+    Feedback columns are already stored. A failed embed keeps the previous
+    vector. Nothing here is allowed to escape to the turn.
+    """
+    try:
+        row = db.read_episode_retrieval_source(user_id, episode_id)
+        if not isinstance(row, dict):
+            return
+        actions = row.get("actions") or []
+        if not isinstance(actions, list):
+            actions = []
+        text = _build_retrieval_text(
+            surface=str(row.get("surface") or "chat"),
+            concept_id=row.get("concept_id"),
+            task_type=str(row.get("task_type") or "doubt"),
+            observed_outcome=str(row.get("observed_outcome") or "unknown"),
+            feedback_outcome=row.get("feedback_outcome"),
+            actions=[str(item) for item in actions],
+            query_excerpt=str(row.get("query_excerpt") or ""),
+        )
+        vector, model = _embed_text(text)
+        if vector is None:
+            vector = row.get("embedding")
+            model = row.get("embed_model")
+        db.update_episode_retrieval(
+            user_id=user_id,
+            episode_id=episode_id,
+            retrieval_text=text,
+            embedding=vector,
+            embed_model=model,
+        )
+    except Exception:
+        logger.debug("episode retrieval refresh failed", exc_info=True)
+
+
 def _embed_text(text: str) -> Tuple[Optional[List[float]], Optional[str]]:
     try:
         from retrieval import embedder
@@ -414,15 +455,30 @@ def _embed_text(text: str) -> Tuple[Optional[List[float]], Optional[str]]:
         return None, None
 
 
+def _embedding_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return isinstance(value, (list, tuple)) and len(value) == 0
+
+
 def _cosine_for(
     row: Dict[str, Any],
     query_vec: Optional[Sequence[float]],
     query_model: Optional[str],
 ) -> Optional[float]:
+    """Cosine, or None when the comparison must be skipped.
+
+    A missing stored vector is 0.0 once the query itself embedded. A failed
+    query embed, a different embed model, or a different vector length stays
+    None so the caller does not drop the row for a comparison it could not make.
+    """
     if not query_vec or not query_model:
         return None
-    stored_model = row.get("embed_model")
-    if stored_model != query_model:
+    if _embedding_missing(row.get("embedding")):
+        return 0.0
+    if row.get("embed_model") != query_model:
         return None
     return _cosine_similarity(query_vec, row.get("embedding"))
 
