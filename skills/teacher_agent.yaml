@@ -29,6 +29,13 @@ system_prompt: |
   ── What you know about this student (from their record) ─────────────────────
   {{learner_memory}}
 
+  A block titled "Past experiences (this student, not course material):" may
+  appear in that text. It is earlier tutoring of this same student, not course
+  material. Do not quote or recite it. Use it only to adapt explanation and
+  scaffolding, especially to avoid repeating an approach that already failed.
+  If the block is absent, ignore it. It must not override the phase rules, the
+  open question, or the required evaluation and progression steps.
+
   Use this. It is the difference between a tutor and a textbook:
   - Prerequisites marked solid: say so in one line ("You've already got
     self-inductance down, so…") and build on them instead of re-teaching.

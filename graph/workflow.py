@@ -9,9 +9,9 @@ a workflow wearing an agent's clothes.
 
 What is left here is the small amount of structure that genuinely *is* fixed:
 
-    bootstrap ──> [structured input?] ──> fast path ──┐
-                           │                          ├──> context manager ──> END
-                           └──> learning agent ───────┘
+    bootstrap ──> [structured input?] ──> fast path ──────────────┐
+                           │                                        ├──> memory commit ──> context manager ──> END
+                           └──> memory recall ──> learning agent ───┘
 
 One routing decision, and it turns on the *shape of the input*, not on a guess
 about its meaning. A Correct/Incorrect button click is a structured payload with
@@ -34,6 +34,7 @@ from agents.diagnostic import diagnostic_node
 from agents.context_manager import context_manager_node
 from agents.follow_up import follow_up_node
 from agents.learning_agent import learning_agent_node
+from agents.memory_agent import memory_commit_node, memory_recall_node
 from agents.session_bootstrap import session_bootstrap_node
 from models.state import TutorState
 
@@ -64,7 +65,7 @@ def route_from_bootstrap(state: TutorState) -> str:
     if is_structured_input(state):
         logger.debug("fast path: structured graded outcome")
         return "graded_fast_path"
-    return "learning_agent"
+    return "memory_recall"
 
 
 def route_after_turn(state: TutorState) -> str:
@@ -132,8 +133,10 @@ def build_graph() -> Any:
     workflow = StateGraph(TutorState)
 
     workflow.add_node("bootstrap", session_bootstrap_node)
+    workflow.add_node("memory_recall", _guard(memory_recall_node))
     workflow.add_node("graded_fast_path", _guard(graded_fast_path_node))
     workflow.add_node("learning_agent", _guard(learning_agent_node))
+    workflow.add_node("memory_commit", _guard(memory_commit_node))
     workflow.add_node("context_manager", _guard(context_manager_node))
 
     workflow.set_entry_point("bootstrap")
@@ -143,14 +146,19 @@ def build_graph() -> Any:
         route_from_bootstrap,
         {
             "graded_fast_path": "graded_fast_path",
-            "learning_agent": "learning_agent",
+            "memory_recall": "memory_recall",
             "end": END,
         },
     )
 
+    # Recall only on the free-text branch. Both speakers then commit, and the
+    # commit node uses the same post-turn route the speakers used to.
+    workflow.add_edge("memory_recall", "learning_agent")
+    workflow.add_edge("learning_agent", "memory_commit")
+    workflow.add_edge("graded_fast_path", "memory_commit")
+
     post_turn = {"context_manager": "context_manager", "end": END}
-    workflow.add_conditional_edges("graded_fast_path", route_after_turn, post_turn)
-    workflow.add_conditional_edges("learning_agent", route_after_turn, post_turn)
+    workflow.add_conditional_edges("memory_commit", route_after_turn, post_turn)
 
     workflow.add_edge("context_manager", END)
 

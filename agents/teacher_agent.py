@@ -162,9 +162,15 @@ def _history(session_id: str, query: str) -> List[Dict[str, Any]]:
     return merged
 
 
-def _learner_block(snapshot: Dict[str, Any], user_id: str, session_id: str = "") -> str:
+def _learner_block(
+    snapshot: Dict[str, Any],
+    user_id: str,
+    session_id: str = "",
+    episode_context: str = "",
+) -> str:
     """This concept's history, the student's overall trajectory, then what they
-    were just doing elsewhere (doubts asked in chat, other lessons)."""
+    were just doing elsewhere (doubts asked in chat, other lessons). A non-empty
+    episodic block is appended as already written."""
     from services.cross_room import recent_activity
     from services.progress_report import progress_digest
 
@@ -175,7 +181,11 @@ def _learner_block(snapshot: Dict[str, Any], user_id: str, session_id: str = "")
     activity = recent_activity(user_id, session_id)
     if activity:
         parts.append(activity)
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    context = (episode_context or "").strip()
+    if context:
+        text = f"{text}\n\n{context}"
+    return text
 
 
 def _mode_block(state: StudyRoomState) -> str:
@@ -324,7 +334,12 @@ def teacher_agent_node(state: StudyRoomState) -> Dict[str, Any]:
         "{{difficulty_level}}": str(state.get("difficulty_level", 1)),
         "{{questions_served}}": str(state.get("questions_served", 0)),
         "{{questions_correct}}": str(state.get("questions_correct", 0)),
-        "{{learner_memory}}": _learner_block(snapshot, user_id, session_id),
+        "{{learner_memory}}": _learner_block(
+            snapshot,
+            user_id,
+            session_id,
+            state.get("episode_context") or "",
+        ),
         "{{session_summary}}": state.get("session_summary")
         or ("This is the first message of the session." if not history else "See the conversation below."),
         "{{open_question}}": _question_block(state),

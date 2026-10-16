@@ -55,9 +55,16 @@ class StudyRoomState(TypedDict, total=False):
     wrong_streak: int            # consecutive wrong answers
     served_content_ids: List[str]  # content_ids already served this session
     last_answered: Optional[Dict[str, Any]]  # the question just graded, for "explain it"
+    # This turn's practice grade, staged by grade_practice_answer for commit.
+    # Transient. Not carried. Keys: is_correct, content_id, concept_id,
+    # attempt_id, proficiency_before, proficiency_after.
+    last_grade: Optional[Dict[str, Any]]
 
     # ── Memory ────────────────────────────────────────────────────────────────
     recalled_memories: List[Dict[str, Any]]
+    # Episodic block for this turn only. Written by memory_recall_node and read
+    # by the Teacher Agent. Not carried across turns.
+    episode_context: Optional[str]
     prior_study_sessions: List[Dict[str, Any]]  # past sessions on this concept
     learner_snapshot: Dict[str, Any]            # services/study_context.py
     prior_session_summary: Optional[str]

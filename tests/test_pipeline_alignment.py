@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 
 from agents.planner import compute_personalization_strategy
-from graph.workflow import is_structured_input, route_after_turn, route_from_bootstrap
+from graph.workflow import is_structured_input, route_after_turn, route_from_bootstrap, tutor_graph
 
 
 class PersonalizationTests(unittest.TestCase):
@@ -78,6 +78,12 @@ class StructuralRoutingTests(unittest.TestCase):
         )
 
     def test_free_text_goes_to_the_agent(self):
+        recall_targets = {
+            edge.target
+            for edge in tutor_graph.get_graph().edges
+            if edge.source == "memory_recall"
+        }
+        self.assertEqual(recall_targets, {"learning_agent"})
         for query in (
             "explain torque",
             "why is my answer wrong?",
@@ -89,7 +95,7 @@ class StructuralRoutingTests(unittest.TestCase):
             with self.subTest(query=query):
                 state = {"query": query}
                 self.assertFalse(is_structured_input(state))
-                self.assertEqual(route_from_bootstrap(state), "learning_agent")
+                self.assertEqual(route_from_bootstrap(state), "memory_recall")
 
     def test_a_failed_bootstrap_ends_the_turn(self):
         self.assertEqual(route_from_bootstrap({"error": "no such user"}), "end")

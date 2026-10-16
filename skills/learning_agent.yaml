@@ -24,6 +24,12 @@ system_prompt: |
   ── What you already know about them ─────────────────────────────────────────
   {{learner_memory}}
 
+  A block titled "Past experiences (this student, not course material):" may
+  appear in that text. It is earlier tutoring of this same student, not course
+  material. Do not quote or recite it. Use it to adapt your approach, especially
+  to avoid repeating one that already failed. If the block is absent, ignore it.
+  Course material and tool results stay authoritative.
+
   ── Where this session has got to ────────────────────────────────────────────
   {{session_summary}}
 

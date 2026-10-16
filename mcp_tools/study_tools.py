@@ -529,6 +529,26 @@ def _nearby_question(concept_id: str, served: set, difficulty: int, types: tuple
     return None
 
 
+def _last_grade(
+    *,
+    is_correct: bool,
+    content_id: Optional[str],
+    concept_id: Optional[str],
+    attempt_id: Any,
+    proficiency_before: Any = None,
+    proficiency_after: Any = None,
+) -> Dict[str, Any]:
+    """Grade facts staged onto the turn. This does not close an episode."""
+    return {
+        "is_correct": bool(is_correct),
+        "content_id": content_id or None,
+        "concept_id": concept_id or None,
+        "attempt_id": str(attempt_id) if attempt_id else None,
+        "proficiency_before": proficiency_before,
+        "proficiency_after": proficiency_after,
+    }
+
+
 # ── Grade practice answer ────────────────────────────────────────────────────
 
 
@@ -630,6 +650,7 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
     # also writes the user_attempts row. The error type is passed in so it does
     # not spend a model call classifying it.
     recorded = False
+    diag: Dict[str, Any] = {}
     try:
         from agents.diagnostic import diagnostic_node
 
@@ -649,9 +670,22 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
         recorded = not diag.get("error")
     except Exception:
         logger.debug("diagnostic update failed", exc_info=True)
-    if not recorded:
+        diag = {}
+
+    # Commit closes an older episode later. This tool only stages the grade.
+    last_grade: Optional[Dict[str, Any]] = None
+    if recorded:
+        last_grade = _last_grade(
+            is_correct=args.is_correct,
+            content_id=content_id or None,
+            concept_id=concept_id or None,
+            attempt_id=diag.get("attempt_id"),
+            proficiency_before=diag.get("proficiency_before"),
+            proficiency_after=diag.get("proficiency_after"),
+        )
+    else:
         try:
-            db.insert_user_attempt(
+            attempt = db.insert_user_attempt(
                 user_id=ctx.user_id,
                 session_id=ctx.state.get("session_id", ""),
                 concept_id=concept_id,
@@ -663,18 +697,30 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
                 source="study",
                 study_session_id=ssid,
             )
+            row = attempt if isinstance(attempt, dict) else {}
+            last_grade = _last_grade(
+                is_correct=args.is_correct,
+                content_id=content_id or None,
+                concept_id=concept_id or None,
+                attempt_id=row.get("attempt_id"),
+                proficiency_before=row.get("proficiency_before"),
+                proficiency_after=row.get("proficiency_after"),
+            )
         except Exception:
             logger.debug("attempt insert failed", exc_info=True)
 
-    ctx.stage(
-        questions_served=questions_served,
-        questions_correct=questions_correct,
-        difficulty_level=difficulty,
-        practice_streak=practice_streak,
-        wrong_streak=wrong_streak,
-        awaiting_answer=False,
-        current_question=None,
-    )
+    staged: Dict[str, Any] = {
+        "questions_served": questions_served,
+        "questions_correct": questions_correct,
+        "difficulty_level": difficulty,
+        "practice_streak": practice_streak,
+        "wrong_streak": wrong_streak,
+        "awaiting_answer": False,
+        "current_question": None,
+    }
+    if last_grade is not None:
+        staged["last_grade"] = last_grade
+    ctx.stage(**staged)
     ctx.state["graded_this_turn"] = True  # turn-local: serve_practice_question waits for the student
     ctx.state.update(ctx.updates)
 

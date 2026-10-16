@@ -56,6 +56,10 @@ class SupabaseClient:
             self.retrieval_client: Client = self.client
         # None = not probed yet; set by memory_enabled() on first use.
         self._memory_enabled: Optional[bool] = None
+        # None = not probed yet; set by episodes_enabled() on first use.
+        # Independent of _memory_enabled: a missing learner_memory table must
+        # not disable episodes, and a missing episode table must not disable facts.
+        self._episodes_enabled: Optional[bool] = None
         # Set to True the first time chat_turns rejects a post-007 agent label.
         self._agent_used_is_narrow: bool = False
         # Optional prefetch cache. None when REDIS_URL is unset or unreachable;
@@ -1274,6 +1278,328 @@ class SupabaseClient:
                 .execute()
             )
             return res.data
+        except Exception:
+            return None
+
+    # ─────────────────── episodic memory (migration 017) ─────────────────────
+    #
+    # Projection rows for the Memory Agent. Not learner_memory. Every method
+    # fails open. episodes_enabled() is a separate probe from memory_enabled().
+
+    def episodes_enabled(self) -> bool:
+        """True when migration 017 has been applied (episodic_memory is queryable)."""
+        if self._episodes_enabled is None:
+            try:
+                self.client.table("episodic_memory").select("episode_id").limit(1).execute()
+                self._episodes_enabled = True
+            except Exception as exc:
+                if self._is_missing_table(exc):
+                    self._episodes_enabled = False
+                else:
+                    # A transient error is not proof the table is absent — don't
+                    # cache a false negative that disables episodes for the process.
+                    return False
+        return self._episodes_enabled
+
+    def upsert_episode(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Insert or update one episode keyed by (session_id, assistant_turn_index).
+
+        Returns the row, or None when the table is unavailable, the payload is
+        incomplete, or the existing row belongs to a different user. Null
+        feedback_* fields are omitted. A replay that sends feedback_status
+        'pending' does not write that value, so a closed row stays closed.
+        """
+        if not self.episodes_enabled():
+            return None
+        try:
+            if not self._episode_upsert_ready(row):
+                return None
+            payload = {
+                key: value
+                for key, value in row.items()
+                if not (str(key).startswith("feedback_") and value is None)
+            }
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            existing = (
+                self.client.table("episodic_memory")
+                .select("user_id, feedback_status")
+                .eq("session_id", payload["session_id"])
+                .eq("assistant_turn_index", payload["assistant_turn_index"])
+                .limit(1)
+                .execute()
+            )
+            found = (existing.data or [None])[0]
+            if found is not None and str(found.get("user_id")) != str(payload["user_id"]):
+                logging.getLogger("jee_tutor.db").warning(
+                    "Refusing episodic_memory upsert: existing row user_id differs "
+                    "(session_id=%s assistant_turn_index=%s).",
+                    payload.get("session_id"),
+                    payload.get("assistant_turn_index"),
+                )
+                return None
+            # Replay of a non-grade turn must not reopen a row that later
+            # feedback already closed. On insert the column default is pending.
+            if found is not None and payload.get("feedback_status") == "pending":
+                payload.pop("feedback_status", None)
+            # default_to_null=False keeps omitted columns instead of writing NULL.
+            res = (
+                self.client.table("episodic_memory")
+                .upsert(
+                    payload,
+                    on_conflict="session_id,assistant_turn_index",
+                    default_to_null=False,
+                )
+                .execute()
+            )
+            return (res.data or [None])[0]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _episode_upsert_ready(row: Dict[str, Any]) -> bool:
+        if not isinstance(row, dict):
+            return False
+        for key in ("user_id", "session_id", "surface", "route", "task_type", "retrieval_text"):
+            if not row.get(key):
+                return False
+        return row.get("assistant_turn_index") is not None
+
+    def close_pending_episode(
+        self,
+        *,
+        user_id: str,
+        concept_id: str,
+        exclude_turn_index: int,
+        content_id: Optional[str] = None,
+        is_correct: bool = False,
+        attempt_id: Optional[str] = None,
+        proficiency_before: Optional[float] = None,
+        proficiency_after: Optional[float] = None,
+    ) -> Optional[str]:
+        """Close the newest older pending episode for this user and concept.
+
+        Returns that episode_id, or None when nothing pending matches. The row
+        at exclude_turn_index is never updated. A content_id match wins over a
+        newer concept-only row inside the same candidate set.
+        """
+        if not user_id or not concept_id or exclude_turn_index is None:
+            return None
+        if not self.episodes_enabled():
+            return None
+        try:
+            # One graded attempt closes at most one prior episode. A retry
+            # returns the row this attempt already closed.
+            if attempt_id:
+                prior = (
+                    self.client.table("episodic_memory")
+                    .select("episode_id")
+                    .eq("user_id", user_id)
+                    .eq("feedback_attempt_id", attempt_id)
+                    .eq("feedback_status", "next_attempt")
+                    .eq("status", "active")
+                    .limit(1)
+                    .execute()
+                )
+                already = (prior.data or [None])[0]
+                if already and already.get("episode_id"):
+                    return str(already["episode_id"])
+            res = (
+                self.client.table("episodic_memory")
+                .select(
+                    "episode_id, content_id, assistant_turn_index, created_at, "
+                    "proficiency_before, proficiency_after"
+                )
+                .eq("user_id", user_id)
+                .eq("concept_id", concept_id)
+                .eq("status", "active")
+                .eq("feedback_status", "pending")
+                .neq("assistant_turn_index", exclude_turn_index)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            rows = res.data or []
+            chosen = None
+            if content_id:
+                for candidate in rows:
+                    if candidate.get("content_id") == content_id:
+                        chosen = candidate
+                        break
+            if chosen is None and rows:
+                chosen = rows[0]
+            if chosen is None:
+                return None
+            episode_id = chosen.get("episode_id")
+            if not episode_id or chosen.get("assistant_turn_index") == exclude_turn_index:
+                return None
+            now = datetime.now(timezone.utc).isoformat()
+            patch: Dict[str, Any] = {
+                "feedback_status": "next_attempt",
+                "feedback_outcome": "correct" if is_correct else "incorrect",
+                "feedback_attempt_id": attempt_id,
+                "feedback_at": now,
+                "updated_at": now,
+            }
+            if chosen.get("proficiency_before") is None and proficiency_before is not None:
+                patch["proficiency_before"] = proficiency_before
+            if chosen.get("proficiency_after") is None and proficiency_after is not None:
+                patch["proficiency_after"] = proficiency_after
+            updated = (
+                self.client.table("episodic_memory")
+                .update(patch)
+                .eq("episode_id", episode_id)
+                .eq("user_id", user_id)
+                .eq("feedback_status", "pending")
+                .execute()
+            )
+            if not updated.data:
+                return None
+            return str(episode_id)
+        except Exception:
+            return None
+
+    def read_episode_retrieval_source(
+        self, user_id: str, episode_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Projection fields the Memory Agent needs to rebuild retrieval text.
+
+        Persistence only. Does not embed.
+        """
+        if not user_id or not episode_id or not self.episodes_enabled():
+            return None
+        try:
+            res = (
+                self.client.table("episodic_memory")
+                .select(
+                    "episode_id, user_id, surface, concept_id, task_type, "
+                    "observed_outcome, query_excerpt, actions, feedback_outcome, "
+                    "embedding, embed_model"
+                )
+                .eq("user_id", user_id)
+                .eq("episode_id", episode_id)
+                .eq("status", "active")
+                .limit(1)
+                .execute()
+            )
+            row = (res.data or [None])[0]
+            return row if isinstance(row, dict) else None
+        except Exception:
+            return None
+
+    def update_episode_retrieval(
+        self,
+        *,
+        user_id: str,
+        episode_id: str,
+        retrieval_text: str,
+        embedding: Any = None,
+        embed_model: Optional[str] = None,
+    ) -> None:
+        """Write retrieval fields for one episode. Does not touch feedback columns."""
+        if not user_id or not episode_id or not retrieval_text or not self.episodes_enabled():
+            return None
+        try:
+            self.client.table("episodic_memory").update(
+                {
+                    "retrieval_text": retrieval_text,
+                    "embedding": embedding,
+                    "embed_model": embed_model,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("episode_id", episode_id).eq("user_id", user_id).execute()
+        except Exception:
+            return None
+
+    def fetch_episode_candidates(
+        self, user_id: str, concept_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Active episodes for one user. No ranking — the Memory Agent scores them.
+
+        Known concept: newest 24 on that concept, plus newest 16 on any concept,
+        deduped by episode_id. Unknown concept: newest 40. Empty list on failure.
+        """
+        if not user_id or not self.episodes_enabled():
+            return []
+        columns = (
+            "episode_id, user_id, concept_id, task_type, actions, query_excerpt, "
+            "observed_outcome, checker_verdict, feedback_status, feedback_outcome, "
+            "embedding, embed_model, created_at"
+        )
+        try:
+            if concept_id:
+                concept_res = (
+                    self.client.table("episodic_memory")
+                    .select(columns)
+                    .eq("user_id", user_id)
+                    .eq("status", "active")
+                    .eq("concept_id", concept_id)
+                    .order("created_at", desc=True)
+                    .limit(24)
+                    .execute()
+                )
+                any_res = (
+                    self.client.table("episodic_memory")
+                    .select(columns)
+                    .eq("user_id", user_id)
+                    .eq("status", "active")
+                    .order("created_at", desc=True)
+                    .limit(16)
+                    .execute()
+                )
+                merged = list(concept_res.data or []) + list(any_res.data or [])
+            else:
+                res = (
+                    self.client.table("episodic_memory")
+                    .select(columns)
+                    .eq("user_id", user_id)
+                    .eq("status", "active")
+                    .order("created_at", desc=True)
+                    .limit(40)
+                    .execute()
+                )
+                merged = list(res.data or [])
+            seen = set()
+            unique: List[Dict[str, Any]] = []
+            for item in merged:
+                episode_id = item.get("episode_id")
+                if episode_id in seen:
+                    continue
+                seen.add(episode_id)
+                unique.append(item)
+            return unique
+        except Exception:
+            return []
+
+    def invalidate_session(self, session_id: str) -> None:
+        """Mark every episode for a session not retrievable. Does not delete."""
+        if not session_id or not self.episodes_enabled():
+            return None
+        try:
+            self.client.table("episodic_memory").update(
+                {
+                    "status": "invalid",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("session_id", session_id).execute()
+        except Exception:
+            return None
+
+    def invalidate_turn(self, session_id: str, assistant_turn_index: int) -> None:
+        """Mark one assistant slot invalid. A missing row is a no-op."""
+        if not session_id or assistant_turn_index is None or not self.episodes_enabled():
+            return None
+        try:
+            (
+                self.client.table("episodic_memory")
+                .update(
+                    {
+                        "status": "invalid",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                .eq("session_id", session_id)
+                .eq("assistant_turn_index", assistant_turn_index)
+                .execute()
+            )
         except Exception:
             return None
 
