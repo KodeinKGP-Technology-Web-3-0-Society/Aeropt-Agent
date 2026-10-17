@@ -195,6 +195,10 @@ JEE_MATHEMATICS_UNITS: dict[str, list[tuple[str, ...]]] = {
          "binomial distribution", "independent events"),
         ("Sets, Relations and Functions", "sets relations and functions", "relations and functions", "types of functions",
          "composite functions", "inverse functions", "domain and range"),
+        ("Statistics", "statistics", "measures of dispersion", "mean deviation", "variance and standard deviation",
+         "analysis of frequency distributions"),
+        ("Linear Programming", "linear programming", "lpp", "feasible region", "objective function", "linear constraints"),
+        ("Linear Inequalities", "linear inequalities", "inequalities", "algebraic solutions of linear inequalities"),
     ],
     "Trigonometry": [
         ("Trigonometric Ratios and Identities", "trigonometric ratios and identities", "trigonometry", "compound angles",
@@ -212,16 +216,17 @@ JEE_MATHEMATICS_UNITS: dict[str, list[tuple[str, ...]]] = {
         ("Parabola", "parabola", "conic sections parabola", "tangents to parabola", "focal chord", "parametric coordinates parabola"),
         ("Ellipse", "ellipse", "conic sections ellipse", "eccentricity of ellipse", "tangents to ellipse"),
         ("Hyperbola", "hyperbola", "conic sections hyperbola", "rectangular hyperbola", "asymptotes of hyperbola"),
+        ("Conic Sections", "conic sections", "sections of a cone", "conics", "focus and directrix"),
     ],
     "Differential Calculus": [
         ("Limits, Continuity and Differentiability", "limits continuity and differentiability", "limits", "continuity",
-         "differentiability", "l'hopital's rule", "indeterminate forms"),
+         "differentiability", "l'hopital's rule", "indeterminate forms", "limits and derivatives", "continuity and differentiability"),
         ("Application of Derivatives", "application of derivatives", "aod", "rate of change", "tangents and normals calculus",
          "increasing and decreasing functions", "maxima and minima", "rolle's theorem", "lagrange mean value theorem", "lmvt"),
     ],
     "Integral Calculus": [
         ("Indefinite Integration", "indefinite integration", "indefinite integrals", "integration by substitution",
-         "integration by parts", "partial fractions integration"),
+         "integration by parts", "partial fractions integration", "integrals"),
         ("Definite Integration", "definite integration", "definite integrals", "properties of definite integrals",
          "leibnitz rule", "fundamental theorem of calculus"),
         ("Area Under Curves", "area under curves", "area of bounded regions", "application of integrals"),
@@ -232,7 +237,8 @@ JEE_MATHEMATICS_UNITS: dict[str, list[tuple[str, ...]]] = {
         ("Vector Algebra", "vectors", "vector algebra", "dot product", "cross product", "scalar triple product",
          "vector triple product", "coplanarity of vectors"),
         ("Three Dimensional Geometry", "3d geometry", "three dimensional geometry", "direction cosines",
-         "equation of line in space", "equation of plane", "shortest distance between skew lines"),
+         "equation of line in space", "equation of plane", "shortest distance between skew lines",
+         "introduction to three dimensional geometry"),
     ],
 }
 

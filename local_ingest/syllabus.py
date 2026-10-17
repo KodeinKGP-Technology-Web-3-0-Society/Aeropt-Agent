@@ -199,20 +199,80 @@ def build_chapters() -> list[Chapter]:
             )
     from local_ingest.ncert import catalog
 
-    for c in catalog.CHEMISTRY_CHAPTERS:
+    CHEM_BRANCH = {
+        "Some Basic Concepts in Chemistry": "Physical Chemistry",
+        "Atomic Structure": "Physical Chemistry",
+        "Chemical Thermodynamics": "Physical Chemistry",
+        "Equilibrium": "Physical Chemistry",
+        "Redox Reactions and Electrochemistry": "Physical Chemistry",
+        "Solutions": "Physical Chemistry",
+        "Chemical Kinetics": "Physical Chemistry",
+        "Classification of Elements and Periodicity in Properties": "Inorganic Chemistry",
+        "Chemical Bonding and Molecular Structure": "Inorganic Chemistry",
+        "P-Block Elements": "Inorganic Chemistry",
+        "d- and f-Block Elements": "Inorganic Chemistry",
+        "Coordination Compounds": "Inorganic Chemistry",
+        "Some Basic Principles of Organic Chemistry": "Organic Chemistry",
+        "Purification and Characterisation of Organic Compounds": "Organic Chemistry",
+        "Hydrocarbons": "Organic Chemistry",
+        "Organic Compounds Containing Halogens": "Organic Chemistry",
+        "Organic Compounds Containing Oxygen": "Organic Chemistry",
+        "Organic Compounds Containing Nitrogen": "Organic Chemistry",
+        "Biomolecules": "Organic Chemistry",
+        "Principles Related to Practical Chemistry": "Physical Chemistry",
+    }
 
+    for c in catalog.CHEMISTRY_CHAPTERS:
         order += 1
+        branch = CHEM_BRANCH.get(c.unit, "Physical Chemistry")
         chapters.append(
             Chapter(
                 chapter_id=c.chapter_id,
                 title=c.title,
                 volume=c.book,
-                unit=c.unit,
+                unit=branch,
                 jee_unit=c.unit,
                 in_syllabus=True,
                 order=order,
                 module_ids=[],
                 subject="Chemistry",
+            )
+        )
+
+    MATH_BRANCH = {
+        "Sets, Relations and Functions": "Algebra",
+        "Complex Numbers and Quadratic Equations": "Algebra",
+        "Permutations and Combinations": "Algebra",
+        "Binomial Theorem and its Simple Applications": "Algebra",
+        "Sequence and Series": "Algebra",
+        "Matrices and Determinants": "Algebra",
+        "Algebra": "Algebra",
+        "Trigonometry": "Trigonometry",
+        "Coordinate Geometry": "Coordinate Geometry",
+        "Limit, Continuity and Differentiability": "Differential Calculus",
+        "Application of Derivatives": "Differential Calculus",
+        "Differential Calculus": "Differential Calculus",
+        "Integral Calculus": "Integral Calculus",
+        "Differential Equations": "Integral Calculus",
+        "Vector Algebra": "Vectors and 3D Geometry",
+        "Three Dimensional Geometry": "Vectors and 3D Geometry",
+        "Statistics and Probability": "Statistics and Probability",
+    }
+
+    for c in catalog.MATHEMATICS_CHAPTERS:
+        order += 1
+        branch = MATH_BRANCH.get(c.unit, "Algebra")
+        chapters.append(
+            Chapter(
+                chapter_id=c.chapter_id,
+                title=c.title,
+                volume=c.book,
+                unit=branch,
+                jee_unit=c.unit,
+                in_syllabus=True,
+                order=order,
+                module_ids=[],
+                subject="Mathematics",
             )
         )
     return chapters
@@ -337,6 +397,7 @@ def build() -> dict[str, Any]:
     known = {ch.chapter_id for ch in chapters}  # the NCERT catalog's chapters are already listed above
     chapters += [ch for ch in other["chapters"] if ch.chapter_id not in known]
     concepts += other["concepts"]
+    requires += other.get("requires", [])
     return {
         "chapters": chapters,
         "concepts": concepts,

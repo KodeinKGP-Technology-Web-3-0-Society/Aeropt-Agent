@@ -238,12 +238,17 @@ def finalize(cur, items, n_concepts: int) -> None:
     """Record what the corpus was built with, then make the model CHECK constraints binding."""
     from psycopg2.extras import execute_values
 
+    cur.execute("select count(*) from public.content")
+    total_content = cur.fetchone()[0]
+    cur.execute("select count(*) from public.concepts")
+    total_concepts = cur.fetchone()[0]
+
     meta = {
         "embed_model": MODEL_ID,
         "embed_dim": str(DIM),
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "content_rows": str(len(items)),
-        "concept_rows": str(n_concepts),
+        "content_rows": str(total_content),
+        "concept_rows": str(total_concepts),
         "subjects": json.dumps(dict(Counter(it["subject"] for it in items))),
     }
     execute_values(cur, "insert into public.retrieval_meta (key, value) values %s on conflict (key) do update"
@@ -336,26 +341,30 @@ def main() -> int:
               f"links {links}, edges {edges}")
 
         concept_ids = {c.concept_id for c in concepts}
-        if not args.skip_topics and (not args.subject or args.subject.lower() == "physics"):
+        if not args.skip_topics:
             from local_ingest import pg_syllabus_topics
-
-            physics = [c for c in concepts if c.subject == "Physics"]
-            res = pg_syllabus_topics.apply(cur, physics, [c for c in syllabus["chapters"] if c.subject == "Physics"],
-                                           [it for it in items if it["subject"] == "Physics"], embedder.encode)
             from psycopg2.extras import execute_values
 
-            if res["chapters"]:
-                upsert_chapters(cur, [(c["chapter_id"], c["subject"], c["title"], c["volume"], c["unit"],
-                                       c["jee_unit"], c["in_syllabus"], c["ord"]) for c in res["chapters"]])
-            if res["concepts"]:
-                upsert_concepts(cur, [concept_tuple(c, c["embedding"], model) for c in res["concepts"]])
-            if res["links"]:
-                execute_values(cur, "insert into public.chunk_concepts (content_id, concept_id, role) values %s"
-                               " on conflict (content_id, concept_id) do nothing",
-                               [(a, b, "syllabus") for a, b in res["links"]], page_size=1000)
-            execute_values(cur, "insert into public.syllabus_topics (subject, unit, unit_ord, topic, topic_ord,"
-                           " concept_id, chapter_id, created, material) values %s", res["topic_rows"])
-            concept_ids |= {c["concept_id"] for c in res["concepts"]}
+            target_subjects = [args.subject.capitalize()] if args.subject else subjects
+            for subj in target_subjects:
+                subj_concepts = [c for c in concepts if c.subject == subj]
+                subj_chapters = [c for c in syllabus["chapters"] if c.subject == subj]
+                subj_items = [it for it in items if it["subject"] == subj]
+                res = pg_syllabus_topics.apply(cur, subj_concepts, subj_chapters,
+                                               subj_items, embedder.encode, subject=subj)
+
+                if res["chapters"]:
+                    upsert_chapters(cur, [(c["chapter_id"], c["subject"], c["title"], c["volume"], c["unit"],
+                                           c["jee_unit"], c["in_syllabus"], c["ord"]) for c in res["chapters"]])
+                if res["concepts"]:
+                    upsert_concepts(cur, [concept_tuple(c, c["embedding"], model) for c in res["concepts"]])
+                if res["links"]:
+                    execute_values(cur, "insert into public.chunk_concepts (content_id, concept_id, role) values %s"
+                                   " on conflict (content_id, concept_id) do nothing",
+                                   [(a, b, "syllabus") for a, b in res["links"]], page_size=1000)
+                execute_values(cur, "insert into public.syllabus_topics (subject, unit, unit_ord, topic, topic_ord,"
+                               " concept_id, chapter_id, created, material) values %s", res["topic_rows"])
+                concept_ids |= {c["concept_id"] for c in res["concepts"]}
 
         if args.prune:
             print("pruned:", prune(cur, subjects, items, concept_ids))

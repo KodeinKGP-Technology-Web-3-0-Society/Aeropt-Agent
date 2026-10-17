@@ -20,11 +20,23 @@ PROMPT_VERSION = "n1"
 RETRY_VERSION = "n2"  # pages that fail the text-layer check are re-read once with the placeholder prompt
 CHEM_PROMPT_VERSION = "nc1"
 CHEM_RETRY_VERSION = "nc2"
+MATH_PROMPT_VERSION = "nm1"
+MATH_RETRY_VERSION = "nm2"
 
 
 def get_prompt(subject: str = "Physics") -> str:
-    subj = "Chemistry" if subject.lower() == "chemistry" else "Physics"
-    if subj == "Chemistry":
+    s = subject.lower().strip()
+    if s in ("mathematics", "maths", "math"):
+        subj = "Mathematics"
+        formula_desc = (
+            "All mathematical notation, equations, matrices, integrals, limits, summations, vectors and proofs in standard LaTeX "
+            r"inside $...$ (inline) or $$...$$ (display). For matrices, use \begin{pmatrix}...\end{pmatrix}. Keep equation numbers like (3.3) after the equation."
+        )
+        example_desc = (
+            '{"kind": "example", "number": "<example number as printed, e.g. Example 1>", "question": "<the example\'s statement/question>", "solution": "<its printed step-by-step solution, if on this page>", "continues_on_next_page": <bool>}'
+        )
+    elif s == "chemistry":
+        subj = "Chemistry"
         formula_desc = (
             "All mathematics, chemical formulas and reaction equations in LaTeX inside $...$ (inline) or $$...$$ (display) "
             r"(e.g. $\text{H}_2\text{O}$, $\text{CH}_4$, $\Delta H$, chemical equations). Keep equation/reaction numbers like (3.3) after the equation."
@@ -33,6 +45,7 @@ def get_prompt(subject: str = "Physics") -> str:
             '{"kind": "example", "number": "<example or problem number as printed, e.g. 1.1>", "question": "<the example/problem question>", "solution": "<its printed solution, if on this page>", "continues_on_next_page": <bool>}'
         )
     else:
+        subj = "Physics"
         formula_desc = (
             "All mathematics in LaTeX inside $...$ (inline) or $$...$$ (display). Keep equation numbers like (3.3) after the equation."
         )
@@ -127,8 +140,15 @@ def stitch(pages: list[dict[str, Any]], chapter_title: str, page_texts: dict[int
         sections.append(section)
         return section
 
+    current_exercise = ""
     for page in pages:
         n = page["_page"]
+        p_text = page_texts.get(n, "") if page_texts else ""
+        m_ex = re.search(r"\bEXERCISE\s+(\d+\.\d+)", p_text, re.I)
+        if m_ex:
+            current_exercise = m_ex.group(1)
+        elif re.search(r"Miscellaneous\s+Exercise", p_text, re.I):
+            current_exercise = "misc"
         for block in page.get("blocks") or []:
             if not isinstance(block, dict):
                 continue
@@ -178,10 +198,12 @@ def stitch(pages: list[dict[str, Any]], chapter_title: str, page_texts: dict[int
                 current["parts"].append(f"[Figure {number}: {caption}. {description}]")
             elif kind == "example":
                 number = str(block.get("number") or "").strip()
-                if not on_page(n, number):
+                clean_num = re.sub(r"^(?:Example|Problem)\s*", "", number, flags=re.I).strip()
+                if not on_page(n, number) and not on_page(n, clean_num):
                     rejected.append((n, f"Example {number} is not printed on page {n}"))
                     last = None
                     continue
+                number = clean_num or number
                 prior = next((e for e in examples if e["number"] == number and e.get("open")), None)
                 if prior:  # the same example restarting on the next page
                     prior["solution"] = (prior["solution"] + "\n" + str(block.get("solution") or "")).strip()
@@ -199,11 +221,18 @@ def stitch(pages: list[dict[str, Any]], chapter_title: str, page_texts: dict[int
                 }
                 examples.append(last)
             elif kind == "exercise":
-                if not on_page(n, str(block.get("number") or "").strip()):
-                    rejected.append((n, f"Exercise {block.get('number')} is not printed on page {n}"))
+                raw_num = str(block.get("number") or "").strip()
+                clean_num = re.sub(r"^(?:Question|Q\.?|Exercise|Ex\.?)\s*", "", raw_num, flags=re.I).strip()
+                if not on_page(n, raw_num) and not on_page(n, clean_num):
+                    rejected.append((n, f"Exercise {raw_num} is not printed on page {n}"))
                     last = None
                     continue
-                last = {"number": str(block.get("number") or "").strip(), "question": text, "pages": [n]}
+                num = clean_num or raw_num
+                if current_exercise and not num.startswith(current_exercise) and not ("." in num and not num.endswith(".")):
+                    ex_num = f"{current_exercise}.{num.rstrip('.')}"
+                else:
+                    ex_num = num.rstrip(".")
+                last = {"number": ex_num, "question": text, "pages": [n]}
                 exercises.append(last)
             elif kind in {"summary", "points_to_ponder"}:
                 title = "Summary" if kind == "summary" else "Points to ponder"
@@ -258,6 +287,8 @@ def validate(chapter, stitched: dict[str, Any], report, doc: str,
                         "section": f"{section['number']} {section['title']}".strip(), "text": text,
                         "pages": sorted(set(section["pages"]))})
 
+    seen_ids: set[str] = set()
+    dup_count: dict[str, int] = {}
     for kind, items in (("example", stitched["examples"]), ("exercise", stitched["exercises"])):
         for item in items:
             ref = f"{kind} {item['number']}"
@@ -278,7 +309,13 @@ def validate(chapter, stitched: dict[str, Any], report, doc: str,
             if issues:
                 report.drop(doc, ref, f"maths would not render: {issues[:2]}")
                 continue
-            records.append({**base, "id": f"ncert_{chapter.code}_{kind[:2]}{item['number'].replace('.', '_')}",
+            raw_slug = re.sub(r"[^a-zA-Z0-9]+", "_", item["number"]).strip("_")
+            rec_id = f"ncert_{chapter.code}_{kind[:2]}{raw_slug}"
+            if rec_id in seen_ids:
+                dup_count[rec_id] = dup_count.get(rec_id, 1) + 1
+                rec_id = f"{rec_id}_{dup_count[rec_id]}"
+            seen_ids.add(rec_id)
+            records.append({**base, "id": rec_id,
                             "kind": kind, "number": item["number"], "section": item.get("section", ""),
                             "question": body, "solution": solution, "pages": sorted(set(item["pages"]))})
     return records

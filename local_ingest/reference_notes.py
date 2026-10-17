@@ -399,4 +399,321 @@ Experiment: identifying a diode, an LED, a resistor and a capacitor from a mixed
 - LED: conducts in one direction only, like a diode, and glows when forward biased.
 - Capacitor: a reading that starts as a deflection (charging current) and falls steadily to zero (infinite resistance). The kick repeats when the leads are reversed.
 """),
+    # ── Chemistry: Practical and Laboratory Reference Notes ───────────────────
+    ("d_and_f_block_elements", "Standard electrode potential and chemical reactivity of transition elements", r"""
+Standard electrode potentials ($E^\circ_{\text{M}^{2+}/\text{M}}$) of 3d transition metals:
+
+- Along the 3d series from Sc to Zn, values generally become less negative, with anomalies at Mn ($-1.18\text{ V}$, half-filled $d^5$), Zn ($-0.76\text{ V}$, completely filled $d^{10}$), and Cu ($+0.34\text{ V}$, positive due to high enthalpy of atomization not balanced by hydration enthalpy).
+- $E^\circ_{\text{M}^{3+}/\text{M}^{2+}}$ values: High positive value for $\text{Mn}^{3+}/\text{Mn}^{2+}$ ($+1.57\text{ V}$) reflects the stability of $\text{Mn}^{2+}$ ($d^5$). High positive value for $\text{Co}^{3+}/\text{Co}^{2+}$ ($+1.97\text{ V}$). Negative value for $\text{Cr}^{3+}/\text{Cr}^{2+}$ ($-0.41\text{ V}$) reflects the stable $t_{2g}^3$ configuration of $\text{Cr}^{3+}$.
+- Chemical reactivity: Elements with negative $E^\circ$ liberate $\text{H}_2$ from dilute acids, while copper ($E^\circ > 0$) does not dissolve in non-oxidizing acids.
+"""),
+    ("general_organic_chemistry_goc", "Quantitative analysis: Estimation of carbon and hydrogen", r"""
+Liebig's combustion method for quantitative estimation of Carbon and Hydrogen:
+
+- A known mass ($m\text{ g}$) of organic compound is heated with excess pure copper(II) oxide ($\text{CuO}$) in a dry dioxygen atmosphere.
+- Carbon is oxidized to $\text{CO}_2$ and absorbed in a pre-weighed U-tube containing concentrated potassium hydroxide ($\text{KOH}$) solution ($\Delta m_{\text{CO}_2}$).
+- Hydrogen is oxidized to $\text{H}_2\text{O}$ and absorbed in a pre-weighed U-tube containing anhydrous calcium chloride ($\text{CaCl}_2$) ($\Delta m_{\text{H}_2\text{O}}$).
+- Formulas for percentage composition:
+  $$\%\text{ C} = \frac{12}{44} \times \frac{\Delta m_{\text{CO}_2}}{m} \times 100$$
+  $$\%\text{ H} = \frac{2}{18} \times \frac{\Delta m_{\text{H}_2\text{O}}}{m} \times 100$$
+"""),
+    ("general_organic_chemistry_goc", "Preparation of inorganic and organic compounds", r"""
+Laboratory preparation of inorganic and organic compounds:
+
+1. **Mohr's Salt** (Ferrous ammonium sulphate, $\text{FeSO}_4\cdot(\text{NH}_4)_2\text{SO}_4\cdot 6\text{H}_2\text{O}$): Equimolar mixture of ferrous sulphate and ammonium sulphate dissolved in water containing dilute $\text{H}_2\text{SO}_4$ (to prevent hydrolysis of $\text{Fe}^{2+}$), followed by crystallization. Forms light green octahedral crystals.
+2. **Potash Alum** ($\text{K}_2\text{SO}_4\cdot\text{Al}_2(\text{SO}_4)_3\cdot 24\text{H}_2\text{O}$): Equimolar solution of potassium sulphate and aluminium sulphate crystallized into colourless octahedral crystals.
+3. **Acetanilide**: Acetylation of aniline with acetic anhydride in the presence of glacial acetic acid or zinc dust:
+   $$\text{C}_6\text{H}_5\text{NH}_2 + (\text{CH}_3\text{CO})_2\text{O} \to \text{C}_6\text{H}_5\text{NHCOCH}_3 + \text{CH}_3\text{COOH}$$
+   Forms white glistening flakes (m.p. $114^\circ\text{C}$).
+4. **Aniline Yellow** ($p$-aminoazobenzene): Prepared by diazotization of aniline with $\text{NaNO}_2 + \text{HCl}$ at $0\text{--}5^\circ\text{C}$ to yield benzenediazonium chloride, followed by coupling with aniline to form diazoaminobenzene, which rearranges on warming with acid to $p$-aminoazobenzene (yellow dye).
+"""),
+    ("mole_concept_stoichiometry", "Physical chemistry practicals", r"""
+Physical chemistry practical laboratory techniques:
+
+1. **Melting Point Determination**: Carried out using a Kjeldahl flask or Thiele tube filled with liquid paraffin or concentrated sulphuric acid. A thin capillary tube sealed at one end containing pulverized dry organic compound is tied to a thermometer. The temperature at which the substance starts melting to complete liquefaction is noted.
+2. **Boiling Point Determination**: Using distillation assembly or J-tube / capillary method. The liquid is placed in a small ignition tube with an inverted capillary (air pocket acting as boiling chip). Heated gently until a continuous stream of bubbles escapes, then allowed to cool; the temperature at which liquid just rushes into the capillary marks the boiling point.
+"""),
+    # ── Mathematics: ALLEN / Kota Coaching High-Yield Theory Notes ────────────
+    ("sets", "Wavy Curve Method and Rational Inequalities", r"""
+The Wavy Curve Method (Method of Intervals) for solving inequalities $f(x) \gtrless 0$ where $f(x) = \frac{(x-a_1)^{k_1}(x-a_2)^{k_2}\cdots}{(x-b_1)^{m_1}(x-b_2)^{m_2}\cdots}$:
+
+1. Factorize numerator and denominator into linear factors $(x - c_i)$ with positive $x$ coefficient.
+2. Mark all roots (zeros and poles) on the real number line in ascending order.
+3. Denominator roots $x = b_i$ must always be excluded (open circle, cannot divide by zero).
+4. For $x > \text{largest root}$, the expression is always positive (+).
+5. Moving right to left across root $c_i$:
+   - If exponent of $(x - c_i)$ is **odd**, the sign **changes** ($+ \to -$ or $- \to +$).
+   - If exponent is **even**, the sign **remains unchanged** ($+ \to +$ or $- \to -$).
+6. Pick intervals marked $(+)$ for $>0$ (or $\ge 0$) and $(-)$ for $<0$ (or $\le 0$). For $\ge 0$ or $\le 0$, include numerator roots where $f(x)=0$.
+7. Modulus inequalities: $|f(x)| \le a \iff -a \le f(x) \le a$; $|f(x)| \ge a \iff f(x) \ge a \text{ or } f(x) \le -a$.
+"""),
+    ("sets", "Logarithms and Logarithmic Inequalities", r"""
+Logarithm definitions, identities and inequalities ($y = \log_a x$ with $x > 0, a > 0, a \ne 1$):
+
+- **Fundamental properties**:
+  - $\log_a (xy) = \log_a x + \log_a y$ and $\log_a (x/y) = \log_a x - \log_a y$.
+  - $\log_a (x^k) = k \log_a x$ and $\log_{a^m} (x) = \frac{1}{m} \log_a x$.
+  - Base change: $\log_a x = \frac{\log_b x}{\log_b a} = \frac{\ln x}{\ln a}$.
+  - Power of log: $a^{\log_a x} = x$ and $a^{\log_b c} = c^{\log_b a}$.
+- **Logarithmic Inequalities**:
+  - If base $a > 1$ (strictly increasing): $\log_a f(x) > \log_a g(x) \iff f(x) > g(x) > 0$ (sign of inequality is preserved).
+  - If base $0 < a < 1$ (strictly decreasing): $\log_a f(x) > \log_a g(x) \iff 0 < f(x) < g(x)$ (sign of inequality reverses).
+- **Characteristic and Mantissa**: For $x > 0$, $\log_{10} x = c + m$ where $c \in \mathbb{Z}$ (characteristic) and $0 \le m < 1$ (mantissa).
+  - Number of digits in integer $N$ is $\lfloor\log_{10} N\rfloor + 1$.
+  - Number of leading zeros after decimal point before first non-zero digit in $x \in (0, 1)$ is $|\lfloor\log_{10} x\rfloor| - 1$ or $-c - 1$ where $c < 0$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "Location of roots and sign of quadratic expressions", r"""
+Location of roots of quadratic equation $f(x) = ax^2 + bx + c = 0$ ($a > 0, D = b^2 - 4ac$):
+
+1. **Both roots greater than a real number $k$ ($\alpha, \beta > k$):**
+   $$D \ge 0,\quad -\frac{b}{2a} > k,\quad a f(k) > 0$$
+2. **Both roots less than $k$ ($\alpha, \beta < k$):**
+   $$D \ge 0,\quad -\frac{b}{2a} < k,\quad a f(k) > 0$$
+3. **A number $k$ lies between the roots ($\alpha < k < \beta$):**
+   $$a f(k) < 0 \quad (\text{automatically implies } D > 0)$$
+4. **Both roots lie between $k_1$ and $k_2$ ($k_1 < \alpha \le \beta < k_2$):**
+   $$D \ge 0,\quad k_1 < -\frac{b}{2a} < k_2,\quad a f(k_1) > 0,\quad a f(k_2) > 0$$
+5. **Exactly one root lies in $(k_1, k_2)$:**
+   $$f(k_1) f(k_2) < 0$$
+6. **Sign and range of $f(x) = ax^2 + bx + c$:**
+   - If $a > 0, D < 0 \implies f(x) > 0 \;\forall x \in \mathbb{R}$. Minimum value is $-\frac{D}{4a}$ at $x = -\frac{b}{2a}$.
+   - If $a < 0, D < 0 \implies f(x) < 0 \;\forall x \in \mathbb{R}$. Maximum value is $-\frac{D}{4a}$ at $x = -\frac{b}{2a}$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "De Moivre's theorem and roots of unity", r"""
+De Moivre's Theorem and Cube / $n$-th Roots of Unity:
+
+- **De Moivre's Theorem**: For any $n \in \mathbb{R}$, $(\cos\theta + i\sin\theta)^n = \cos(n\theta) + i\sin(n\theta) = e^{i n \theta}$.
+- **Cube roots of unity**: Solutions of $z^3 = 1$ are $1, \omega, \omega^2$ where $\omega = e^{i 2\pi/3} = -\frac{1}{2} + i\frac{\sqrt{3}}{2}$ and $\omega^2 = e^{i 4\pi/3} = -\frac{1}{2} - i\frac{\sqrt{3}}{2}$.
+  - Properties: $1 + \omega + \omega^2 = 0$, $\omega^3 = 1$, $\omega^{3k+1} = \omega$, $\omega^{3k+2} = \omega^2$.
+  - Factoring: $a^3 - b^3 = (a-b)(a-\omega b)(a-\omega^2 b)$, $a^3 + b^3 = (a+b)(a+\omega b)(a+\omega^2 b)$.
+  - $a^2 + ab + b^2 = (a - \omega b)(a - \omega^2 b)$, $a^2 + b^2 + c^2 - ab - bc - ca = (a + \omega b + \omega^2 c)(a + \omega^2 b + \omega c)$.
+- **$n$-th roots of unity**: Solutions of $z^n = 1$ are $\alpha_k = e^{i \frac{2k\pi}{n}}$ for $k = 0, 1, \dots, n-1$.
+  - Sum of all $n$-th roots: $\sum_{k=0}^{n-1} \alpha_k = 0$.
+  - Product of all $n$-th roots: $\prod_{k=0}^{n-1} \alpha_k = (-1)^{n-1}$.
+  - $z^n - 1 = (z - 1)(z - \alpha_1)(z - \alpha_2)\cdots(z - \alpha_{n-1})$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "Geometry of complex numbers and locus problems", r"""
+Geometry in the Complex Argand Plane:
+
+- **Distance between $z_1$ and $z_2$**: $|z_1 - z_2|$.
+- **Section formula**: Point $z$ dividing line segment joining $z_1, z_2$ in ratio $m:n$ is $z = \frac{m z_2 + n z_1}{m + n}$.
+- **Equation of a circle**:
+  - Center $z_0$, radius $r$: $|z - z_0| = r$, or in general form $z\bar{z} + \bar{a}z + a\bar{z} + b = 0$ ($b \in \mathbb{R}$) with center $-a$ and radius $\sqrt{|a|^2 - b}$.
+- **Equation of a straight line**: $\bar{a}z + a\bar{z} + b = 0$ ($b \in \mathbb{R}$).
+- **Perpendicular bisector of $z_1$ and $z_2$**: $|z - z_1| = |z - z_2|$.
+- **Conic loci**:
+  - Ellipse: $|z - z_1| + |z - z_2| = 2a$ (where $2a > |z_1 - z_2|$).
+  - Hyperbola: $||z - z_1| - |z - z_2|| = 2a$ (where $2a < |z_1 - z_2|$).
+  - Circle (Apollonius circle): $\left|\frac{z - z_1}{z - z_2}\right| = k \ne 1$.
+- **Angle between lines**: $\arg\left(\frac{z_3 - z_1}{z_2 - z_1}\right)$ is the angle $\angle z_2 z_1 z_3$.
+"""),
+    ("sequences_and_series", "Harmonic Progression (HP) and AM-GM-HM inequality", r"""
+Harmonic Progression (HP) and Fundamental Inequalities:
+
+- **Harmonic Progression (HP)**: A sequence $a_1, a_2, \dots, a_n$ is in HP if $\frac{1}{a_1}, \frac{1}{a_2}, \dots, \frac{1}{a_n}$ is in AP.
+  - $n$-th term: $T_n = \frac{1}{\frac{1}{a} + (n-1)d}$.
+  - Harmonic Mean (HM) of $a$ and $b$: $H = \frac{2ab}{a+b}$.
+  - Harmonic Mean of $n$ positive numbers: $H = \frac{n}{\sum_{i=1}^n \frac{1}{a_i}}$.
+- **AM-GM-HM Inequality**: For positive real numbers $a_1, a_2, \dots, a_n$:
+  $$\text{AM} \ge \text{GM} \ge \text{HM}$$
+  $$\frac{a_1 + a_2 + \dots + a_n}{n} \ge (a_1 a_2 \cdots a_n)^{1/n} \ge \frac{n}{\frac{1}{a_1} + \frac{1}{a_2} + \dots + \frac{1}{a_n}}$$
+  Equality holds if and only if $a_1 = a_2 = \dots = a_n$.
+- **Weighted AM-GM Inequality**: For weights $w_i > 0$ with $W = \sum w_i$:
+  $$\frac{\sum w_i a_i}{W} \ge \left(\prod a_i^{w_i}\right)^{1/W}$$
+- **Cauchy-Schwarz Inequality**: For any real sequences $(a_i)$ and $(b_i)$:
+  $$\left(\sum_{i=1}^n a_i b_i\right)^2 \le \left(\sum_{i=1}^n a_i^2\right) \left(\sum_{i=1}^n b_i^2\right)$$
+"""),
+    ("sequences_and_series", "Method of differences and telescoping series", r"""
+Summation of Series via Telescoping Sums and Method of Differences:
+
+1. **Telescoping Method ($V_n - V_{n-1}$)**:
+   Express the general term $T_n$ as a difference of two consecutive values of another sequence: $T_n = V_n - V_{n-1}$ (or $V_n - V_{n+1}$).
+   Then the sum $S_n = \sum_{r=1}^n T_r = V_n - V_0$ (all intermediate terms cancel).
+2. **Partial Fractions in Series**:
+   $$T_r = \frac{1}{r(r+1)(r+2)\cdots(r+k)} = \frac{1}{k}\left[\frac{1}{r(r+1)\cdots(r+k-1)} - \frac{1}{(r+1)\cdots(r+k)}\right]$$
+3. **Method of Differences**:
+   When consecutive differences of terms $T_{r+1} - T_r$ form an AP or GP:
+   $$S_n = T_1 + T_2 + T_3 + \dots + T_n$$
+   $$S_n = \phantom{T_1 +{}} T_1 + T_2 + \dots + T_{n-1} + T_n$$
+   Subtracting gives $0 = T_1 + (T_2 - T_1) + (T_3 - T_2) + \dots + (T_n - T_{n-1}) - T_n \implies T_n = T_1 + \sum_{k=1}^{n-1} \Delta T_k$.
+"""),
+    ("permutations_and_combinations", "Division and distribution into groups", r"""
+Grouping and Distribution of Objects in Combinatorics:
+
+1. **Division into Unequal Groups**:
+   - Number of ways to divide $(m + n + p)$ distinct objects into three unequal groups of size $m, n, p$ is:
+     $$\frac{(m+n+p)!}{m! \, n! \, p!}$$
+   - If distributed to 3 distinct persons: multiply by $3!$.
+2. **Division into Equal Groups**:
+   - Number of ways to divide $3m$ distinct objects into 3 equal groups of size $m$:
+     $$\frac{(3m)!}{(m!)^3 \times 3!}$$
+     (divided by $3!$ because the 3 groups have the same size and are unordered).
+   - If distributed to 3 distinct persons: $\frac{(3m)!}{(m!)^3 \times 3!} \times 3! = \frac{(3m)!}{(m!)^3}$.
+3. **Identical Objects Distribution (Beggar's Method / Stars and Bars)**:
+   - Number of non-negative integer solutions to $x_1 + x_2 + \dots + x_r = n$ ($x_i \ge 0$):
+     $$\binom{n + r - 1}{r - 1}$$
+   - Number of positive integer solutions ($x_i \ge 1$):
+     $$\binom{n - 1}{r - 1}$$
+"""),
+    ("permutations_and_combinations", "Derangements and inclusion-exclusion principle", r"""
+Derangements and Principle of Inclusion and Exclusion (PIE):
+
+- **Derangements ($D_n$ or $!n$)**: Number of permutations of $n$ distinct objects such that no object appears in its original position:
+  $$D_n = n! \left(1 - \frac{1}{1!} + \frac{1}{2!} - \frac{1}{3!} + \dots + \frac{(-1)^n}{n!}\right) = \left\lfloor \frac{n!}{e} + \frac{1}{2} \right\rfloor$$
+  - Recurrence relation: $D_n = (n-1)(D_{n-1} + D_{n-2}) = n D_{n-1} + (-1)^n$.
+  - Base values: $D_1 = 0$, $D_2 = 1$, $D_3 = 2$, $D_4 = 9$, $D_5 = 44$, $D_6 = 265$.
+- **Partial Derangements**: Number of permutations where exactly $r$ objects out of $n$ occupy their original positions:
+  $$\binom{n}{r} D_{n-r}$$
+- **Principle of Inclusion and Exclusion (PIE)**:
+  $$|A_1 \cup A_2 \cup \dots \cup A_n| = \sum |A_i| - \sum |A_i \cap A_j| + \sum |A_i \cap A_j \cap A_k| - \dots + (-1)^{n-1} |A_1 \cap \dots \cap A_n|$$
+"""),
+    ("binomial_theorem", "Multinomial theorem and divisibility problems", r"""
+Multinomial Theorem and Binomial Divisibility:
+
+- **Multinomial Expansion**: For positive integer $n$:
+  $$(x_1 + x_2 + \dots + x_k)^n = \sum_{r_1 + r_2 + \dots + r_k = n} \frac{n!}{r_1! \, r_2! \cdots r_k!} x_1^{r_1} x_2^{r_2} \cdots x_k^{r_k}$$
+  - Total number of terms in expansion: $\binom{n + k - 1}{k - 1}$.
+  - Greatest coefficient: occurs when all $r_i$ are as nearly equal as possible ($r_i = \lfloor n/k \rfloor$ or $\lceil n/k \rceil$).
+- **Divisibility and Remainder Problems**:
+  - To find remainder of $a^n$ divided by $b$: express $a = mb + r$ or $a = mb \pm 1$.
+  - Expansion: $(1 + x)^n = 1 + nx + \frac{n(n-1)}{2}x^2 + \dots + x^n$.
+  - To test divisibility by $x^2$: truncate higher order terms $\mathcal{O}(x^2)$.
+"""),
+    ("matrices", "Cayley-Hamilton theorem and powers of matrices", r"""
+Cayley-Hamilton Theorem and Matrix Powers:
+
+- **Cayley-Hamilton Theorem**: Every square matrix $A$ satisfies its own characteristic equation:
+  $$|A - \lambda I| = 0 \implies \lambda^n + c_{n-1}\lambda^{n-1} + \dots + c_1\lambda + c_0 = 0$$
+  Substituting $\lambda = A$:
+  $$A^n + c_{n-1}A^{n-1} + \dots + c_1 A + c_0 I = O$$
+- **Applications**:
+  - Expressing high powers $A^m$ ($m > n$) as a polynomial in $A$ of degree at most $n-1$.
+  - Calculating inverse: Multiplying by $A^{-1}$:
+    $$A^{-1} = -\frac{1}{c_0}\left(A^{n-1} + c_{n-1}A^{n-2} + \dots + c_1 I\right) \quad (\text{if } c_0 = (-1)^n |A| \ne 0)$$
+- **Trace and Determinant of $2 \times 2$ matrix**:
+  $$A^2 - \text{tr}(A) A + |A| I = O$$
+"""),
+    ("trigonometric_functions", "Solution of Triangles (Properties of Triangles)", r"""
+Properties of Triangles (Solution of Triangles - SOT) for triangle $ABC$ with sides $a, b, c$:
+
+- **Sine Rule**: $\frac{a}{\sin A} = \frac{b}{\sin B} = \frac{c}{\sin C} = 2R$ ($R$ = circumradius).
+- **Cosine Rule**: $\cos A = \frac{b^2 + c^2 - a^2}{2bc}$, $\cos B = \frac{c^2 + a^2 - b^2}{2ca}$, $\cos C = \frac{a^2 + b^2 - c^2}{2ab}$.
+- **Projection Formulae**: $a = b\cos C + c\cos B$, $b = c\cos A + a\cos C$, $c = a\cos B + b\cos A$.
+- **Napier's Analogy (Tangent Rule)**:
+  $$\tan\left(\frac{B - C}{2}\right) = \frac{b - c}{b + c}\cot\left(\frac{A}{2}\right)$$
+- **Half-Angle Formulas** ($s = \frac{a+b+c}{2}$):
+  $$\sin\left(\frac{A}{2}\right) = \sqrt{\frac{(s-b)(s-c)}{bc}},\quad \cos\left(\frac{A}{2}\right) = \sqrt{\frac{s(s-a)}{bc}},\quad \tan\left(\frac{A}{2}\right) = \sqrt{\frac{(s-b)(s-c)}{s(s-a)}} = \frac{r}{s-a}$$
+- **Area of Triangle ($\Delta$)**:
+  $$\Delta = \frac{1}{2}ab\sin C = \frac{abc}{4R} = rs = \sqrt{s(s-a)(s-b)(s-c)}$$
+- **Radii of Associated Circles**:
+  - Circumradius: $R = \frac{a}{2\sin A} = \frac{abc}{4\Delta}$.
+  - Inradius: $r = \frac{\Delta}{s} = (s-a)\tan(A/2) = 4R\sin(A/2)\sin(B/2)\sin(C/2)$.
+  - Exradii (escribed circles): $r_1 = \frac{\Delta}{s-a} = s\tan(A/2) = 4R\sin(A/2)\cos(B/2)\cos(C/2)$ (similarly $r_2, r_3$).
+  - Relations: $\frac{1}{r_1} + \frac{1}{r_2} + \frac{1}{r_3} = \frac{1}{r}$, $r_1 + r_2 + r_3 - r = 4R$.
+"""),
+    ("inverse_trigonometric_functions", "Inverse trigonometric functions and properties", r"""
+Inverse Trigonometric Functions (ITF) Identities and Series:
+
+- **Principal Value Branches**:
+  - $\sin^{-1}x \in [-\pi/2, \pi/2]$, $\cos^{-1}x \in [0, \pi]$, $\tan^{-1}x \in (-\pi/2, \pi/2)$, $\cot^{-1}x \in (0, \pi)$.
+  - $\sin^{-1}(-x) = -\sin^{-1}x$, $\tan^{-1}(-x) = -\tan^{-1}x$.
+  - $\cos^{-1}(-x) = \pi - \cos^{-1}x$, $\cot^{-1}(-x) = \pi - \cot^{-1}x$, $\sec^{-1}(-x) = \pi - \sec^{-1}x$.
+- **Complementary Angles**:
+  $$\sin^{-1}x + \cos^{-1}x = \frac{\pi}{2},\quad \tan^{-1}x + \cot^{-1}x = \frac{\pi}{2},\quad \sec^{-1}x + \csc^{-1}x = \frac{\pi}{2}$$
+- **Addition Formulas**:
+  $$\tan^{-1}x + \tan^{-1}y = \begin{cases} \tan^{-1}\left(\frac{x+y}{1-xy}\right) & xy < 1 \\ \pi + \tan^{-1}\left(\frac{x+y}{1-xy}\right) & x > 0, y > 0, xy > 1 \\ -\pi + \tan^{-1}\left(\frac{x+y}{1-xy}\right) & x < 0, y < 0, xy > 1 \end{cases}$$
+- **Summation of Telescoping Inverse Tangent Series**:
+  $$\tan^{-1}\left(\frac{a_{n} - a_{n-1}}{1 + a_n a_{n-1}}\right) = \tan^{-1}a_n - \tan^{-1}a_{n-1}$$
+"""),
+    ("continuity_and_differentiability", "Method of Differentiation (MOD)", r"""
+Advanced Differentiation Methods (Method of Differentiation - MOD):
+
+1. **Logarithmic Differentiation**: For $y = [f(x)]^{g(x)}$:
+   $$\ln y = g(x)\ln f(x) \implies \frac{dy}{dx} = [f(x)]^{g(x)}\left[g'(x)\ln f(x) + \frac{g(x)f'(x)}{f(x)}\right]$$
+2. **Parametric Differentiation**: If $x = f(t), y = g(t)$:
+   $$\frac{dy}{dx} = \frac{g'(t)}{f'(t)},\quad \frac{d^2y}{dx^2} = \frac{d}{dt}\left(\frac{dy}{dx}\right) \frac{dt}{dx} = \frac{f'(t)g''(t) - g'(t)f''(t)}{[f'(t)]^3}$$
+   (Crucial: never differentiate $d^2y/dt^2$ by $d^2x/dt^2$).
+3. **Differentiation of Determinants**:
+   $$\frac{d}{dx} \begin{vmatrix} f_1 & f_2 & f_3 \\ g_1 & g_2 & g_3 \\ h_1 & h_2 & h_3 \end{vmatrix} = \begin{vmatrix} f_1' & f_2' & f_3' \\ g_1 & g_2 & g_3 \\ h_1 & h_2 & h_3 \end{vmatrix} + \begin{vmatrix} f_1 & f_2 & f_3 \\ g_1' & g_2' & g_3' \\ h_1 & h_2 & h_3 \end{vmatrix} + \begin{vmatrix} f_1 & f_2 & f_3 \\ g_1 & g_2 & g_3 \\ h_1' & h_2' & h_3' \end{vmatrix}$$
+4. **Differentiation of one function w.r.t another**:
+   $$\frac{d(f(x))}{d(g(x))} = \frac{f'(x)}{g'(x)}$$
+"""),
+    ("integrals", "Leibniz rule of differentiation under integral sign", r"""
+Leibniz Integral Rule and Definite Integrals as Limits of Sums:
+
+- **Leibniz Rule (Newton-Leibniz Formula)**:
+  $$\frac{d}{dx}\left[\int_{\psi(x)}^{\phi(x)} f(x, t)\, dt\right] = f(x, \phi(x))\cdot \phi'(x) - f(x, \psi(x))\cdot \psi'(x) + \int_{\psi(x)}^{\phi(x)} \frac{\partial f}{\partial x}(x, t)\, dt$$
+  For $f(t)$ independent of $x$: $\frac{d}{dx}\int_{\psi(x)}^{\phi(x)} f(t)\, dt = f(\phi(x))\phi'(x) - f(\psi(x))\psi'(x)$.
+- **Definite Integral as Limit of a Sum (Riemann Sum)**:
+  $$\lim_{n \to \infty} \sum_{r=1}^{pn} \frac{1}{n} f\left(\frac{r}{n}\right) = \int_0^p f(x)\, dx$$
+  Steps to convert:
+  1. Replace $\frac{r}{n}$ by $x$.
+  2. Replace $\frac{1}{n}$ by $dx$.
+  3. Lower limit = $\lim_{n \to \infty} \frac{r_{\min}}{n}$.
+  4. Upper limit = $\lim_{n \to \infty} \frac{r_{\max}}{n}$.
+"""),
+    ("straight_lines", "Pair of Straight Lines", r"""
+Pair of Straight Lines and Homogenization:
+
+1. **Homogeneous Equation of 2nd Degree**: $ax^2 + 2hxy + by^2 = 0$ represents two lines passing through the origin.
+   - Lines are real and distinct if $h^2 > ab$, coincident if $h^2 = ab$, imaginary if $h^2 < ab$.
+   - Angle $\theta$ between the lines: $\tan\theta = \left|\frac{2\sqrt{h^2 - ab}}{a + b}\right|$.
+   - Lines are perpendicular if $a + b = 0$ (coefficient of $x^2$ + coefficient of $y^2 = 0$).
+   - Combined equation of angle bisectors:
+     $$\frac{x^2 - y^2}{a - b} = \frac{xy}{h}$$
+2. **General Equation of 2nd Degree**: $ax^2 + 2hxy + by^2 + 2gx + 2fy + c = 0$ represents a pair of straight lines iff:
+   $$\Delta = \begin{vmatrix} a & h & g \\ h & b & f \\ g & f & c \end{vmatrix} = abc + 2fgh - af^2 - bg^2 - ch^2 = 0 \quad\text{and}\quad h^2 \ge ab$$
+   - Point of intersection: solve $\frac{\partial F}{\partial x} = 0$ and $\frac{\partial F}{\partial y} = 0$.
+3. **Homogenization**:
+   To find equation of pair of lines joining the origin to intersection points of curve $f(x, y) = 0$ and line $lx + my = 1$:
+   Multiply terms of degree 1 by $(lx + my)$ and terms of degree 0 by $(lx + my)^2$ to make every term homogeneous of degree 2.
+"""),
+    ("conic_sections", "Family of circles, common chord and radical axis", r"""
+System of Circles, Radical Axis and Orthogonality:
+
+- **Family of Circles**:
+  - Through intersections of $S = 0$ and line $L = 0$: $S + \lambda L = 0$ ($\lambda \in \mathbb{R}$).
+  - Through intersections of two circles $S_1 = 0$ and $S_2 = 0$: $S_1 + \lambda S_2 = 0$ ($\lambda \ne -1$).
+  - Touching line $L = 0$ at $(x_1, y_1)$: $(x - x_1)^2 + (y - y_1)^2 + \lambda L = 0$.
+- **Radical Axis**:
+  - The locus of a point from which lengths of tangents to two non-concentric circles $S_1 = 0$ and $S_2 = 0$ are equal:
+    $$S_1 - S_2 = 0$$
+  - Radical axis is always perpendicular to the line joining the centres of the two circles.
+  - If the circles intersect, radical axis is their **common chord**.
+  - If they touch, it is their **common tangent**.
+- **Orthogonality of Two Circles**:
+  Two circles $x^2 + y^2 + 2g_1x + 2f_1y + c_1 = 0$ and $x^2 + y^2 + 2g_2x + 2f_2y + c_2 = 0$ cut orthogonally iff:
+  $$2g_1 g_2 + 2f_1 f_2 = c_1 + c_2$$
+"""),
+    ("vector_algebra", "Scalar and vector triple products", r"""
+Scalar and Vector Triple Products in 3D Vectors:
+
+- **Scalar Triple Product (Box Product $[\vec{a}\;\vec{b}\;\vec{c}]$)**:
+  $$[\vec{a}\;\vec{b}\;\vec{c}] = \vec{a} \cdot (\vec{b} \times \vec{c}) = \begin{vmatrix} a_1 & a_2 & a_3 \\ b_1 & b_2 & b_3 \\ c_1 & c_2 & c_3 \end{vmatrix}$$
+  - Represents the volume of parallelepiped with coterminous edges $\vec{a}, \vec{b}, \vec{c}$.
+  - Volume of tetrahedron with coterminous edges $\vec{a}, \vec{b}, \vec{c}$ is $\frac{1}{6}|[\vec{a}\;\vec{b}\;\vec{c}]|$.
+  - Cyclic permutation invariance: $[\vec{a}\;\vec{b}\;\vec{c}] = [\vec{b}\;\vec{c}\;\vec{a}] = [\vec{c}\;\vec{a}\;\vec{b}] = -[\vec{b}\;\vec{a}\;\vec{c}]$.
+  - Condition for coplanarity of three vectors: $[\vec{a}\;\vec{b}\;\vec{c}] = 0$.
+- **Vector Triple Product**:
+  $$\vec{a} \times (\vec{b} \times \vec{c}) = (\vec{a} \cdot \vec{c})\vec{b} - (\vec{a} \cdot \vec{b})\vec{c} \quad\text{("BAC - CAB rule")}$$
+  - $(\vec{a} \times \vec{b}) \times \vec{c} = (\vec{a} \cdot \vec{c})\vec{b} - (\vec{b} \cdot \vec{c})\vec{a}$.
+  - Note that $\vec{a} \times (\vec{b} \times \vec{c}) \ne (\vec{a} \times \vec{b}) \times \vec{c}$ in general.
+- **Lagrange's Identity**:
+  $$(\vec{a} \times \vec{b}) \cdot (\vec{c} \times \vec{d}) = (\vec{a} \cdot \vec{c})(\vec{b} \cdot \vec{d}) - (\vec{a} \cdot \vec{d})(\vec{b} \cdot \vec{c})$$
+"""),
+    ("probability_12", "Bayes' theorem and total probability", r"""
+Law of Total Probability and Bayes' Theorem:
+
+- **Partition of Sample Space**: Events $E_1, E_2, \dots, E_n$ form a partition of $S$ if they are pairwise disjoint ($E_i \cap E_j = \emptyset$ for $i \ne j$), exhaustive ($\bigcup E_i = S$), and $P(E_i) > 0$.
+- **Theorem on Total Probability**: For any event $A \subset S$:
+  $$P(A) = \sum_{i=1}^n P(E_i) P(A | E_i)$$
+- **Bayes' Theorem (Inverse Probability)**:
+  Probability of hypothesis $E_k$ given that event $A$ has occurred:
+  $$P(E_k | A) = \frac{P(E_k) P(A | E_k)}{\sum_{i=1}^n P(E_i) P(A | E_i)}$$
+- **Bernoulli Trials and Binomial Distribution**:
+  For $n$ independent trials with probability of success $p$ and failure $q = 1-p$:
+  $$P(X = r) = \binom{n}{r} p^r q^{n-r},\quad r = 0, 1, 2, \dots, n$$
+  - Mean $\mu = np$, Variance $\sigma^2 = npq$ (note $\text{Var} < \text{Mean}$).
+"""),
 ]
+

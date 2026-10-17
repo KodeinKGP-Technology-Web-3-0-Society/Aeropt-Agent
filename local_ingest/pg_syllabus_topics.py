@@ -17,7 +17,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from local_ingest.jee_topics import JEE_TOPICS, SOURCE
+from local_ingest.jee_topics import JEE_TOPICS, SOURCE, get_topics
 from local_ingest.syllabus import slug
 
 PASSAGES_PER_TOPIC = 25   # links to the best-matching passages; enough to teach and practise from
@@ -26,8 +26,6 @@ MIN_MATERIAL = 3          # fewer linked passages than this = no real course mat
 
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower().replace("’", "'")).strip()
-
-SUBJECT = "Physics"  # JEE_TOPICS is the physics list; other subjects bring their own
 
 
 def _tsquery(cur, phrases: list[str]):
@@ -38,13 +36,18 @@ def _tsquery(cur, phrases: list[str]):
     return " || ".join(["phraseto_tsquery('english', %s)"] * len(words)), words
 
 
-def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dict[str, Any]:
+def apply(cur, concepts, chapters, items, embed, *, subject: str = "Physics",
+          topic_list: list[tuple[str, list[tuple[str, ...]]]] | None = None,
+          verbose: bool = True) -> dict[str, Any]:
     """concepts/chapters: the derived syllabus objects; items: this build's items (for material counts);
     embed: texts -> (n, d) float array. Returns stats and the new concept rows to upsert."""
-    cur.execute("delete from public.chunk_concepts where role = 'syllabus'")
-    cur.execute("delete from public.concepts where source = 'syllabus'")
-    cur.execute("delete from public.chapters where volume = 'JEE syllabus'")
-    cur.execute("delete from public.syllabus_topics where subject = %s", (SUBJECT,))
+    cur.execute(
+        "delete from public.chunk_concepts where role = 'syllabus' and concept_id in "
+        "(select concept_id from public.concepts where subject = %s)", (subject,)
+    )
+    cur.execute("delete from public.concepts where source = 'syllabus' and subject = %s", (subject,))
+    cur.execute("delete from public.chapters where volume = 'JEE syllabus' and subject = %s", (subject,))
+    cur.execute("delete from public.syllabus_topics where subject = %s", (subject,))
 
     material_of: Counter[str] = Counter()
     for it in items:
@@ -79,11 +82,13 @@ def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dic
     links: list[tuple[str, str]] = []
     stats: Counter[str] = Counter()
 
-    for unit_ord, (unit, topics) in enumerate(JEE_TOPICS, start=1):
+    topics_to_process = topic_list or get_topics(subject)
+
+    for unit_ord, (unit, topics) in enumerate(topics_to_process, start=1):
         unit_chapters = by_unit.get(unit, [])
         if not unit_chapters:
             max_ord += 1
-            ch = {"chapter_id": slug(unit), "subject": SUBJECT, "title": unit, "volume": "JEE syllabus",
+            ch = {"chapter_id": slug(f"{subject}_{unit}"), "subject": subject, "title": unit, "volume": "JEE syllabus",
                   "unit": unit, "jee_unit": unit, "in_syllabus": True, "ord": max_ord}
             new_chapters.append(ch)
             chapter_title[ch["chapter_id"]] = unit
@@ -102,9 +107,9 @@ def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dic
                 if existing:
                     break
             if not existing:
-                existing = next((c for c in by_name.get(_norm(name), []) if c.in_syllabus), None)
+                existing = next((c for c in by_name.get(_norm(name), []) if c.in_syllabus and getattr(c, "subject", subject) == subject), None)
             if existing:
-                topic_rows.append((SUBJECT, unit, unit_ord, name, topic_ord, existing.concept_id,
+                topic_rows.append((subject, unit, unit_ord, name, topic_ord, existing.concept_id,
                                    existing.chapter_id, False, material_of[existing.concept_id]))
                 stats["linked"] += 1
                 continue
@@ -115,26 +120,28 @@ def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dic
             if expr:
                 cur.execute(
                     f"select content_id, chapter_id from public.content, (select {expr} as q) s"
-                    " where fts @@ q and subject = 'Physics' and chapter_id = any(%s) and coalesce(in_syllabus, true)"
+                    " where fts @@ q and subject = %s and chapter_id = any(%s) and coalesce(in_syllabus, true)"
                     " order by ts_rank_cd(fts, q) desc limit %s",
-                    (*words, unit_chapter_ids, PASSAGES_PER_TOPIC),
+                    (*words, subject, unit_chapter_ids, PASSAGES_PER_TOPIC),
                 )
                 hits = home = cur.fetchall()
                 if len(hits) < MIN_MATERIAL:
                     # The material can live in a chapter mapped to another unit.
                     cur.execute(
                         f"select content_id, chapter_id from public.content, (select {expr} as q) s"
-                        " where fts @@ q and subject = 'Physics' and coalesce(in_syllabus, true)"
+                        " where fts @@ q and subject = %s and coalesce(in_syllabus, true)"
                         " order by ts_rank_cd(fts, q) desc limit %s",
-                        (*words, PASSAGES_PER_TOPIC),
+                        (*words, subject, PASSAGES_PER_TOPIC),
                     )
                     hits = cur.fetchall() or hits
 
             chapter_id = Counter(h[1] for h in home).most_common(1)[0][0] if home else unit_chapter_ids[0]
-            cid = slug(name)
+            prefix = f"{subject.lower()[:4]}_" if subject != "Physics" else ""
+            raw_cid = f"{prefix}{slug(name)}"
+            cid = raw_cid
             n = 2
             while cid in taken:
-                cid = f"{slug(name)}_{n}"
+                cid = f"{raw_cid}_{n}"
                 n += 1
             taken.add(cid)
             chapter = chapter_title.get(chapter_id, unit)
@@ -142,13 +149,13 @@ def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dic
             aliases = [p for p in phrases if _norm(p) != _norm(name)]
             new_concepts.append({
                 "concept_id": cid, "concept_name": name, "definition": definition,
-                "chapter_id": chapter_id, "chapter": chapter, "unit": unit, "subject": SUBJECT,
+                "chapter_id": chapter_id, "chapter": chapter, "unit": unit, "subject": subject,
                 "in_syllabus": True, "ord": int(min_ord.get(chapter_id, max_ord)), "aliases": aliases,
                 "source": "syllabus",
                 "embed_text": f"{name}. {chapter}. {' ; '.join(phrases[:4])}. {definition}",
             })
             links.extend((h[0], cid) for h in hits)
-            topic_rows.append((SUBJECT, unit, unit_ord, name, topic_ord, cid, chapter_id, True, len(hits)))
+            topic_rows.append((subject, unit, unit_ord, name, topic_ord, cid, chapter_id, True, len(hits)))
             stats["created"] += 1
             stats["no_material"] += len(hits) < MIN_MATERIAL
 
@@ -158,7 +165,7 @@ def apply(cur, concepts, chapters, items, embed, *, verbose: bool = True) -> dic
             c["embedding"] = v
     stats["topics"] = len(topic_rows)
     if verbose:
-        print(f"syllabus topics: {stats['topics']} — linked to existing {stats['linked']}, created {stats['created']} "
+        print(f"syllabus topics ({subject}): {stats['topics']} — linked to existing {stats['linked']}, created {stats['created']} "
               f"({stats['no_material']} with no course material), chapters added {stats['chapters_added']}")
     return {"stats": dict(stats), "chapters": new_chapters, "concepts": new_concepts,
             "topic_rows": topic_rows, "links": links, "source": SOURCE}

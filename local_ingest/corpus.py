@@ -628,7 +628,7 @@ def ncert_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
             continue
         row = json.loads(line)
         ch = chapter_lookup.get(row["chapter_id"])
-        subj = row.get("subject", "Chemistry" if "ch" in row.get("chapter_code", "") else "Physics")
+        subj = row.get("subject") or ("Mathematics" if "mh" in row.get("chapter_code", "") else ("Chemistry" if "ch" in row.get("chapter_code", "") else "Physics"))
         ref = f"Ch {row['chapter']} · {row.get('section') or ''}".strip(" ·")
         common = dict(
             chapter=ch,
@@ -670,6 +670,276 @@ def ncert_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
             )
             if hint:
                 item["concept_hint"] = hint
+            items.append(item)
+    return items
+
+
+JEE_CHALLENGER_LICENSE = "JEE Official Examination Questions (Joint Apex Board / NTA); digitized practice set"
+ALLEN_COACHING_LICENSE = "ALLEN Career Institute; educational reference material"
+
+_CHEMISTRY_CHAPTER_MAP = {
+    "Some Basic Concepts of Chemistry": "mole_concept_stoichiometry",
+    "Structure of Atom": "structure_of_atom",
+    "Classification of Elements and Periodicity": "periodic_table_and_periodicity",
+    "Chemical Bonding and Molecular Structure": "chemical_bonding_molecular_structure",
+    "Thermodynamics": "chemical_thermodynamics_energetics",
+    "Equilibrium": "chemical_equilibrium",
+    "Redox Reactions": "redox_reactions",
+    "Organic Chemistry - Basic Principles": "general_organic_chemistry_goc",
+    "Hydrocarbons": "hydrocarbons",
+    "Solutions": "solutions",
+    "Electrochemistry": "electrochemistry",
+    "Chemical Kinetics": "chemical_kinetics",
+    "d and f Block Elements": "d_and_f_block_elements",
+    "Coordination Compounds": "coordination_compounds",
+    "Haloalkanes and Haloarenes": "alkyl_and_aryl_halides",
+    "Alcohols, Phenols and Ethers": "alcohols_phenols_and_ethers",
+    "Aldehydes, Ketones and Carboxylic Acids": "aldehydes_ketones_and_carboxylic_acids",
+    "Amines": "organic_compounds_containing_nitrogen",
+    "Biomolecules": "biomolecules_and_polymers",
+    "p-Block Elements": "d_and_f_block_elements",
+    "p-Block Elements (Group 15-18)": "d_and_f_block_elements",
+    "General Principles and Processes of Isolation of Elements": "d_and_f_block_elements",
+    "States of Matter": "chemical_thermodynamics_energetics",
+    "Surface Chemistry": "chemical_kinetics",
+    "Solid State": "solutions",
+    "Polymers": "biomolecules_and_polymers",
+    "s-Block Elements": "periodic_table_and_periodicity",
+    "Hydrogen": "periodic_table_and_periodicity",
+}
+
+_CHEMISTRY_DIFF_MAP = {"Easy": 1, "Medium": 2, "Hard": 3}
+
+_MATHEMATICS_CHAPTER_MAP = {
+    "Application of Derivatives": "application_of_derivatives",
+    "Application of Integrals": "application_of_integrals",
+    "Binomial Theorem": "binomial_theorem",
+    "Circles": "conic_sections",
+    "Complex Numbers and Quadratic Equations": "complex_numbers_and_quadratic_equations",
+    "Conic Sections": "conic_sections",
+    "Continuity and Differentiability": "continuity_and_differentiability",
+    "Determinants": "determinants",
+    "Differential Equations": "differential_equations",
+    "Integrals": "integrals",
+    "Inverse Trigonometric Functions": "inverse_trigonometric_functions",
+    "Limits and Derivatives": "limits_and_derivatives",
+    "Linear Inequalities": "linear_inequalities",
+    "Matrices": "matrices",
+    "Permutations and Combinations": "permutations_and_combinations",
+    "Probability": "probability_12",
+    "Probability (Advanced)": "probability_12",
+    "Relations and Functions": "relations_and_functions_12",
+    "Relations and Functions (Advanced)": "relations_and_functions_12",
+    "Sequences and Series": "sequences_and_series",
+    "Sets": "sets",
+    "Statistics": "statistics",
+    "Straight Lines": "straight_lines",
+    "Three Dimensional Geometry": "three_dimensional_geometry",
+    "Trigonometric Functions": "trigonometric_functions",
+    "Vector Algebra": "vector_algebra",
+}
+
+_PHYSICS_CHAPTER_MAP = {
+    "Alternating Current": "alternating_current_circuits",
+    "Atoms": "atomic_structure",
+    "Current Electricity": "current_and_resistance",
+    "Dual Nature of Radiation and Matter": "photons_and_matter_waves",
+    "Electric Charges and Fields": "electric_charges_and_fields",
+    "Electromagnetic Induction": "electromagnetic_induction",
+    "Electromagnetic Waves": "electromagnetic_waves",
+    "Electrostatic Potential and Capacitance": "electric_potential",
+    "Gravitation": "gravitation",
+    "Kinetic Theory": "the_kinetic_theory_of_gases",
+    "Laws of Motion": "newton_s_laws_of_motion",
+    "Magnetism and Matter": "sources_of_magnetic_fields",
+    "Mechanical Properties of Fluids": "fluid_mechanics",
+    "Mechanical Properties of Solids": "static_equilibrium_and_elasticity",
+    "Motion in a Plane": "motion_in_two_and_three_dimensions",
+    "Motion in a Straight Line": "motion_along_a_straight_line",
+    "Moving Charges and Magnetism": "magnetic_forces_and_fields",
+    "Nuclei": "nuclear_physics",
+    "Oscillations": "oscillations",
+    "Ray Optics and Optical Instruments": "geometric_optics_and_image_formation",
+    "Semiconductor Electronics": "condensed_matter_physics",
+    "System of Particles and Rotational Motion": "fixed_axis_rotation",
+    "Thermal Properties of Matter": "temperature_and_heat",
+    "Thermodynamics": "the_first_law_of_thermodynamics",
+    "Units and Measurements": "units_and_measurement",
+    "Wave Optics": "interference",
+    "Waves": "waves",
+    "Work, Energy and Power": "work_and_kinetic_energy",
+}
+
+
+def jeechallenger_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    sources = [
+        ("Chemistry", ROOT / ".local-run" / "jeechallenger" / "questions_chemistry.json", _CHEMISTRY_CHAPTER_MAP, "mole_concept_stoichiometry"),
+        ("Mathematics", ROOT / ".local-run" / "jeechallenger" / "questions_mathematics.json", _MATHEMATICS_CHAPTER_MAP, "sets"),
+        ("Physics", ROOT / ".local-run" / "jeechallenger" / "questions_physics.json", _PHYSICS_CHAPTER_MAP, "units_and_measurement"),
+    ]
+    items: list[dict[str, Any]] = []
+    seen_fp: set[str] = set()
+
+    for subject, path, ch_map, default_cid in sources:
+        if not path.exists():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for q in data:
+            qid = q.get("_id") or ""
+            raw_stem = clean(q.get("question_text") or "")
+            raw_sol = clean(q.get("solution") or "")
+            if not raw_stem or not raw_sol:
+                continue
+            opts = q.get("options") or {}
+            opt_lines: list[str] = []
+            opt_struct: list[dict[str, str]] = []
+            if isinstance(opts, dict):
+                for label in ("A", "B", "C", "D"):
+                    if label in opts:
+                        text = clean(opts[label].get("text", "") if isinstance(opts[label], dict) else str(opts[label]))
+                        if text:
+                            opt_lines.append(f"({label}) {text}")
+                            opt_struct.append({"label": label, "text": text})
+            core = raw_stem if not opt_lines else raw_stem + "\n\n" + "\n".join(opt_lines)
+            ans = q.get("correct_answer")
+            ans_str = ", ".join(ans) if isinstance(ans, list) else str(ans or "")
+            num_ans = q.get("numeric_answer")
+            sol = raw_sol
+            if ans_str:
+                sol += f"\n\nCorrect answer: ({ans_str})"
+            if num_ans is not None:
+                sol += f"\n\nNumerical answer: {num_ans}"
+
+            exam_type = EXAM_ADV if q.get("exam_type") == "JEE_ADVANCED" else EXAM_MAIN
+            exam_year = q.get("exam_year", "")
+            paper = q.get("original_paper_id", "") or f"{exam_type} {exam_year}"
+            ch_raw = q.get("chapter", "")
+            cid = ch_map.get(ch_raw, default_cid)
+            ch = chapter_lookup.get(cid)
+
+            heading = f"{q.get('exam_type', 'JEE')} {exam_year} · {ch_raw}"
+            source_book = f"JEE Official Exam ({paper})"
+            source_ref = f"Q{q.get('question_number', '')} · {paper}"
+
+            item = _item(
+                content_id=f"jeechallenger_{qid}",
+                content_type=TYPE_PYQ,
+                core_text=core,
+                solution=sol,
+                chapter=ch,
+                heading=heading,
+                source_book=source_book,
+                source_ref=source_ref,
+                license_=JEE_CHALLENGER_LICENSE,
+                difficulty=_CHEMISTRY_DIFF_MAP.get(q.get("difficulty"), 2),
+                question_type=str(q.get("question_type") or "MCQ"),
+                target_exam=exam_type,
+                candidate_scope=(ch.jee_unit or ch.unit,) if ch else (),
+                subject=subject,
+                chapter_id=ch.chapter_id if ch else cid,
+                chapter_title=ch.title if ch else ch_raw,
+                unit=ch.unit if ch else subject,
+            )
+            if opt_struct or ans_str or num_ans is not None:
+                item["structured"] = {
+                    "stem": raw_stem,
+                    "figure": "",
+                    "options": opt_struct or None,
+                    "qtype": item["question_type"],
+                    "answer": {"kind": "letters", "letters": ans_str} if ans_str else {"kind": "exact", "value": str(num_ans)},
+                    "built_by": "source",
+                }
+            if item["fingerprint"] in seen_fp:
+                continue
+            seen_fp.add(item["fingerprint"])
+            items.append(item)
+    return items
+
+
+_ALLEN_HB_MAP = {
+    "01-mole concept": "mole_concept_stoichiometry",
+    "02-thermodynamics": "chemical_thermodynamics_energetics",
+    "03-thermochemistry": "chemical_thermodynamics_energetics",
+    "04-chemical equilibrium": "chemical_equilibrium",
+    "05-ionic equilibrium": "chemical_equilibrium",
+    "06-redox": "redox_reactions",
+    "07-electrochemistry": "electrochemistry",
+    "08-chemical kinetics": "chemical_kinetics",
+    "09-radioactivity": "structure_of_atom",
+    "10-liquid solution": "solutions",
+    "11-solid state": "solutions",
+    "12-gaseous state": "chemical_thermodynamics_energetics",
+    "13-atomic structure": "structure_of_atom",
+    "14-surface chemistry": "chemical_kinetics",
+    "periodic": "periodic_table_and_periodicity",
+    "bonding": "chemical_bonding_molecular_structure",
+    "coordination": "coordination_compounds",
+    "d-block": "d_and_f_block_elements",
+    "hydrocarbons": "hydrocarbons",
+    "isomerism": "general_organic_chemistry_goc",
+    "reaction mechanism": "general_organic_chemistry_goc",
+    "practical organic": "general_organic_chemistry_goc",
+    "carboxylic": "aldehydes_ketones_and_carboxylic_acids",
+}
+
+
+def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
+    import subprocess
+
+    pdf_path = ROOT / ".local-run" / "coaching" / "allen_handbook_chemistry.pdf"
+    if not pdf_path.exists():
+        return []
+    res = subprocess.run(["pdftotext", "-layout", str(pdf_path), "-"], capture_output=True, text=True)
+    if res.returncode != 0 or not res.stdout:
+        return []
+    pages = res.stdout.split("\x0c")
+    by_chap: dict[str, list[str]] = {}
+    cur_chap = "01-mole concept"
+    for p in pages:
+        m = re.search(r"Handbook\(E\+L\)[\\/][^\\/]+[\\/]Eng[\\/]([^\.]+)\.p65", p, re.I)
+        if m:
+            cur_chap = m.group(1).lower().strip()
+        elif "node06" in p:
+            m2 = re.search(r"([0-9]{2}-[a-z\s]+)\.p65", p, re.I)
+            if m2:
+                cur_chap = m2.group(1).lower().strip()
+        clean_p = "\n".join(l for l in p.splitlines() if "node06" not in l and "@JEEAdvanced" not in l and "Handbook" not in l)
+        by_chap.setdefault(cur_chap, []).append(clean_p)
+
+    items: list[dict[str, Any]] = []
+    for chap_name, plist in by_chap.items():
+        cid = None
+        for k, v in _ALLEN_HB_MAP.items():
+            if k in chap_name:
+                cid = v
+                break
+        cid = cid or "mole_concept_stoichiometry"
+        ch = chapter_lookup.get(cid)
+        full_text = "\n\n".join(plist)
+        chunks = split_theory(full_text)
+        title = ch.title if ch else chap_name
+        for i, chunk in enumerate(chunks, 1):
+            heading = f"ALLEN Chemistry Handbook · {title}"
+            ref = f"ALLEN Handbook · {chap_name} (part {i})"
+            item = _item(
+                content_id=f"allen_hb_{re.sub(r'[^a-z0-9]+', '_', chap_name)}_{i}",
+                content_type=TYPE_THEORY,
+                core_text=f"{heading}\n\n{chunk}",
+                solution="",
+                chapter=ch,
+                heading=heading,
+                source_book="ALLEN Kota Chemistry Handbook",
+                source_ref=ref,
+                license_=ALLEN_COACHING_LICENSE,
+                difficulty=2,
+                question_type="theory",
+                target_exam=EXAM_BOTH,
+                candidate_scope=(ch.jee_unit or ch.unit,) if ch else (),
+                subject="Chemistry",
+                chapter_id=ch.chapter_id if ch else cid,
+                chapter_title=title,
+                unit=ch.unit if ch else "Chemistry",
+            )
             items.append(item)
     return items
 
@@ -855,6 +1125,8 @@ def reference_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
                 difficulty=1,
                 question_type="theory",
                 target_exam=EXAM_BOTH,
+                subject=ch.subject,
+                candidate_scope=(ch.jee_unit or ch.unit,) if ch else (),
             )
         )
     return items
@@ -968,14 +1240,18 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
     # chemical-kinetics heading); NCERT rows carry their own subject and chapter.
     physics_lookup = {cid: ch for cid, ch in chapter_lookup.items() if ch.subject == "Physics"}
 
-    items = openstax_items([ch for ch in chapters if ch.subject == "Physics"], syllabus["modules"])
+    items: list[dict[str, Any]] = []
+    # OpenStax content excluded (US curriculum not calibrated for JEE); NCERT + HCV + PYQs used instead.
+    # items = openstax_items([ch for ch in chapters if ch.subject == "Physics"], syllabus["modules"])
     items += hf_pyq_items(physics_lookup)
     items += ncert_items(chapter_lookup)
+    items += jeechallenger_items(chapter_lookup)
+    items += allen_handbook_items(chapter_lookup)
     items += hcverma_items(physics_lookup)
     official = official_exam_items(physics_lookup)
     items += official
     items += jeebench_items({f"JEE Adv {it['source_book'].split()[2]} Paper {it['source_book'].split()[-1]}" for it in official})
-    items += reference_items(physics_lookup)
+    items += reference_items(chapter_lookup)
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}

@@ -33,8 +33,16 @@ def run_chapter(ch: catalog.Chapter, report: Report, *, assemble_only: bool) -> 
     sha = fetch(ch.url, pdf)
     pages = list(range(1, len(pdfs.page_texts(pdf)) + 1))
     prompt = chapter.get_prompt(ch.subject)
-    version = chapter.CHEM_PROMPT_VERSION if ch.subject.lower() == "chemistry" else chapter.PROMPT_VERSION
-    retry_version = chapter.CHEM_RETRY_VERSION if ch.subject.lower() == "chemistry" else chapter.RETRY_VERSION
+    s = ch.subject.lower()
+    if s in ("mathematics", "maths", "math"):
+        version = chapter.MATH_PROMPT_VERSION
+        retry_version = chapter.MATH_RETRY_VERSION
+    elif s == "chemistry":
+        version = chapter.CHEM_PROMPT_VERSION
+        retry_version = chapter.CHEM_RETRY_VERSION
+    else:
+        version = chapter.PROMPT_VERSION
+        retry_version = chapter.RETRY_VERSION
 
     if assemble_only and reader.pending(pdf, pages, work, prompt=prompt, version=version):
         raise RuntimeError("not fully extracted yet; run without --assemble-only")
@@ -71,7 +79,7 @@ def run_chapter(ch: catalog.Chapter, report: Report, *, assemble_only: bool) -> 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--chapters", nargs="*")
-    ap.add_argument("--subject", choices=["physics", "chemistry"], default=None, help="Filter by subject")
+    ap.add_argument("--subject", choices=["physics", "chemistry", "mathematics"], default=None, help="Filter by subject")
     ap.add_argument("--assemble-only", action="store_true")
     ap.add_argument("--estimate", action="store_true")
     args = ap.parse_args(argv)
@@ -84,7 +92,10 @@ def main(argv: list[str] | None = None) -> int:
             fetch(ch.url, pdf)
             pages = list(range(1, len(pdfs.page_texts(pdf)) + 1))
             prompt = chapter.get_prompt(ch.subject)
-            version = chapter.CHEM_PROMPT_VERSION if ch.subject.lower() == "chemistry" else chapter.PROMPT_VERSION
+            s = ch.subject.lower()
+            version = chapter.MATH_PROMPT_VERSION if s in ("mathematics", "maths", "math") else (
+                chapter.CHEM_PROMPT_VERSION if s == "chemistry" else chapter.PROMPT_VERSION
+            )
             total += reader.pending(pdf, pages, OUT / ch.code, prompt=prompt, version=version)
         minutes = total * 45 / reader.CONCURRENCY / 60
         print(f"{total} pages to read ≈ {minutes:.0f} min at {reader.CONCURRENCY} parallel Cursor calls")
