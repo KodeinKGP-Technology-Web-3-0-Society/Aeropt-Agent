@@ -393,9 +393,31 @@ def _run_analyst(expert: Expert, task: str, material: str, ctx: ToolContext) -> 
     """Run a narrow read-only reasoning loop and return its report."""
     from agents.runtime.loop import run_agent_loop
 
+    child_budget = None
+    time_budget_s = _ANALYST_TIME_BUDGET_S
+    if getattr(ctx, "budget", None) is not None:
+        child_budget = ctx.budget.child_budget(own_budget_s=_ANALYST_TIME_BUDGET_S, reserve_s=8.0)
+        if child_budget.remaining() <= 0:
+            return {
+                "error": (
+                    f"The {expert.name} expert could not be consulted (turn budget exhausted). "
+                    "Carry on without it, and do not claim anything was independently verified."
+                )
+            }
+        time_budget_s = child_budget.remaining()
+
     # Read-only tools, and no consult_expert: an expert cannot spawn an expert.
     specs = [s for name, s in registry().items() if name != "consult_expert"]
-    belt = Toolbelt(specs, ctx, allowed_scopes=EXPERT_SCOPES)
+    expert_ctx = ToolContext(
+        user_id=ctx.user_id,
+        session_id=ctx.session_id,
+        state=dict(ctx.state),
+        trace=ctx.trace,
+        depth=ctx.depth + 1,
+        granted_permissions=ctx.granted_permissions,
+        budget=child_budget,
+    )
+    belt = Toolbelt(specs, expert_ctx, allowed_scopes=EXPERT_SCOPES)
 
     user_message = task
     if material.strip():
@@ -408,7 +430,7 @@ def _run_analyst(expert: Expert, task: str, material: str, ctx: ToolContext) -> 
         model=expert.model or config.SOLVER_MODEL,
         fallback_models=list(expert.fallback_models) or config.SOLVER_FALLBACK_MODELS,
         max_steps=_ANALYST_MAX_STEPS,
-        time_budget_s=_ANALYST_TIME_BUDGET_S,
+        time_budget_s=time_budget_s,
         temperature=0.2,
         max_tokens=900,
         trace=ctx.trace,

@@ -64,12 +64,20 @@ def load_gemini_api_keys(env: Optional[Dict[str, str]] = None) -> List[str]:
     return keys
 
 
+import httpx
+
+
 def _default_client(api_key: str) -> OpenAI:
     # Use Gemini endpoint by default; allow Sarvam if explicitly configured or key matches
     base_url = GEMINI_OPENAI_BASE_URL
     if os.getenv("LLM_PROVIDER", "").strip().lower() == "sarvam" or (api_key.startswith("sk_") and not api_key.startswith("AIza")):
         base_url = os.getenv("SARVAM_BASE_URL", SARVAM_OPENAI_BASE_URL)
-    return OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        max_retries=0,
+        timeout=httpx.Timeout(30.0, connect=5.0),
+    )
 
 
 class GeminiKeyPool:

@@ -390,6 +390,10 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         logger.debug("learner memory recall failed", exc_info=True)
         memories = []
 
+    from agents.runtime.budget import TurnBudget
+
+    budget = TurnBudget.from_duration(config.LEARNING_AGENT_TIME_BUDGET_S)
+
     working_state: Dict[str, Any] = dict(state)
     working_state["recalled_memories"] = memories
 
@@ -398,6 +402,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         session_id=session_id,
         state=working_state,
         trace=trace,
+        budget=budget,
     )
     toolbelt = Toolbelt(registry().values(), ctx, allowed_scopes=TUTOR_SCOPES)
 
@@ -431,22 +436,9 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     answer = _resolve_final_text(result.text, ctx)
 
     if answer:
-        from agents.runtime.provenance import check_exam_claims, render_inline_tikz, strip_foreign_images
-
-        answer, tikz_drawn, tikz_dropped = render_inline_tikz(answer)
-        if tikz_drawn or tikz_dropped:
-            trace.note(f"provenance: inline TikZ drawn {tikz_drawn}, removed {tikz_dropped}")
-        answer, dropped = strip_foreign_images(answer)
-        chunks = list(ctx.updates.get("retrieved_chunks") or []) + list(state.get("retrieved_chunks") or [])
-        history = [t.get("content") or "" for t in (state.get("recent_turns") or [])]
-        answer, unverified = check_exam_claims(answer, chunks, history)
-        if dropped or unverified:
-            trace.note(f"provenance: dropped {dropped} image(s); unverified exam claims {unverified}")
-
-    if answer:
         from agents.runtime.proof import ensure_proof
 
-        answer = ensure_proof(answer, trace)
+        answer = ensure_proof(answer, trace, ctx.state)
 
     if not answer:
         logger.error(
@@ -469,18 +461,33 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     
     progress.report("stage", "thinking", "done")
     progress.report("stage", "review")
-    checked = check_answer_streaming(
-        query=query,
-        draft=answer,
-        state=ctx.state,
-        trace=trace,
-        on_token=cb,
-    )
+
+    remaining = budget.remaining()
+    if remaining <= 0:
+        logger.warning("Turn budget exhausted before answer checker; skipping review.")
+        checked = CheckResult(answer, "skipped:budget", ["Turn budget exhausted."])
+        trace.checker_verdict = "skipped:budget"
+        trace.add(TraceStep(kind="check", name="answer_checker", ok=True, result_preview="skipped:budget"))
+    else:
+        checker_timeout = min(15.0, remaining)
+        checked = check_answer_streaming(
+            query=query,
+            draft=answer,
+            state=ctx.state,
+            trace=trace,
+            timeout=checker_timeout,
+        )
     
     progress.report("stage", "review", "done")
-    if cb and checked.verdict != "revise" and checked.answer:
-        # An approved draft arrives whole; a revision already streamed above.
-        emit_text(checked.answer, cb)
+
+    # One single release gate on whatever text is final (draft or revision)
+    from agents.runtime.release import release
+
+    final_answer = release(checked.answer, ctx)
+    checked.answer = final_answer
+
+    if cb and final_answer:
+        emit_text(final_answer, cb)
 
     updates: Dict[str, Any] = dict(ctx.updates)
     updates.pop("draft_response", None)

@@ -71,6 +71,7 @@ class ToolContext:
         trace: Optional[AgentTrace] = None,
         depth: int = 0,
         granted_permissions: Optional[Iterable[str]] = None,
+        budget: Optional[Any] = None,
     ) -> None:
         self.user_id = user_id
         self.session_id = session_id
@@ -79,6 +80,7 @@ class ToolContext:
         self.trace = trace or AgentTrace(user_id=user_id, session_id=session_id)
         self.depth = depth
         self.granted_permissions = set(granted_permissions or ())
+        self.budget = budget
         #: Permission requests raised by consequential tools this turn.
         self.pending_permissions: List[Dict[str, Any]] = []
         #: Results of read-only calls already made this turn, keyed by
@@ -97,6 +99,7 @@ class ToolContext:
             state=dict(self.state),
             trace=self.trace,
             depth=self.depth + 1 if depth is None else depth,
+            budget=self.budget,
         )
         return ctx
 

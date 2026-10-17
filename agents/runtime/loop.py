@@ -86,6 +86,13 @@ def _serialise_assistant(message: Any) -> Dict[str, Any]:
     return payload
 
 
+from agents.runtime.budget import (
+    BudgetExhausted,
+    TurnBudget,
+    current_budget_var,
+)
+
+
 def run_agent_loop(
     *,
     system_prompt: str,
@@ -98,7 +105,7 @@ def run_agent_loop(
     time_budget_s: float = DEFAULT_TIME_BUDGET_S,
     temperature: float = 0.3,
     max_tokens: int = 1800,
-    client: Optional[Groq] = None,
+    client: Optional[OpenAI] = None,
     trace: Optional[AgentTrace] = None,
     label: str = "agent",
 ) -> LoopResult:
@@ -110,7 +117,11 @@ def run_agent_loop(
     """
     groq = client or OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     trace = trace or toolbelt.ctx.trace
-    deadline = time.time() + time_budget_s
+    budget = getattr(toolbelt.ctx, "budget", None)
+    if budget is None:
+        budget = TurnBudget.from_duration(time_budget_s)
+    deadline = budget.deadline
+    budget_token = current_budget_var.set(budget)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     if priming_messages:
@@ -124,125 +135,165 @@ def run_agent_loop(
 
     from services import progress
 
-    while steps < max_steps:
-        if progress.is_cancelled():
-            # The student pressed Stop: end now, with nothing to send.
-            return LoopResult(
-                text="",
-                model_used=model_used,
-                steps_taken=steps,
-                stop_reason="cancelled",
-                messages=messages,
-                tool_calls_made=tool_names_called,
-            )
-        out_of_time = time.time() >= deadline
-        final_pass = out_of_time or steps == max_steps - 1
+    try:
+        while steps < max_steps:
+            if progress.is_cancelled():
+                return LoopResult(
+                    text="",
+                    model_used=model_used,
+                    steps_taken=steps,
+                    stop_reason="cancelled",
+                    messages=messages,
+                    tool_calls_made=tool_names_called,
+                )
+            out_of_time = budget.is_exhausted() or time.time() >= deadline
+            if out_of_time:
+                logger.warning("[%s] time budget exhausted after %d steps", label, steps)
+                return _forced_close(
+                    groq=groq,
+                    messages=messages,
+                    model=model,
+                    fallback_models=fallback_models,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    steps=steps,
+                    model_used=model_used,
+                    tool_names_called=tool_names_called,
+                    trace=trace,
+                    label=label,
+                    depth=toolbelt.ctx.depth,
+                    stop_reason="time_budget",
+                    reserve_s=budget.close_reserve_s,
+                )
 
-        if out_of_time:
-            logger.warning("[%s] time budget exhausted after %d steps", label, steps)
+            final_pass = steps == max_steps - 1
 
-        step_started = time.time()
-        try:
-            message, model_used = groq_chat(
-                client=groq,
-                model=model,
-                messages=messages,
-                fallback_models=fallback_models,
-                # On the closing pass, take tools away entirely so the model has
-                # no option but to produce the student's answer.
-                tools=None if final_pass else schemas,
-                tool_choice=None if final_pass else "auto",
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        except Exception as exc:  # noqa: BLE001 — the whole chain failed
-            logger.exception("[%s] LLM chain failed", label)
+            step_started = time.time()
+            try:
+                message, model_used = groq_chat(
+                    client=groq,
+                    model=model,
+                    messages=messages,
+                    fallback_models=fallback_models,
+                    # On the closing pass, take tools away entirely so the model has
+                    # no option but to produce the student's answer.
+                    tools=None if final_pass else schemas,
+                    tool_choice=None if final_pass else "auto",
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    budget=budget,
+                    reserve_s=budget.close_reserve_s,
+                )
+            except BudgetExhausted as exc:
+                logger.warning("[%s] budget exhausted during step: %s", label, exc)
+                return _forced_close(
+                    groq=groq,
+                    messages=messages,
+                    model=model,
+                    fallback_models=fallback_models,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    steps=steps,
+                    model_used=model_used,
+                    tool_names_called=tool_names_called,
+                    trace=trace,
+                    label=label,
+                    depth=toolbelt.ctx.depth,
+                    stop_reason="time_budget",
+                    reserve_s=budget.close_reserve_s,
+                )
+            except Exception as exc:  # noqa: BLE001 — the whole chain failed
+                logger.exception("[%s] LLM chain failed", label)
+                trace.add(
+                    TraceStep(
+                        kind="llm",
+                        name=label,
+                        ok=False,
+                        error=str(exc)[:300],
+                        duration_ms=int((time.time() - step_started) * 1000),
+                        depth=toolbelt.ctx.depth,
+                    )
+                )
+                return LoopResult(
+                    text="",
+                    model_used=model_used,
+                    steps_taken=steps,
+                    stop_reason="llm_error",
+                    messages=messages,
+                    tool_calls_made=tool_names_called,
+                    error=str(exc),
+                )
+
+            steps += 1
+            trace.model_used = model_used
+            calls = getattr(message, "tool_calls", None)
+            text = (getattr(message, "content", None) or "").strip()
+
             trace.add(
                 TraceStep(
                     kind="llm",
-                    name=label,
-                    ok=False,
-                    error=str(exc)[:300],
+                    name=f"{label}:step{steps}",
+                    ok=True,
+                    result_preview=(
+                        f"{len(calls)} tool call(s)" if calls else f"{len(text)} chars"
+                    ),
                     duration_ms=int((time.time() - step_started) * 1000),
                     depth=toolbelt.ctx.depth,
                 )
             )
-            return LoopResult(
-                text="",
-                model_used=model_used,
-                steps_taken=steps,
-                stop_reason="llm_error",
-                messages=messages,
-                tool_calls_made=tool_names_called,
-                error=str(exc),
-            )
 
-        steps += 1
-        trace.model_used = model_used
-        calls = getattr(message, "tool_calls", None)
-        text = (getattr(message, "content", None) or "").strip()
+            if not calls:
+                return LoopResult(
+                    text=text,
+                    model_used=model_used,
+                    steps_taken=steps,
+                    stop_reason="max_steps" if final_pass and steps >= max_steps else "answered",
+                    messages=messages,
+                    tool_calls_made=tool_names_called,
+                )
 
-        trace.add(
-            TraceStep(
-                kind="llm",
-                name=f"{label}:step{steps}",
-                ok=True,
-                result_preview=(
-                    f"{len(calls)} tool call(s)" if calls else f"{len(text)} chars"
-                ),
-                duration_ms=int((time.time() - step_started) * 1000),
-                depth=toolbelt.ctx.depth,
-            )
+            # Act on every call the model asked for, then observe.
+            messages.append(_serialise_assistant(message))
+            for call in calls:
+                name = call.function.name
+                tool_names_called.append(name)
+                result = toolbelt.call(name, call.function.arguments)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": name,
+                        "content": result.to_json(),
+                    }
+                )
+
+            if time.time() >= deadline:
+                messages.append({"role": "system", "content": _FORCED_CLOSE_NUDGE})
+
+        # Budget spent while still mid-reasoning: force one closing answer.
+        return _forced_close(
+            groq=groq,
+            messages=messages,
+            model=model,
+            fallback_models=fallback_models,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            steps=steps,
+            model_used=model_used,
+            tool_names_called=tool_names_called,
+            trace=trace,
+            label=label,
+            depth=toolbelt.ctx.depth,
+            stop_reason="time_budget" if budget.is_exhausted() or time.time() >= deadline else "max_steps",
+            reserve_s=budget.close_reserve_s,
         )
-
-        if not calls:
-            return LoopResult(
-                text=text,
-                model_used=model_used,
-                steps_taken=steps,
-                stop_reason="max_steps" if final_pass and steps >= max_steps else "answered",
-                messages=messages,
-                tool_calls_made=tool_names_called,
-            )
-
-        # Act on every call the model asked for, then observe.
-        messages.append(_serialise_assistant(message))
-        for call in calls:
-            name = call.function.name
-            tool_names_called.append(name)
-            result = toolbelt.call(name, call.function.arguments)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": name,
-                    "content": result.to_json(),
-                }
-            )
-
-        if time.time() >= deadline:
-            messages.append({"role": "system", "content": _FORCED_CLOSE_NUDGE})
-
-    # Budget spent while still mid-reasoning: force one closing answer.
-    return _forced_close(
-        groq=groq,
-        messages=messages,
-        model=model,
-        fallback_models=fallback_models,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        steps=steps,
-        model_used=model_used,
-        tool_names_called=tool_names_called,
-        trace=trace,
-        label=label,
-        depth=toolbelt.ctx.depth,
-    )
+    finally:
+        current_budget_var.reset(budget_token)
 
 
 def _forced_close(
     *,
-    groq: Groq,
+    groq: OpenAI,
     messages: List[Dict[str, Any]],
     model: str,
     fallback_models: Optional[List[str]],
@@ -254,6 +305,8 @@ def _forced_close(
     trace: AgentTrace,
     label: str,
     depth: int,
+    stop_reason: str = "max_steps",
+    reserve_s: float = 8.0,
 ) -> LoopResult:
     """One last tool-free call so a budget overrun still answers the student."""
     messages = messages + [{"role": "system", "content": _FORCED_CLOSE_NUDGE}]
@@ -266,6 +319,8 @@ def _forced_close(
             fallback_models=fallback_models,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=reserve_s,
+            budget=None,
         )
         text = (getattr(message, "content", None) or "").strip()
         trace.add(
@@ -282,7 +337,7 @@ def _forced_close(
             text=text,
             model_used=model_used,
             steps_taken=steps,
-            stop_reason="max_steps",
+            stop_reason=stop_reason,
             messages=messages,
             tool_calls_made=tool_names_called,
         )

@@ -195,7 +195,20 @@ def _run_chain(
     except Exception:
         pool = None
 
+    from agents.runtime.budget import (
+        BudgetExhausted,
+        DEFAULT_TUTOR_STEP_TIMEOUT_S,
+        current_budget_var,
+    )
+
+    budget = kwargs.pop("budget", None) or current_budget_var.get()
+    per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
+    reserve_s = kwargs.pop("reserve_s", 0.0)
+
     for model_idx, current_model in enumerate(chain):
+        if budget is not None and budget.is_exhausted():
+            raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
+
         is_fallback = model_idx > 0
         if is_fallback:
             logger.warning(
@@ -213,6 +226,14 @@ def _run_chain(
             continue
 
         while attempt < MAX_RETRIES:
+            if budget is not None:
+                if budget.is_exhausted():
+                    raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
+                call_timeout = budget.timeout_for(per_call_cap=per_call_cap, reserve_s=reserve_s)
+                call_kwargs["timeout"] = call_timeout
+            elif "timeout" not in call_kwargs:
+                call_kwargs["timeout"] = per_call_cap
+
             attempt += 1
             key_idx, active_client = _pick_client(pool, client, current_model)
             if pool is not None and key_idx is not None:
@@ -237,6 +258,9 @@ def _run_chain(
                         continue
                     else:
                         break  # try next model
+
+                if budget is not None:
+                    budget.record_call()
 
                 if is_fallback or attempt > 0:
                     logger.info(
@@ -437,7 +461,20 @@ def groq_stream(
     except Exception:
         pool = None
 
+    from agents.runtime.budget import (
+        BudgetExhausted,
+        DEFAULT_TUTOR_STEP_TIMEOUT_S,
+        current_budget_var,
+    )
+
+    budget = kwargs.pop("budget", None) or current_budget_var.get()
+    per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
+    reserve_s = kwargs.pop("reserve_s", 0.0)
+
     for model_idx, current_model in enumerate(chain):
+        if budget is not None and budget.is_exhausted():
+            raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
+
         is_fallback = model_idx > 0
         if is_fallback:
             logger.warning(
@@ -455,6 +492,14 @@ def groq_stream(
             continue
 
         while attempt < MAX_RETRIES:
+            if budget is not None:
+                if budget.is_exhausted():
+                    raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
+                call_timeout = budget.timeout_for(per_call_cap=per_call_cap, reserve_s=reserve_s)
+                call_kwargs["timeout"] = call_timeout
+            elif "timeout" not in call_kwargs:
+                call_kwargs["timeout"] = per_call_cap
+
             attempt += 1
             key_idx, active_client = _pick_client(pool, client, current_model)
             if pool is not None and key_idx is not None:
@@ -477,6 +522,8 @@ def groq_stream(
                 
                 # After the loop, if we didn't crash, we successfully finished!
                 yield ("", True)
+                if budget is not None:
+                    budget.record_call()
                 if is_fallback or attempt > 0:
                     logger.info(
                         "[LLM] Stream Success — model=%s attempt=%d/%d",
