@@ -152,6 +152,12 @@ class AnswerCheckerTests(unittest.TestCase):
         result = check_answer(query="q", draft="Nice work!", state={})
         self.assertEqual(result.verdict, VERDICT_SKIPPED)
 
+    def test_draft_without_claims_skips_checker(self):
+        draft_no_claims = "That is a wonderful perspective on studying physics consistently each day. " * 5
+        result = check_answer(query="q", draft=draft_no_claims, state={})
+        self.assertEqual(result.verdict, VERDICT_SKIPPED)
+        self.assertIn("No analytical or exam claims", result.issues[0])
+
     def test_a_clean_draft_passes_through_unchanged(self):
         with patch(
             "agents.answer_checker.groq_complete",

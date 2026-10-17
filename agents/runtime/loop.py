@@ -267,6 +267,7 @@ def run_agent_loop(
 
             step_started = time.time()
             messages_to_send = _compact_past_tool_messages(messages)
+            progress.report("stage", "thinking", "start", step=steps)
             try:
                 message, model_used = groq_chat(
                     client=groq,
@@ -325,6 +326,7 @@ def run_agent_loop(
                 )
 
             steps += 1
+            progress.report("stage", "thinking", "done", step=steps)
             trace.model_used = model_used
             calls = getattr(message, "tool_calls", None)
             text = (getattr(message, "content", None) or "").strip()

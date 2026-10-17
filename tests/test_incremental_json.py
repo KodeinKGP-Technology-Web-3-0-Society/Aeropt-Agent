@@ -43,7 +43,7 @@ def test_incremental_json_scanner():
         # call check_answer_streaming
         result = checker.check_answer_streaming(
             query="test",
-            draft="test",
+            draft="The acceleration is $a = 5$ m/s^2",
             state={},
             on_token=on_token
         )

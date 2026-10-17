@@ -328,6 +328,14 @@ def _resolve_final_text(loop_text: str, ctx: ToolContext) -> str:
         # It meant to accept the draft but added commentary around the token.
         return draft
 
+    if draft and text and len(draft) >= 60:
+        import difflib
+
+        ratio = difflib.SequenceMatcher(None, draft, text).ratio()
+        if ratio >= 0.9:
+            logger.info("Tutor copied composer draft verbatim (similarity=%.2f) — using draft", ratio)
+            return draft
+
     return text
 
 
@@ -507,12 +515,19 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     progress.report("stage", "thinking", "done")
     progress.report("stage", "review")
 
+    from agents.answer_checker import has_claims_to_check
+
     remaining = budget.remaining()
     if remaining <= 0:
         logger.warning("Turn budget exhausted before answer checker; skipping review.")
         checked = CheckResult(answer, "skipped:budget", ["Turn budget exhausted."])
         trace.checker_verdict = "skipped:budget"
         trace.add(TraceStep(kind="check", name="answer_checker", ok=True, result_preview="skipped:budget"))
+    elif not has_claims_to_check(answer):
+        logger.info("Draft has no analytical or exam claims; skipping checker review.")
+        checked = CheckResult(answer, VERDICT_SKIPPED, ["No analytical or exam claims to review."])
+        trace.checker_verdict = VERDICT_SKIPPED
+        trace.add(TraceStep(kind="check", name="answer_checker", ok=True, result_preview="skipped:no_claims"))
     else:
         checker_timeout = min(15.0, remaining)
         checked = check_answer_streaming(

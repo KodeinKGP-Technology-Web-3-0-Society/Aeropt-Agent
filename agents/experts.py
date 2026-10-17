@@ -379,6 +379,7 @@ def _run_composer(expert: Expert, task: str, ctx: ToolContext) -> Dict[str, Any]
         "draft_length_chars": len(draft),
         "draft": draft_preview(draft),
         "summary": f"{expert.name} drafted {len(draft)} chars",
+        "final": True,
         "next_step": (
             "This draft is staged as the reply. If it answers the student well, "
             "respond with exactly USE_DRAFT and nothing else — that sends it "

@@ -43,6 +43,22 @@ VERDICT_REVISED = "revised"
 VERDICT_FAILED = "failed"
 VERDICT_SKIPPED = "skipped"
 
+
+def has_claims_to_check(draft: str) -> bool:
+    """True when the draft asserts numerical, physical, mathematical, or exam claims."""
+    if not (draft or "").strip():
+        return False
+    if r"\boxed{" in draft:
+        return True
+    from agents.runtime.proof import needs_proof
+    from agents.runtime.provenance import _EXAM_CLAIM
+
+    if needs_proof(draft):
+        return True
+    if bool(_EXAM_CLAIM.search(draft)):
+        return True
+    return False
+
 _CHECKER_PROMPT = """\
 You are the final reviewer for a JEE Physics tutor. An answer has been drafted \
 for a student. It does not reach them until you approve it.
@@ -140,7 +156,7 @@ def _format_evidence(chunks: List[Dict[str, Any]], limit: int = 3) -> str:
     parts = []
     for chunk in chunks[:limit]:
         text = (chunk.get("core_text") or "").strip()
-        parts.append(f"[{chunk.get('content_id', '?')}] {text[:700]}")
+        parts.append(f"[{chunk.get('content_id', '?')}] {text[:500]}")
     return "\n\n".join(parts)
 
 
@@ -194,6 +210,9 @@ def check_answer(
     if len(draft) < MIN_LENGTH_TO_CHECK:
         # A short acknowledgement has no physics to get wrong.
         return CheckResult(draft, VERDICT_SKIPPED, ["Too short to need review."])
+
+    if not has_claims_to_check(draft):
+        return CheckResult(draft, VERDICT_SKIPPED, ["No analytical or exam claims to review."])
 
     if not getattr(config, "ANSWER_CHECKER_ENABLED", True):
         return CheckResult(draft, VERDICT_SKIPPED, ["Checker disabled by config."])
@@ -314,6 +333,9 @@ def check_answer_streaming(
 
     if len(draft) < MIN_LENGTH_TO_CHECK:
         return CheckResult(draft, VERDICT_SKIPPED, ["Too short to need review."])
+
+    if not has_claims_to_check(draft):
+        return CheckResult(draft, VERDICT_SKIPPED, ["No analytical or exam claims to review."])
 
     if not getattr(config, "ANSWER_CHECKER_ENABLED", True):
         return CheckResult(draft, VERDICT_SKIPPED, ["Checker disabled by config."])

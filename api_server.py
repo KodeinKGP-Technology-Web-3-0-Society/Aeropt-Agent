@@ -58,6 +58,7 @@ from typing import Any, Dict, List, Optional
 import asyncio
 import os
 import json
+import time
 
 # ── config must be imported first — calls load_dotenv() and sets SSL cert ─────
 import config  # noqa: F401
@@ -572,10 +573,13 @@ def _persist_turn_side_effects(
     save_carry(session_id, carry)
 
 
+_PREFETCH_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
 def _prefetch_next_query(session_id: str, result: TutorState) -> None:
-    """Warm GraphRAG for the first follow-up suggestion when Redis is available."""
+    """Warm GraphRAG for the first follow-up suggestion (in-process or Redis)."""
     follow_ups = result.get("follow_up_suggestions")
-    if not follow_ups or not isinstance(follow_ups, list) or not db.redis:
+    if not follow_ups or not isinstance(follow_ups, list):
         return
     next_query = follow_ups[0]
     if isinstance(next_query, dict):
@@ -607,7 +611,9 @@ def _prefetch_next_query(session_id: str, result: TutorState) -> None:
             "difficulty_max": p_state.get("difficulty_max"),
             "retrieval_mode": p_state.get("retrieval_mode"),
         }
-        db.redis.setex(cache_key, 120, json.dumps(cache_val))
+        _PREFETCH_CACHE[cache_key] = (time.time(), cache_val)
+        if db.redis:
+            db.redis.setex(cache_key, 120, json.dumps(cache_val))
         logging.info("Prefetched for next query: %s", next_query)
     except Exception:
         logging.exception("Prefetch failed for session %s", session_id)
@@ -866,19 +872,28 @@ async def chat_message(
         try:
             stage_overrides: Dict[str, Any] = {}
             
-            # Check prefetch cache for next_query fast-forward
+            # Check prefetch cache for next_query fast-forward (Redis or in-process)
+            cache_key = f"prefetch:{session_id}:{query.strip()}"
+            cached_data = None
             from db.supabase_client import db
             if db.redis:
                 try:
-                    cache_key = f"prefetch:{session_id}:{query.strip()}"
                     cached_str = db.redis.get(cache_key)
                     if cached_str:
                         cached_data = json.loads(cached_str)
-                        stage_overrides.update(cached_data)
-                        stage_overrides["_prefetch_fast_forward"] = True
-                        logging.info("Used prefetch cache for query: %s", query.strip())
                 except Exception:
                     pass
+            if not cached_data and cache_key in _PREFETCH_CACHE:
+                ts, val = _PREFETCH_CACHE[cache_key]
+                if time.time() - ts < 120:
+                    cached_data = val
+                else:
+                    _PREFETCH_CACHE.pop(cache_key, None)
+
+            if cached_data:
+                stage_overrides.update(cached_data)
+                stage_overrides["_prefetch_fast_forward"] = True
+                logging.info("Used prefetch cache for query: %s", query.strip())
                     
             if req.study_stage in {"theory", "example", "practice", "pyq"}:
                 stage_overrides.update({
