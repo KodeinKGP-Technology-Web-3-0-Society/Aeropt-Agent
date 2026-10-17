@@ -157,8 +157,6 @@ def _format_pending_suggestions(state: TutorState) -> str:
     return "\n".join(lines)
 
 
-_OPTIONS_PHRASES = ("option", "choices", "multiple choice", "mcq", "hint", "clue")
-
 _OPTIONS_MOVE = (
     "Student asked for options or a hint. Do not probe again and do not give the answer. "
     "Offer 3-4 labelled choices (A, B, C, D) to the question you just asked: one correct, "
@@ -196,45 +194,39 @@ _CHAT_REVEAL = "your choice, set by the mode you picked above (question only = 0
 
 
 def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int | str]:
-    query_lower = query.lower()
     if not (state.get("classroom_surface") or "").strip():
         return _CHAT_MOVE, _CHAT_REVEAL
-    if any(ph in query_lower for ph in _OPTIONS_PHRASES) and len(query_lower.split()) <= 12:
-        return _OPTIONS_MOVE, 2
-    escalate = any(ph in query_lower for ph in ["give up", "show me", "tell me", "don't know", "answer", "stuck"])
-    
-    reveal = 0
-    move = "Withhold answer. Probe for their thoughts or confirm success."
-    
-    recent_turns = state.get("recent_turns") or []
-    prior_escalations = sum(
-        1 for t in recent_turns 
-        if t.get("role") == "user" and any(ph in (t.get("content") or "").lower() for ph in ["give up", "show me", "tell me", "don't know", "answer", "stuck"])
-    )
 
-    if escalate:
-        if prior_escalations >= 1:
-            reveal = 4
-            move = "Student explicitly requested answer again. Tell them the full solution."
-        else:
-            reveal = 3
-            move = "Student requested help/answer. Escalate: show up to sticking point, ask one question."
+    # 1. Options requested (explicit structured flag or state signal)
+    query_clean = (query or "").lower().strip()
+    if (
+        state.get("student_requests_options")
+        or state.get("options_requested")
+        or query_clean == "give me options"
+    ):
+        return _OPTIONS_MOVE, 2
+
+    # 2. Problem state driven reveal ladder
+    prob_state = dict(state.get("problem_state") or {})
+    asked_answer = int(prob_state.get("student_asked_for_answer") or 0)
+    if state.get("student_requests_solution") or query_clean == "tell me the answer":
+        asked_answer += 1
+
+    attempts = int(prob_state.get("attempts_on_problem") or 0)
+
+    if asked_answer >= 2:
+        return "Student explicitly requested answer again. Tell them the full solution.", 4
+    if asked_answer == 1:
+        return "Student requested help/answer. Escalate: show up to sticking point, ask one question.", 3
+
+    if attempts == 0:
+        return "First turn on problem. Confirm understanding or probe. Do not reveal answer.", 0
+    elif attempts == 1:
+        return "Nudge them based on their attempt.", 1
+    elif attempts == 2:
+        return "Hint at the core principle they are missing.", 2
     else:
-        turn = int(state.get("interaction_count") or 1)
-        if turn == 1:
-            reveal = 0
-            move = "First turn. Confirm understanding or probe. Do not reveal answer."
-        elif turn == 2:
-            reveal = 1
-            move = "Nudge them based on their attempt."
-        elif turn == 3:
-            reveal = 2
-            move = "Hint at the core principle they are missing."
-        else:
-            reveal = 3
-            move = "They are stuck. Show solution up to the sticking point and ask a question."
-            
-    return move, reveal
+        return "They are stuck. Show solution up to the sticking point and ask a question.", 3
 
 
 def _with_progress(
@@ -413,6 +405,30 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     working_state: Dict[str, Any] = dict(state)
     working_state["recalled_memories"] = memories
 
+    prob_state = dict(
+        working_state.get("problem_state")
+        or (working_state.get("carry") or {}).get("problem_state")
+        or {
+            "problem_key": "",
+            "attempts_on_problem": 0,
+            "hints_given": 0,
+            "student_asked_for_answer": 0,
+        }
+    )
+    if working_state.get("note_problem"):
+        new_key = str(working_state.get("note_problem"))
+        if new_key != prob_state.get("problem_key"):
+            prob_state = {
+                "problem_key": new_key,
+                "attempts_on_problem": 0,
+                "hints_given": 0,
+                "student_asked_for_answer": 0,
+            }
+    if working_state.get("student_requests_solution"):
+        prob_state["student_asked_for_answer"] = int(prob_state.get("student_asked_for_answer") or 0) + 1
+
+    working_state["problem_state"] = prob_state
+
     ctx = ToolContext(
         user_id=user_id,
         session_id=session_id,
@@ -481,6 +497,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             "agent_used": "learning_agent",
             "model_used": result.model_used,
             "error": None,
+            "problem_state": prob_state,
             **ctx.updates,
         }
 
@@ -522,6 +539,10 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     updates.pop("draft_author", None)
     updates.pop("draft_model", None)
 
+    final_prob_state = dict(ctx.state.get("problem_state") or prob_state)
+    if final_prob_state.get("problem_key") and not ctx.state.get("graded_this_turn"):
+        final_prob_state["attempts_on_problem"] = int(final_prob_state.get("attempts_on_problem") or 0) + 1
+
     updates.update(
         {
             "response": checked.answer,
@@ -532,6 +553,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             "agent_trace_path": trace.path(),
             "agent_stop_reason": result.stop_reason,
             "checker_verdict": checked.verdict,
+            "problem_state": final_prob_state,
         }
     )
 

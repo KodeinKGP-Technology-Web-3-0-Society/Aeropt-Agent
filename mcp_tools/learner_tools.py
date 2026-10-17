@@ -232,6 +232,9 @@ class RecordAttemptArgs(BaseModel):
     time_taken_sec: Optional[int] = Field(
         default=None, description="Seconds the student spent, if known."
     )
+    problem_key: Optional[str] = Field(
+        default=None, description="Problem identifier or key if known."
+    )
 
 
 @tool(
@@ -275,6 +278,19 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
         ctx.stage(attempt_record_failed=True)
         return {"error": result["error"]}
 
+    prob_state = dict(
+        ctx.state.get("problem_state")
+        or {
+            "problem_key": "",
+            "attempts_on_problem": 0,
+            "hints_given": 0,
+            "student_asked_for_answer": 0,
+        }
+    )
+    if args.problem_key:
+        prob_state["problem_key"] = args.problem_key
+    prob_state["attempts_on_problem"] = int(prob_state.get("attempts_on_problem") or 0) + 1
+
     ctx.stage(
         has_graded_outcome=True,
         is_correct=args.is_correct,
@@ -286,6 +302,7 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
         attempt_recorded=True,
         recorded_concept_id=concept_id,
         mastery_pct=result.get("mastery_pct"),
+        problem_state=prob_state,
     )
     ctx.state.update(ctx.updates)
 
@@ -489,3 +506,55 @@ def suggest_next_material(args: SuggestNextArgs, ctx: ToolContext) -> Dict[str, 
             for s in suggestions[:4]
         ]
     }
+
+
+class TurnSignalsArgs(BaseModel):
+    problem_key: Optional[str] = Field(
+        default=None,
+        description="Key/identifier for current problem if starting a new problem.",
+    )
+    student_requests_solution: bool = Field(
+        default=False,
+        description="Set true if student explicitly asked for full answer/solution.",
+    )
+    student_requests_options: bool = Field(
+        default=False,
+        description="Set true if student requested options/MCQ.",
+    )
+    hint_given: bool = Field(
+        default=False,
+        description="Set true if a hint/nudge was delivered this turn.",
+    )
+
+
+@tool(
+    name="turn_signals",
+    description="Signal pedagogical state updates for this turn (problem key, requested answer/options, hint).",
+    args_model=TurnSignalsArgs,
+    scopes=(SCOPE_READ,),
+)
+def turn_signals(args: TurnSignalsArgs, ctx: ToolContext) -> Dict[str, Any]:
+    prob_state = dict(
+        ctx.state.get("problem_state")
+        or {
+            "problem_key": "",
+            "attempts_on_problem": 0,
+            "hints_given": 0,
+            "student_asked_for_answer": 0,
+        }
+    )
+    if args.problem_key and args.problem_key != prob_state.get("problem_key"):
+        prob_state["problem_key"] = args.problem_key
+        prob_state["attempts_on_problem"] = 0
+        prob_state["hints_given"] = 0
+        prob_state["student_asked_for_answer"] = 0
+
+    if args.student_requests_solution:
+        prob_state["student_asked_for_answer"] = int(prob_state.get("student_asked_for_answer") or 0) + 1
+
+    if args.hint_given:
+        prob_state["hints_given"] = int(prob_state.get("hints_given") or 0) + 1
+
+    ctx.state["problem_state"] = prob_state
+    ctx.stage(problem_state=prob_state)
+    return {"ok": True, "problem_state": prob_state}

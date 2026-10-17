@@ -29,6 +29,7 @@ _CARRY_KEYS = [
     "content_type_requested",
     "prior_session_summary",  # loaded once; keep it for all subsequent turns
     "seen_follow_up_ids",  # session-scoped dedup for follow-up suggestions
+    "problem_state",
 ]
 
 # File-carry keys that must NEVER be merged into LangGraph TutorState.
@@ -208,6 +209,12 @@ def build_initial_state(
         "score_summary": None,
         "sandbox_action": None,
         "sandbox_card": None,
+        "problem_state": {
+            "problem_key": "",
+            "attempts_on_problem": 0,
+            "hints_given": 0,
+            "student_asked_for_answer": 0,
+        },
     }
     # Merge carry-over fields from previous turn (skip UI-only blobs).
     for key, val in carry.items():

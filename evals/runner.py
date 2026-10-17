@@ -63,6 +63,7 @@ def run_single_turn(
     recent_turns: List[dict],
     interaction_count: int,
     setup_state: Optional[dict] = None,
+    carry: Optional[dict] = None,
 ) -> dict:
     """Execute one turn through learning_agent_turn."""
     from agents.learning_agent import learning_agent_turn
@@ -75,8 +76,10 @@ def run_single_turn(
         "interaction_count": interaction_count,
         "target_exam": "JEE_ADVANCED",
         "preferred_depth": "standard",
-        "carry": {},
+        "carry": dict(carry or {}),
     }
+    if carry and "problem_state" in carry:
+        state["problem_state"] = carry["problem_state"]
     if setup_state:
         state.update(setup_state)
 
@@ -93,6 +96,7 @@ def run_scenario(
     cassette = Cassette(scenario.id, mode=mode)
     turn_results: List[TurnResult] = []
     recent_turns: List[dict] = []
+    carry: Dict[str, Any] = {}
     user_id = f"eval_user_{scenario.id}"
     session_id = f"eval_sess_{scenario.id}"
     scenario_passed = True
@@ -134,7 +138,11 @@ def run_scenario(
                         recent_turns=list(recent_turns),
                         interaction_count=turn_idx + 1,
                         setup_state=turn.setup_state,
+                        carry=carry,
                     )
+                    from services.turn_service import update_carry
+
+                    update_carry(carry, result)
                 except Exception as exc:
                     return ScenarioResult(
                         scenario_id=scenario.id,

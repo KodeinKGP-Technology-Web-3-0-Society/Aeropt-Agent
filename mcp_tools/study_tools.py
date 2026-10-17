@@ -436,10 +436,17 @@ def serve_practice_question(args: ServePracticeArgs, ctx: ToolContext) -> Dict[s
             },
         )
 
+    new_prob_state = {
+        "problem_key": content_id,
+        "attempts_on_problem": 0,
+        "hints_given": 0,
+        "student_asked_for_answer": 0,
+    }
     ctx.stage(
         current_question=question,
         awaiting_answer=True,
         served_content_ids=sorted(served_ids | {content_id}),
+        problem_state=new_prob_state,
     )
     ctx.state.update(ctx.updates)
 
