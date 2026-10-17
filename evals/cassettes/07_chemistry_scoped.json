@@ -1,0 +1,29 @@
+{
+  "5f135c036036c166f101b21fd6f3a10c97cb49bddf216937921926793ce9b339": {
+    "content": "",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"concept_id\": \"chem_bonding_hybridization\", \"content_type\": \"theory\"}",
+          "name": "retrieve_content"
+        },
+        "id": "call_chem_07",
+        "type": "function"
+      }
+    ]
+  },
+  "849c725b39c079c72dd85fe04105339d7e29868f79348cb6c6bed3872932411d": {
+    "content": "In ammonia ($NH_3$), the central nitrogen atom has 5 valence electrons and forms 3 single bonds with hydrogen, leaving one lone pair.\n\n- **Hybridization:** $sp^3$ (4 electron domains: 3 bonding pairs + 1 lone pair).\n- **Electron geometry:** Tetrahedral.\n- **Molecular geometry:** Trigonal pyramidal.\n\nDue to lone pair-bond pair repulsion, the bond angle is compressed from $109.5^\\circ$ to approximately $107^\\circ$.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  },
+  "aaed8087e1d9a82debd99f7816be14f3110189f962aecab916980b3c8fe67058": {
+    "content": "{\"verdict\": \"pass\", \"issues\": []}",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  }
+}

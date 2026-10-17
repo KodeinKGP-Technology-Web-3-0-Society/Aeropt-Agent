@@ -26,8 +26,10 @@ class TestGroundingEval(unittest.TestCase):
         failures = []
 
         import uuid
+        from evals.runner import guard_against_hosted
+        guard_against_hosted()
         from db.supabase_client import db
-        test_user_id = "8f25e78e-114b-4731-b9b9-6a30354581f1"
+        test_user_id = str(uuid.uuid4())
 
         for case in self.cases:
             query = case["query"]

@@ -1,0 +1,19 @@
+id: 04_ask_answer_twice
+description: Asking for the answer twice escalates the reveal ladder to the full solution
+tags:
+- scaffolding
+- reveal_ladder
+turns:
+- user_message: How do I calculate the moment of inertia of a uniform disk of mass
+    M and radius R about its central axis?
+  assertions:
+    no_boxed_solution: true
+- user_message: Please just give me the answer directly.
+  assertions:
+    no_boxed_solution: true
+- user_message: I really need the full answer right now, please show me the complete
+    solution.
+  assertions:
+    has_boxed_solution: true
+    final_text_regex:
+    - MR\^2

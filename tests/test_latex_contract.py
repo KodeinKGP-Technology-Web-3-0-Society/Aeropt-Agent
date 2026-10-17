@@ -8,6 +8,7 @@ choke point and the stored corpus.
 
 from __future__ import annotations
 
+import os
 import re
 
 import pytest
@@ -121,8 +122,12 @@ def test_outbound_preserves_a_full_derivation() -> None:
 def test_corpus_text_has_no_residual_latex_issues() -> None:
     from retrieval import store
 
+    from urllib.parse import urlparse
     if not store.index_exists():
         pytest.skip("retrieval database not configured")
+    host = (urlparse(store.database_url()).hostname or "").lower()
+    if host not in {"127.0.0.1", "localhost", "::1"} and os.getenv("ALLOW_HOSTED_RETRIEVAL_TESTS") != "1":
+        pytest.skip("corpus test requires local database (not hosted)")
     rows = store.query("select content_id, core_text, coalesce(solution, '') as solution from public.content")
     bad = [
         (row["content_id"], find_latex_issues(row["core_text"] or "") or find_latex_issues(row["solution"] or ""))
@@ -145,9 +150,13 @@ def test_corpus_lines_have_balanced_inline_delimiters() -> None:
     Display blocks legitimately span lines, so they are removed before counting.
     """
     from retrieval import store
+    from urllib.parse import urlparse
 
     if not store.index_exists():
         pytest.skip("retrieval database not configured")
+    host = (urlparse(store.database_url()).hostname or "").lower()
+    if host not in {"127.0.0.1", "localhost", "::1"} and os.getenv("ALLOW_HOSTED_RETRIEVAL_TESTS") != "1":
+        pytest.skip("corpus test requires local database (not hosted)")
     display = re.compile(r"\$\$[\s\S]*?\$\$")
     unescaped = re.compile(r"(?<!\\)\$")
 

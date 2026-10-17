@@ -205,6 +205,36 @@ def _run_chain(
     per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
     reserve_s = kwargs.pop("reserve_s", 0.0)
 
+    try:
+        from evals.cassettes import (
+            compute_request_hash,
+            deserialize_message,
+            get_active_cassette,
+            serialize_message,
+        )
+        active_cassette = get_active_cassette()
+    except Exception:
+        active_cassette = None
+
+    if active_cassette is not None and active_cassette.mode == "replay":
+        req_hash = compute_request_hash(
+            model=model,
+            messages=messages,
+            tools=kwargs.get("tools"),
+            temperature=kwargs.get("temperature"),
+            response_format=kwargs.get("response_format"),
+        )
+        entry = active_cassette.get(req_hash)
+        if entry is None:
+            raise KeyError(
+                f"[Cassette replay] No recorded reply for request hash {req_hash} "
+                f"(model={model}, scenario={active_cassette.name}). Run runner.py --rerecord to record."
+            )
+        if budget is not None:
+            budget.record_call()
+        msg = deserialize_message(entry)
+        return msg, entry.get("model") or model
+
     for model_idx, current_model in enumerate(chain):
         if budget is not None and budget.is_exhausted():
             raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
@@ -269,6 +299,16 @@ def _run_chain(
                         attempt + 1,
                         MAX_RETRIES + 1,
                     )
+                if active_cassette is not None and active_cassette.mode == "record":
+                    req_hash = compute_request_hash(
+                        model=current_model,
+                        messages=messages,
+                        tools=kwargs.get("tools"),
+                        temperature=kwargs.get("temperature"),
+                        response_format=kwargs.get("response_format"),
+                    )
+                    active_cassette.set(req_hash, serialize_message(message, current_model))
+
                 return message, current_model
 
             except Exception as exc:
@@ -471,6 +511,37 @@ def groq_stream(
     per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
     reserve_s = kwargs.pop("reserve_s", 0.0)
 
+    try:
+        from evals.cassettes import (
+            compute_request_hash,
+            get_active_cassette,
+        )
+        active_cassette = get_active_cassette()
+    except Exception:
+        active_cassette = None
+
+    if active_cassette is not None and active_cassette.mode == "replay":
+        req_hash = compute_request_hash(
+            model=model,
+            messages=messages,
+            tools=kwargs.get("tools"),
+            temperature=kwargs.get("temperature"),
+            response_format=kwargs.get("response_format"),
+        )
+        entry = active_cassette.get(req_hash)
+        if entry is None:
+            raise KeyError(
+                f"[Cassette replay] No recorded reply for request hash {req_hash} "
+                f"(model={model}, scenario={active_cassette.name}). Run runner.py --rerecord to record."
+            )
+        if budget is not None:
+            budget.record_call()
+        content = entry.get("content") or ""
+        if content:
+            yield (content, False)
+        yield ("", True)
+        return entry.get("model") or model
+
     for model_idx, current_model in enumerate(chain):
         if budget is not None and budget.is_exhausted():
             raise BudgetExhausted(f"Turn budget deadline exceeded ({budget.deadline})")
@@ -515,15 +586,34 @@ def groq_stream(
                 
                 # If we get here, the connection succeeded. We now yield chunks.
                 # If a chunk fails, we catch it inside the generator and trigger retry.
+                streamed_text = []
                 for chunk in completion:
                     delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else ""
                     if delta:
+                        streamed_text.append(delta)
                         yield (delta, False)
                 
                 # After the loop, if we didn't crash, we successfully finished!
                 yield ("", True)
                 if budget is not None:
                     budget.record_call()
+                if active_cassette is not None and active_cassette.mode == "record":
+                    req_hash = compute_request_hash(
+                        model=current_model,
+                        messages=messages,
+                        tools=kwargs.get("tools"),
+                        temperature=kwargs.get("temperature"),
+                        response_format=kwargs.get("response_format"),
+                    )
+                    active_cassette.set(
+                        req_hash,
+                        {
+                            "role": "assistant",
+                            "content": "".join(streamed_text),
+                            "tool_calls": None,
+                            "model": current_model,
+                        },
+                    )
                 if is_fallback or attempt > 0:
                     logger.info(
                         "[LLM] Stream Success — model=%s attempt=%d/%d",

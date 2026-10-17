@@ -1,0 +1,11 @@
+id: 16_grounding_example_kirchhoff
+description: 'Grounding eval case: Worked example for Kirchhoff''s voltage law'
+tags:
+- grounding
+- example
+turns:
+- user_message: Walk me through a problem using Kirchhoff's voltage law.
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered

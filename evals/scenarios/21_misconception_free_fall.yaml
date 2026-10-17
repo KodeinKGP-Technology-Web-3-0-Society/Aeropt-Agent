@@ -1,0 +1,14 @@
+id: 21_misconception_free_fall
+description: Corrects misconception that heavier objects fall faster in vacuum
+tags:
+- misconception
+- physics
+turns:
+- user_message: Doesn't a 10 kg stone fall twice as fast as a 5 kg stone because gravity
+    pulls it harder?
+  assertions:
+    stop_reason: answered
+    final_text_regex:
+    - inertia|same acceleration|mass cancels|g
+    final_text_not_regex:
+    - Yes, it falls faster

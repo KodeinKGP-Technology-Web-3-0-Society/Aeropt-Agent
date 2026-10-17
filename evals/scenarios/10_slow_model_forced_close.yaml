@@ -1,0 +1,12 @@
+id: 10_slow_model_forced_close
+description: Turn budget deadline forces a close before timeout
+tags:
+- f3
+- budget
+turns:
+- user_message: Quickly summarize Archimedes' principle.
+  assertions:
+    stop_reason: time_budget
+    final_text_regex:
+    - buoyant
+    - displaced

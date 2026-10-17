@@ -1,10 +1,16 @@
-.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status
+.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status eval eval-live
 
 ci:
 	bash ci/run.sh
 
 test:
 	bash ci/run.sh
+
+eval:
+	.venv/bin/python -m evals.runner --mode replay
+
+eval-live:
+	.venv/bin/python -m evals.runner --mode live --with-judge
 
 deploy:
 	bash ci/deploy-local.sh

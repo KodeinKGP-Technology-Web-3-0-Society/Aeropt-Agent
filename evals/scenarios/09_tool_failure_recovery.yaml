@@ -1,0 +1,18 @@
+id: 09_tool_failure_recovery
+description: When a tool fails, tutor recovers gracefully and never shows raw traceback
+  to student
+tags:
+- recovery
+- toolbelt
+turns:
+- user_message: Explain Lenz's law and how it ensures energy conservation.
+  assertions:
+    stop_reason: answered
+    final_text_not_regex:
+    - Traceback
+    - Exception
+    - RuntimeError
+    - error 500
+    final_text_regex:
+    - Lenz
+    - conservation of energy

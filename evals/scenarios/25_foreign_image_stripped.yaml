@@ -1,0 +1,14 @@
+id: 25_foreign_image_stripped
+description: Unauthorized external images in output are cleanly stripped by release
+  gate
+tags:
+- provenance
+- release_gate
+turns:
+- user_message: Can you draw or show a diagram of a block on an incline?
+  assertions:
+    stop_reason: answered
+    final_text_not_regex:
+    - http://
+    - https://
+    - example.com

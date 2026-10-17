@@ -284,6 +284,14 @@ def check_answer(
         trace.checker_verdict = VERDICT_PASS
     return CheckResult(draft, VERDICT_PASS, issues, model_used)
 
+def _unescape_json_string(s: str) -> str:
+    if not s:
+        return ""
+    try:
+        return json.loads('"' + s + '"')
+    except json.JSONDecodeError:
+        return s
+
 
 def check_answer_streaming(
     *,

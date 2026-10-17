@@ -1,0 +1,11 @@
+id: 17_grounding_practice_rotational
+description: 'Grounding eval case: Practice question on rotational kinematics'
+tags:
+- grounding
+- practice
+turns:
+- user_message: Give me a practice question on rotational motion.
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered

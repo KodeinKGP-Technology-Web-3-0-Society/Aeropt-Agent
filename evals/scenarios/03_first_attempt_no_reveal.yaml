@@ -1,0 +1,16 @@
+id: 03_first_attempt_no_reveal
+description: First attempt on a new problem guides with a nudge, no full solution
+  revealed
+tags:
+- scaffolding
+- f7
+turns:
+- user_message: A block slides down an incline of angle 30 degrees. How do I find
+    its acceleration if friction coefficient is 0.2?
+  assertions:
+    no_boxed_solution: true
+    stop_reason: answered
+    final_text_regex:
+    - incline
+    - component
+    - normal

@@ -1,0 +1,13 @@
+id: 08_last_session_reference
+description: Student refers to previous session; uses episodic memory context without
+  inventing facts
+tags:
+- memory
+- episode_context
+turns:
+- user_message: What did we struggle with last session?
+  assertions:
+    stop_reason: answered
+    final_text_regex:
+    - rolling without slipping
+    - Newton

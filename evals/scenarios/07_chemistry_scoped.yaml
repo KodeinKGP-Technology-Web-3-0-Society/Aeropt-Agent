@@ -1,0 +1,19 @@
+id: 07_chemistry_scoped
+description: Chemistry question retrieves chemistry content with zero physics citations
+tags:
+- chemistry
+- retrieval_scope
+turns:
+- user_message: What is the hybridization and molecular geometry of ammonia (NH3)?
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - sp\^3
+    - lone pair
+    - pyramidal
+    final_text_not_regex:
+    - OpenStax
+    - Physics Class XI
+    - Physics Class XII

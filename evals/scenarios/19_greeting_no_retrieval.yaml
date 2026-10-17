@@ -1,0 +1,13 @@
+id: 19_greeting_no_retrieval
+description: General conversational greeting should not call retrieval tools
+tags:
+- greeting
+- efficiency
+turns:
+- user_message: Hi, I am ready to study for JEE today!
+  assertions:
+    tools_not_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - hello|welcome|ready|start|topic|study

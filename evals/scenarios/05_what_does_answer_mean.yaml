@@ -1,0 +1,16 @@
+id: 05_what_does_answer_mean
+description: '''What does the answer mean?'' is conceptual clarification, not asking
+  for answer'
+tags:
+- f7
+- policy
+turns:
+- user_message: What does the answer 11.2 km/s for escape velocity actually mean physically?
+  assertions:
+    stop_reason: answered
+    final_text_regex:
+    - escape
+    - gravitational
+    - Earth
+    final_text_not_regex:
+    - \\boxed{

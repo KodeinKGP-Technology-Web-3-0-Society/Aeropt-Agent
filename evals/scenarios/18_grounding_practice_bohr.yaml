@@ -1,0 +1,11 @@
+id: 18_grounding_practice_bohr
+description: 'Grounding eval case: PYQ about Bohr''s atomic model'
+tags:
+- grounding
+- pyq
+turns:
+- user_message: I want to solve a PYQ about Bohr's atomic model.
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered

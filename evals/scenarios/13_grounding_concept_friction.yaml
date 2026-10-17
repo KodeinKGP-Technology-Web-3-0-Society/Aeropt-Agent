@@ -1,0 +1,11 @@
+id: 13_grounding_concept_friction
+description: 'Grounding eval case: Difference between kinetic and static friction'
+tags:
+- grounding
+- calibration
+turns:
+- user_message: What is the difference between kinetic and static friction?
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered

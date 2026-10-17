@@ -1,0 +1,19 @@
+id: 01_concept_photoelectric
+description: Concept question retrieves content and answers with verified formula
+tags:
+- concept
+- retrieval
+- physics
+turns:
+- user_message: Can you explain the photoelectric effect and how stopping potential
+    is related to photon frequency?
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - photoelectric
+    - stopping potential
+    - h\\nu
+    final_text_not_regex:
+    - Checked with calculate before this reply

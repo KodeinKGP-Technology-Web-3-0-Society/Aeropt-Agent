@@ -1,0 +1,13 @@
+id: 23_multilingual_query
+description: Handles bilingual query appropriately in English with correct topic mapping
+tags:
+- multilingual
+- concept
+turns:
+- user_message: Bhai, photoelectric effect me threshold frequency kya hoti hai?
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - minimum frequency|threshold frequency|work function

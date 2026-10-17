@@ -1,0 +1,11 @@
+id: 22_formula_dimensional_check
+description: Derivation of period of simple pendulum is dimensionally checked
+tags:
+- dimensions
+- proof
+turns:
+- user_message: What is the formula for the time period of a simple pendulum?
+  assertions:
+    stop_reason: answered
+    final_text_regex:
+    - 2\s*\\pi\s*\\sqrt{\\frac{l}{g}}

@@ -1,0 +1,29 @@
+{
+  "98ac704e6f0876150a7dbce165559df348da4a0b2836999048469a488c1f92be": {
+    "content": "Here is a worked example for escape velocity: using conservation of energy $\\frac{1}{2}mv_e^2 - \\frac{GMm}{R} = 0$, we find $v_e = \\sqrt{\\frac{2GM}{R}} = \\sqrt{2gR} \\approx 11.2\\text{ km/s}$.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  },
+  "b5ee7f0d385efc91a50d9fc6cc4f50dfca0675cdf2bbc380bdbf184eb1733747": {
+    "content": "",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"concept_id\": \"phy_grav_escape\", \"content_type\": \"example\"}",
+          "name": "retrieve_content"
+        },
+        "id": "call_ground_15",
+        "type": "function"
+      }
+    ]
+  },
+  "b6892717cc1c4ef31a89e2dabb453f57995a133430dacd18927dca5e4fe0e09d": {
+    "content": "{\"verdict\": \"pass\", \"issues\": []}",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  }
+}

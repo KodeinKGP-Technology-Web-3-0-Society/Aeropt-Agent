@@ -30,4 +30,7 @@ echo "==> [agent] syntax"
 echo "==> [agent] tests"
 "$PYTHON" -m pytest tests/
 
+echo "==> [agent] evals (deterministic replay)"
+"$PYTHON" -m evals.runner --mode replay
+
 echo "==> [agent] CI passed"

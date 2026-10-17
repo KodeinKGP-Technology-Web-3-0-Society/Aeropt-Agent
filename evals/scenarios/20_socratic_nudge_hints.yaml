@@ -1,0 +1,14 @@
+id: 20_socratic_nudge_hints
+description: Student makes an initial step; tutor validates and provides a guiding
+  nudge
+tags:
+- pedagogy
+- socratic
+turns:
+- user_message: I set the sum of forces equal to zero for a falling ball, but it is
+    accelerating. What am I missing?
+  assertions:
+    stop_reason: answered
+    final_text_regex:
+    - second law|net force|ma|accelerat
+    no_boxed_solution: true

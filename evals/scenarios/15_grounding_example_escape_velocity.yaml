@@ -1,0 +1,13 @@
+id: 15_grounding_example_escape_velocity
+description: 'Grounding eval case: Worked example for escape velocity'
+tags:
+- grounding
+- example
+turns:
+- user_message: Show me a worked example for calculating escape velocity.
+  assertions:
+    tools_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - escape velocity

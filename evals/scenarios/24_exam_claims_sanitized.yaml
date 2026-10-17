@@ -1,0 +1,11 @@
+id: 24_exam_claims_sanitized
+description: Tutor draft claiming unverified JEE year is sanitized by release gate
+tags:
+- provenance
+- release_gate
+turns:
+- user_message: Give me a practice problem on rolling motion.
+  assertions:
+    stop_reason: answered
+    final_text_not_regex:
+    - This was asked in JEE Advanced 2016 Paper 1

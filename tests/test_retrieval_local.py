@@ -15,12 +15,23 @@ so test learners are never written to the user database.
 
 from __future__ import annotations
 
+import os
+from urllib.parse import urlparse
 import pytest
 
 from retrieval import gate, store
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+def _is_local_db():
+    if not store.index_exists():
+        return False
+    host = (urlparse(store.database_url()).hostname or "").lower()
+    return host in LOCAL_HOSTS or os.getenv("ALLOW_HOSTED_RETRIEVAL_TESTS") == "1"
+
 pytestmark = pytest.mark.skipif(
-    not store.index_exists(), reason="retrieval database not configured (RETRIEVAL_DATABASE_URL + make push)"
+    not _is_local_db(),
+    reason="retrieval database not configured on localhost (RETRIEVAL_DATABASE_URL + make push; or set ALLOW_HOSTED_RETRIEVAL_TESTS=1)",
 )
 
 

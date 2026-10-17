@@ -1,0 +1,72 @@
+[
+  {
+    "id": "calib_01_giveaway_score_1",
+    "student_message": "How do I solve the projectile range problem?",
+    "tutor_response": "The formula is R = u^2 sin(2theta)/g. For u=10 and theta=45, R = 100/10 = 10 meters. The answer is 10 m.",
+    "expected_score": 1,
+    "expected_reasoning": "Immediately calculates and gives away the full solution and numeric answer on first attempt without any inquiry or scaffolding."
+  },
+  {
+    "id": "calib_02_wrong_physics_score_1",
+    "student_message": "Why does a heavy ball fall faster than a light ball?",
+    "tutor_response": "Heavy balls fall faster because their gravitational force is larger, causing them to accelerate much quicker through gravity.",
+    "expected_score": 1,
+    "expected_reasoning": "Confirms a blatant physical misconception; gravitational acceleration g is independent of mass in free fall."
+  },
+  {
+    "id": "calib_03_rigid_wall_text_score_2",
+    "student_message": "What is Lenz's law?",
+    "tutor_response": "Electromagnetism is governed by Maxwell's equations. In 1834, Heinrich Lenz formulated Lenz's law. In electromagnetic systems, when magnetic flux changes through a circuit, an electromotive force is induced according to Faraday's law. The induced current creates a magnetic field that opposes the original change. This is essentially conservation of energy. You must always remember that energy cannot be created or destroyed. Now let us consider 10 different historical examples.",
+    "expected_score": 2,
+    "expected_reasoning": "Overly verbose, historical lecture dumping text rather than concise, conceptual explanation."
+  },
+  {
+    "id": "calib_04_ignores_student_score_2",
+    "student_message": "I don't understand where the negative sign in Faraday's law comes from.",
+    "tutor_response": "Faraday's law is |e| = dPhi/dt. Just take the magnitude and calculate the voltage. Try solving problem 5 now.",
+    "expected_score": 2,
+    "expected_reasoning": "Completely brushes off the student's specific question regarding the negative sign (Lenz's law)."
+  },
+  {
+    "id": "calib_05_acceptable_lecture_score_3",
+    "student_message": "Can you explain the photoelectric effect equation?",
+    "tutor_response": "Einstein's photoelectric equation is $K_{\\text{max}} = h\\nu - \\Phi$. Here, $h\\nu$ is the incident photon energy, $\\Phi$ is the metal's work function, and $K_{\\text{max}}$ is the maximum kinetic energy of emitted photoelectrons. If the photon energy is less than $\\Phi$, no emission occurs.",
+    "expected_score": 3,
+    "expected_reasoning": "Accurate and clear explanation of the formula, but purely direct explanation with no check for student understanding."
+  },
+  {
+    "id": "calib_06_acceptable_revealed_after_stuck_score_3",
+    "student_message": "I really can't figure out the tension, I've tried twice and got stuck.",
+    "tutor_response": "Let's look at the free body diagram together. The block of mass $m$ has downward gravity $mg$ and upward tension $T$. Since it accelerates downward at $a$, Newton's second law gives $mg - T = ma$. Therefore, $T = m(g - a)$.",
+    "expected_score": 3,
+    "expected_reasoning": "Shows the step-by-step resolution when the student is stuck, clear and supportive."
+  },
+  {
+    "id": "calib_07_good_guiding_nudge_score_4",
+    "student_message": "For a block on an incline of angle $\\theta$, why is normal force $mg\\cos\\theta$ and not $mg$?",
+    "tutor_response": "Good question! Consider your coordinate axes: choose one along the incline and one perpendicular to it.\n\nGravity acts straight down. If you resolve $mg$ along those two perpendicular directions, which component balances the surface contact force where there is no acceleration?",
+    "expected_score": 4,
+    "expected_reasoning": "Directs the student to resolve components along tilted axes, prompting active reasoning without giving away the final algebra."
+  },
+  {
+    "id": "calib_08_good_misconception_correction_score_4",
+    "student_message": "In circular motion, centrifugal force pushes the object outward, right?",
+    "tutor_response": "That's a very common way people visualize it! But remember: in an inertial (ground) reference frame, there is no outward force. What is actually happening is that the object's inertia wants it to go in a straight line tangent to the circle, and an inward centripetal force is required to pull it into the curve.\n\nCan you identify what physical force (e.g. friction, tension, gravity) provides that inward pull in your problem?",
+    "expected_score": 4,
+    "expected_reasoning": "Accurately clarifies the frame-of-reference distinction and asks the student to find the real physical force."
+  },
+  {
+    "id": "calib_09_master_tutor_nudge_score_5",
+    "student_message": "A car accelerates forward. What force is pushing it forward? The engine?",
+    "tutor_response": "Think about Newton's third law: an engine can only turn the axles and wheels internally. What external surface does the tyre push against, and in turn, what pushes the car forward?",
+    "expected_score": 5,
+    "expected_reasoning": "Two crisp, perfectly targeted sentences that trigger the 'aha!' moment about static friction as the external forward force."
+  },
+  {
+    "id": "calib_10_master_tutor_socratic_score_5",
+    "student_message": "I used $v = u + at$ to find the time for a simple pendulum, but my answer is way off.",
+    "tutor_response": "Notice the formula you chose: $v = u + at$ requires *constant* acceleration.\n\nAs a pendulum swings, does the restoring force (and therefore its acceleration) stay constant, or does it change with angle $\\theta$?",
+    "expected_score": 5,
+    "expected_reasoning": "Instantly pinpoints the hidden assumption of constant acceleration in SHM and guides the student to see why standard kinematics fails."
+  }
+]

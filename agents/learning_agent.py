@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 import config
-from agents.answer_checker import VERDICT_SKIPPED, check_answer, check_answer_streaming
+from agents.answer_checker import CheckResult, VERDICT_SKIPPED, check_answer, check_answer_streaming
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
 from agents.runtime.trace import AgentTrace, TraceStep

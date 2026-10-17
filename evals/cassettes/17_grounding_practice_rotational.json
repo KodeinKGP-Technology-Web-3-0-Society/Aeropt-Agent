@@ -1,0 +1,23 @@
+{
+  "23f8fffba57cb455787c0f4eab3e8dbc8e495aa1f082e387791c1278f42d2020": {
+    "content": "Here is a practice question on rolling motion: A solid cylinder rolls without slipping down an incline of angle $\\theta$. Find its linear acceleration.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  },
+  "459a3be0681131ca5f5231077285f4279d69837854651731ba6aba13fa01209f": {
+    "content": "",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"concept_id\": \"phy_mech_rotation\", \"content_type\": \"practice\"}",
+          "name": "retrieve_content"
+        },
+        "id": "call_ground_17",
+        "type": "function"
+      }
+    ]
+  }
+}

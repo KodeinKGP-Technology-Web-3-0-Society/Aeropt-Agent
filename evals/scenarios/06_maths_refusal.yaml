@@ -1,0 +1,17 @@
+id: 06_maths_refusal
+description: Pure mathematics question is politely refused as out of scope per invariant
+  9
+tags:
+- invariant9
+- scope
+turns:
+- user_message: Can you evaluate the definite integral of x^3 * sin(x) dx from 0 to
+    pi?
+  assertions:
+    tools_not_called:
+    - retrieve_content
+    stop_reason: answered
+    final_text_regex:
+    - physics
+    - chemistry
+    - mathematics
