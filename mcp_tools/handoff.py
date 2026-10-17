@@ -28,41 +28,23 @@ from agents.experts import EXPERTS, expert_catalogue, run_expert
 class ConsultExpertArgs(BaseModel):
     expert: str = Field(
         ...,
-        description=(
-            "Which expert to consult. Composers write what the student reads: "
-            "worked_solution, socratic_guide, practice_set, quiz_builder. "
-            "Analysts report back to you privately: verifier, error_locator, "
-            "alt_explainer, comparer."
-        ),
+        description="Expert to consult (e.g. worked_solution, socratic_guide, verifier, error_locator).",
     )
     task: str = Field(
         ...,
-        description=(
-            "The single job for this expert, stated plainly and completely. The "
-            "expert sees only this and the material you pass — it cannot see the "
-            "conversation, so do not refer to 'the question above'."
-        ),
+        description="Self-contained instruction for the expert. The expert does not see conversation history.",
     )
     material: str = Field(
         default="",
-        description=(
-            "Only for analysts: the specific work to examine — the student's steps, "
-            "the calculation to re-check, the two things to compare. Composers read "
-            "the retrieved material directly and ignore this."
-        ),
+        description="Optional specific work or text for analyst experts to examine.",
     )
 
 
 @tool(
     name="consult_expert",
     description=(
-        "Hand one narrow job to a temporary expert, which does it and disappears. "
-        "Use a composer when the student needs something written for them. Use an "
-        "analyst when you want a finding you do not already have: an independent "
-        "check on a result a student would be misled by, the first wrong step in "
-        "their work, a different angle after an explanation has already failed. "
-        "Do not consult an expert to confirm something you are already confident "
-        "about — it costs the student waiting time and buys nothing.\n\n"
+        "Delegate to a temporary subagent (composer for student text, or analyst for private verification). "
+        "Do not consult an expert if you can answer directly.\n"
         + expert_catalogue()
     ),
     args_model=ConsultExpertArgs,

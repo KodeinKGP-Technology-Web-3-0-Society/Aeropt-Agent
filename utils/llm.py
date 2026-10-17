@@ -216,7 +216,10 @@ def _run_chain(
         current_budget_var,
     )
 
-    budget = kwargs.pop("budget", None) or current_budget_var.get()
+    if "budget" in kwargs:
+        budget = kwargs.pop("budget")
+    else:
+        budget = current_budget_var.get()
     per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
     reserve_s = kwargs.pop("reserve_s", 0.0)
 

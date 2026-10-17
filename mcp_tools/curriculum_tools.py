@@ -45,42 +45,23 @@ class ResolveConceptArgs(BaseModel):
 class RetrieveContentArgs(BaseModel):
     concept_id: Optional[str] = Field(
         default=None,
-        description=(
-            "Concept to retrieve for, from resolve_concept. Omit to reuse the "
-            "concept already resolved for this turn."
-        ),
+        description="Concept to retrieve for, from resolve_concept (omit to reuse turn concept).",
     )
     content_type: str = Field(
         default="theory",
-        description=(
-            "'theory' for explanation material, 'example' for worked examples, "
-            "'practice' for practice questions, 'pyq' for past-year questions. "
-            "Calling this with 'practice' or 'pyq' allows the agent to serve verified questions verbatim instead of inventing them. "
-            "For one specific official question ('JEE Advanced 2019 Paper 1 Q5'), use 'pyq' and put that "
-            "reference in `query`: the exact stored question comes back, or a note that it is not available."
-        ),
+        description="'theory', 'example', 'practice', or 'pyq' (past-year question).",
     )
     exam: Optional[str] = Field(
         default=None,
-        description=(
-            "'JEE_ADVANCED' or 'JEE_MAINS' to override the student's target exam for this call — "
-            "use it when they explicitly ask for the other exam's past-year questions."
-        ),
+        description="'JEE_ADVANCED' or 'JEE_MAINS' to override the student's target exam.",
     )
     query: Optional[str] = Field(
         default=None,
-        description=(
-            "The semantic search text. Omit to use the student's message. Set it "
-            "when you want to search for something more specific than they asked."
-        ),
+        description="Search text or official reference (omit to use student message).",
     )
     avoid_repeats: Optional[bool] = Field(
         default=None,
-        description=(
-            "Skip material this student has already been served. On by default for "
-            "'practice' and 'pyq' — a question they have already attempted teaches "
-            "nothing. Set false only when they explicitly ask to revisit an item."
-        ),
+        description="Exclude previously seen items (defaults to true for practice and pyq).",
     )
 
 
@@ -202,15 +183,12 @@ def resolve_concept(args: ResolveConceptArgs, ctx: ToolContext) -> Dict[str, Any
 @tool(
     name="retrieve_content",
     description=(
-        "Fetch syllabus material for a concept: explanation chunks, worked "
-        "examples, practice questions or past-year questions, plus the student's "
-        "current standing on that concept and its prerequisites. Call this "
-        "whenever your answer should be grounded in the actual course material "
-        "rather than your own recall. Returns previews; the full text is attached "
-        "automatically when an expert composes the answer."
+        "Fetch syllabus material (theory, worked examples, practice, pyqs) for a concept. "
+        "Returns previews and citations to ground explanations and practice. Full text is attached for composers."
     ),
     args_model=RetrieveContentArgs,
     scopes=(SCOPE_READ,),
+    max_result_chars=6000,
 )
 def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, Any]:
     from agents.graphrag_retriever import graphrag_retriever_node

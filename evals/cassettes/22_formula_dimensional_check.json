@@ -10,5 +10,11 @@
     "model": "gemini-3-flash-preview",
     "role": "assistant",
     "tool_calls": null
+  },
+  "ffe94b3bc2ee3e6ce292ce7a85522f06976dae7533e74a9eca305ca73e448a34": {
+    "content": "For small angular displacements, the time period of a simple pendulum of length $l$ under gravity $g$ is:\n\n$$T = 2\\pi \\sqrt{\\frac{l}{g}}$$\n\nDimensionally, $[l/g] = \\text{m} / (\\text{m/s}^2) = \\text{s}^2$, so $\\sqrt{l/g}$ has units of seconds, matching period $T$.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
   }
 }

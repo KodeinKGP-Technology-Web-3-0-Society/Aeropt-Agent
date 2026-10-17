@@ -17,37 +17,25 @@ from agents.runtime.toolbelt import SCOPE_READ, ToolContext, tool
 
 class DrawDiagramArgs(BaseModel):
     # Models often send `tikz_code` and skip the caption; a near-miss call should
-    # still draw rather than spend one of the turn's few steps on a retry.
     tikz: str = Field(
         ...,
         validation_alias=AliasChoices("tikz", "tikz_code", "code"),
         description=(
-            "One complete \\begin{tikzpicture}…\\end{tikzpicture} or "
-            "\\begin{circuitikz}…\\end{circuitikz} environment — nothing else. "
-            "Preamble is provided: amsmath, circuitikz (siunitx), pgfplots, and TikZ "
-            "libraries arrows.meta, calc, positioning, decorations.pathmorphing "
-            "(springs: decorate, decoration={coil}), decorations.markings, patterns "
-            "(hatched walls/ground: pattern=north east lines), angles, quotes. "
-            "Labels go in $...$. Black only, about 6-8 cm wide."
+            "Complete \\begin{tikzpicture}…\\end{tikzpicture} or \\begin{circuitikz}…\\end{circuitikz} "
+            "environment. Black only, ~6-8 cm wide. Math labels in $...$."
         ),
     )
     caption: str = Field(
         default="Diagram",
-        description="Short caption the student reads, e.g. 'LC circuit at t = 0'.",
+        description="Short caption for diagram.",
     )
 
 
 @tool(
     name="draw_diagram",
     description=(
-        "Draw a physics diagram (circuit, free-body diagram, ray diagram, field "
-        "lines, graph of a function, geometry of a setup) from TikZ code and get a "
-        "markdown image to put in your reply. Use it whenever a picture would make "
-        "the explanation or question clearer — and always when the student asks "
-        "for a diagram. Paste the returned `markdown` into your reply exactly, on "
-        "its own line. If it returns an error, fix the TikZ and call again (at "
-        "most twice). Never write TikZ in the reply itself: the student would "
-        "see the source code, not a picture."
+        "Render a physics diagram (circuit, free-body diagram, ray diagram, field lines, function graph) "
+        "from TikZ code and return markdown image to put in your reply."
     ),
     args_model=DrawDiagramArgs,
     scopes=(SCOPE_READ,),

@@ -425,22 +425,33 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     move, reveal = _decide_move_and_reveal(query, working_state)
     trace.note(f"move={move}, reveal={reveal}")
 
-    try:
-        system_prompt = _build_system_prompt(state, memories, move, reveal)
-    except RuntimeError as exc:
-        logger.error("%s", exc)
-        return {"error": str(exc)}
+    from agents.runtime import context
+
+    skill = load_skill("learning_agent") or {}
+    stable_prompt = skill.get("stable") or skill.get("system_prompt")
+    if not stable_prompt:
+        logger.error("learning_agent skill prompt missing")
+        return {"error": "Missing learning_agent skill prompt."}
+
+    sections = context.build(
+        state=working_state,
+        stable_system_prompt=stable_prompt,
+        memories=memories,
+        scaffolding_move=move,
+        scaffolding_reveal=reveal,
+    )
 
     from services import progress
 
     progress.report("stage", "thinking")
+    priming = [sections.dynamic_message(), *sections.recent_turns]
     result = run_agent_loop(
-        system_prompt=system_prompt,
+        system_prompt=sections.stable_system_prompt,
         user_message=query,
         toolbelt=toolbelt,
         model=config.LEARNING_AGENT_MODEL,
         fallback_models=config.LEARNING_AGENT_FALLBACK_MODELS,
-        priming_messages=_priming_messages(state),
+        priming_messages=priming,
         max_steps=int(state.get("classroom_max_steps") or config.LEARNING_AGENT_MAX_STEPS),
         time_budget_s=config.LEARNING_AGENT_TIME_BUDGET_S,
         temperature=config.LEARNING_AGENT_TEMPERATURE,

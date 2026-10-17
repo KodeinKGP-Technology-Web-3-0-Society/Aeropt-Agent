@@ -5,6 +5,27 @@
     "role": "assistant",
     "tool_calls": null
   },
+  "98b3027ca793d7b622bf6a594e55763e6661b2391715eea17bc583a231da0303": {
+    "content": "",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"concept_id\": \"phy_mech_friction\", \"content_type\": \"theory\"}",
+          "name": "retrieve_content"
+        },
+        "id": "call_ground_13",
+        "type": "function"
+      }
+    ]
+  },
+  "b9f6a520f2a4b2eb3bdd732380a857f80d674e0d2403953eb64d405c738159b3": {
+    "content": "Static friction opposes impending motion up to $f_{s,\\text{max}} = \\mu_s N$, while kinetic friction $f_k = \\mu_k N$ acts during active sliding.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  },
   "d52fbaced931395b043622465eb93b29f2f7e9db7b938380e8a5f087c70e1cb6": {
     "content": "",
     "model": "gemini-3-flash-preview",

@@ -148,41 +148,23 @@ def _dimension_report(
 class CheckDimensionsArgs(BaseModel):
     expression: str = Field(
         ...,
-        description=(
-            "The expression or equation to check, in LaTeX or plain form — "
-            "'v = \\\\sqrt{2 g h}', 'm*g*h + 0.5*m*v**2', 'T = 2\\\\pi\\\\sqrt{l/g}'. "
-            "An equation is checked side against side; a single expression just gets "
-            "its dimensions reported. Write products explicitly: 'm*g*h', not 'mgh'."
-        ),
+        description="LaTeX or plain expression/equation to check (e.g. 'v = \\sqrt{2*g*h}'). Write products explicitly.",
     )
     expect: Optional[str] = Field(
         default=None,
-        description=(
-            "What the result should be, if you know: a quantity name ('velocity', "
-            "'energy', 'force') or a unit ('m/s', 'N*m'). The check then also confirms "
-            "the expression actually has that dimension."
-        ),
+        description="Expected quantity name ('velocity', 'energy') or unit ('m/s', 'N*m').",
     )
     symbol_meanings: Optional[Dict[str, str]] = Field(
         default=None,
-        description=(
-            "Meanings for symbols this cannot guess, as {symbol: quantity}, e.g. "
-            "{'T': 'temperature', 'I': 'moment_of_inertia', 'A': 'area'}. Physics "
-            "reuses letters, so the check asks rather than guessing."
-        ),
+        description="Meanings for ambiguous symbols as {symbol: quantity}, e.g. {'T': 'temperature'}.",
     )
 
 
 @tool(
     name="check_dimensions",
     description=(
-        "Check whether a formula is dimensionally consistent, and report what "
-        "dimensions it has. Catches a whole class of wrong physics with certainty and "
-        "in no time: a velocity that came out as L^3/2 T^-1, an energy added to a "
-        "momentum, a sin() of something that is not an angle. Use it on any formula "
-        "you are about to show a student, on a result you derived, and on a formula a "
-        "student proposes. It proves a formula is wrong; passing does not prove it is "
-        "right, only that it is not wrong in this way."
+        "Check whether a formula is dimensionally consistent and report its dimensions. "
+        "Catches dimensional errors and unbalanced equations before showing formulas to students."
     ),
     args_model=CheckDimensionsArgs,
     scopes=(SCOPE_READ,),
@@ -294,32 +276,19 @@ def check_dimensions(args: CheckDimensionsArgs, ctx: ToolContext) -> Dict[str, A
 class VerifyResultArgs(BaseModel):
     answer: str = Field(
         ...,
-        description=(
-            "The result to verify, as 'unknown = expression', e.g. "
-            "'a = g*(sin(theta) - mu*cos(theta))'."
-        ),
+        description="The result to verify as 'unknown = expression' (e.g. 'a = g*(sin(theta) - mu*cos(theta))').",
     )
     relation: Optional[str] = Field(
         default=None,
-        description=(
-            "The governing equation the answer is supposed to satisfy, e.g. "
-            "'m*a = m*g*sin(theta) - mu*m*g*cos(theta)'. Given one, the answer is "
-            "substituted back into it and both sides are compared — the strongest "
-            "check available here."
-        ),
+        description="Optional governing equation to substitute the answer back into and compare sides.",
     )
     expect_quantity: Optional[str] = Field(
         default=None,
-        description="What the unknown is physically: 'acceleration', 'energy', 'm/s'.",
+        description="Expected physical quantity name or unit ('acceleration', 'energy', 'm/s').",
     )
     limiting_cases: Optional[Dict[str, str]] = Field(
         default=None,
-        description=(
-            "Limits worth checking, as {'symbol -> value': 'what it should become'}, "
-            "e.g. {'mu -> 0': 'g*sin(theta)'} for a friction result or "
-            "{'m_2 -> inf': ''} to just see the value. Omit and the obvious limits are "
-            "probed for you. This is where a wrong sign or a swapped term shows up."
-        ),
+        description="Limits to test as {'symbol -> value': 'expected'}, e.g. {'mu -> 0': 'g*sin(theta)'}.",
     )
     symbol_meanings: Optional[Dict[str, str]] = Field(
         default=None,
@@ -351,12 +320,8 @@ def _limit_value(expr: str, symbol: str, target: str, others: Dict[str, float]) 
 @tool(
     name="verify_result",
     description=(
-        "Check a result you derived before you show it: substitute it back into the "
-        "governing equation, confirm its dimensions, and see what it does in limiting "
-        "cases. This is the check a physicist runs by habit — as friction goes to zero "
-        "does it reduce to the frictionless answer, does a mass going to infinity "
-        "behave sensibly. It catches the sign slips and dropped factors that survive "
-        "an arithmetic check. Run it on any non-trivial algebraic result."
+        "Verify a derived physics result: check governing equation satisfaction, dimensions, "
+        "and limiting cases (e.g. friction -> 0). Use before presenting algebraic results to students."
     ),
     args_model=VerifyResultArgs,
     scopes=(SCOPE_READ,),

@@ -1,4 +1,25 @@
 {
+  "878f3c7c0d261d618398d20d85796265ea0286e5bdcc2a4f1e88149742bdb244": {
+    "content": "",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"concept_id\": \"phy_grav_escape\", \"content_type\": \"example\"}",
+          "name": "retrieve_content"
+        },
+        "id": "call_ground_15",
+        "type": "function"
+      }
+    ]
+  },
+  "9846583da64a522b9497e02d3f2dc86e5cf89bae8f0d65fb07ffd7d08d7bcd9f": {
+    "content": "Here is a worked example for escape velocity: using conservation of energy $\\frac{1}{2}mv_e^2 - \\frac{GMm}{R} = 0$, we find $v_e = \\sqrt{\\frac{2GM}{R}} = \\sqrt{2gR} \\approx 11.2\\text{ km/s}$.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
+  },
   "98ac704e6f0876150a7dbce165559df348da4a0b2836999048469a488c1f92be": {
     "content": "Here is a worked example for escape velocity: using conservation of energy $\\frac{1}{2}mv_e^2 - \\frac{GMm}{R} = 0$, we find $v_e = \\sqrt{\\frac{2GM}{R}} = \\sqrt{2gR} \\approx 11.2\\text{ km/s}$.",
     "model": "gemini-3-flash-preview",

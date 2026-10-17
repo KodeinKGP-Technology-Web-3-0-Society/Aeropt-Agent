@@ -46,28 +46,19 @@ _MEMORY_KINDS = ("preference", "misconception", "strength", "context", "goal")
 class LearnerContextArgs(BaseModel):
     concept_id: Optional[str] = Field(
         default=None,
-        description=(
-            "Narrow the recall to what is known about this concept. Omit for the "
-            "general picture of the student."
-        ),
+        description="Optional concept to narrow recall to. Omit for general learner picture.",
     )
     include_weak_concepts: bool = Field(
         default=True,
-        description="Include the concepts this student is currently struggling with.",
+        description="Include concepts the student is struggling with.",
     )
 
 
 @tool(
     name="get_learner_context",
     description=(
-        "Recall what is known about this student: remembered facts about how they "
-        "learn, their current goals, which concepts they are weak on, how recent "
-        "attempts have gone, and their full progress record — every concept they "
-        "have practised with its status and trend, recent mistakes, reviews due, "
-        "and what to work on next. Call it when the way you teach should depend on "
-        "who you are teaching, and ALWAYS when the student asks about their own "
-        "progress, what to revise, or what they have done. Answer such questions "
-        "only from this record; never guess topics they have not practised."
+        "Recall what is known about this student: goals, weak concepts, recent attempts, "
+        "and progress records. Use when teaching depends on learner background or when asked about revision."
     ),
     args_model=LearnerContextArgs,
     scopes=(SCOPE_READ,),
@@ -319,49 +310,33 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
 class RememberArgs(BaseModel):
     kind: str = Field(
         ...,
-        description=(
-            "'preference' (how they like to learn), 'misconception' (a specific "
-            "wrong belief they hold), 'strength' (something they reliably do well), "
-            "'context' (a durable fact about their situation), or 'goal' (what they "
-            "are working towards)."
-        ),
+        description="'preference', 'misconception', 'strength', 'context', or 'goal'.",
     )
     fact: str = Field(
         ...,
-        description=(
-            "One sentence, written about the student, that would still be useful "
-            "weeks from now. Good: 'Loses sign conventions when expanding brackets.' "
-            "Bad: 'Asked about projectile motion today.'"
-        ),
+        description="One durable fact useful in future weeks (e.g. 'Loses sign conventions when expanding brackets').",
     )
     evidence: str = Field(
         default="",
-        description="What in this session makes you believe it. Keep it short.",
+        description="Brief evidence from this turn/session.",
     )
     concept_id: Optional[str] = Field(
         default=None,
-        description="The concept this is about, if it is specific to one.",
+        description="Optional concept ID this relates to.",
     )
     confidence: float = Field(
         default=0.6,
         ge=0.0,
         le=1.0,
-        description=(
-            "How sure you are, 0 to 1. One observation is around 0.5; a pattern you "
-            "have now seen repeat is 0.8 or above."
-        ),
+        description="Confidence 0.0 to 1.0 (default 0.6).",
     )
 
 
 @tool(
     name="remember_about_learner",
     description=(
-        "Save one durable fact about how this student learns, so a future session "
-        "starts knowing it. Save only what will still matter weeks from now: a "
-        "recurring mistake, a preference that demonstrably helps them, a goal they "
-        "stated. Do NOT save what happened this session (that is already "
-        "summarised), anything you only suspect once, or anything you would not be "
-        "comfortable showing the student."
+        "Save a durable fact about how this student learns (recurring misconception, learning preference, goal) "
+        "to adapt future sessions. Do not record one-off session events."
     ),
     args_model=RememberArgs,
     scopes=(SCOPE_WRITE_MEMORY,),

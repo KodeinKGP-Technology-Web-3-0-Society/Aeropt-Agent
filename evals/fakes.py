@@ -230,6 +230,20 @@ class InMemoryDatabase:
     def read_recent_chat_turns(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         return self.turns.get(session_id, [])[-limit:]
 
+    def read_concepts(self, subject: Optional[str] = None) -> List[Dict[str, Any]]:
+        concepts = []
+        seen = set()
+        for item in FIXTURE_CORPUS:
+            cid = item.get("concept_id")
+            if cid and cid not in seen:
+                seen.add(cid)
+                concepts.append({
+                    "concept_id": cid,
+                    "concept_name": item.get("concept_name") or cid,
+                    "subject": item.get("subject") or "Physics",
+                })
+        return concepts
+
     def write_chat_turn(
         self,
         session_id: str,

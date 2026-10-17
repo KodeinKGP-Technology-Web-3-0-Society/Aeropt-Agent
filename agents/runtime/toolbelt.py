@@ -86,6 +86,8 @@ class ToolContext:
         #: Results of read-only calls already made this turn, keyed by
         #: (tool, arguments). See Toolbelt.call for why.
         self._read_cache: Dict[str, "ToolResult"] = {}
+        #: Unshaped tool outputs kept for downstream grading and grounding.
+        self.full_tool_results: List[Dict[str, Any]] = []
 
     def stage(self, **updates: Any) -> None:
         """Record state changes for the loop to apply after the turn resolves."""
@@ -104,6 +106,52 @@ class ToolContext:
         return ctx
 
 
+def _shape_dict_result(payload: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    """Shape a tool result payload to fit within max_chars without losing core grounding."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return payload
+
+    shaped_data = dict(data)
+    chunks = shaped_data.get("chunks")
+    if isinstance(chunks, list) and len(chunks) > 2:
+        top_chunks = []
+        for c in chunks[:2]:
+            c_copy = dict(c)
+            for text_key in ("text", "preview", "content", "core_text"):
+                if text_key in c_copy and len(str(c_copy[text_key])) > 400:
+                    c_copy[text_key] = str(c_copy[text_key])[:400] + "..."
+            top_chunks.append(c_copy)
+        remaining = len(chunks) - 2
+        omitted_ids = [
+            str(c.get("content_id") or c.get("id") or "")
+            for c in chunks[2:]
+            if (c.get("content_id") or c.get("id"))
+        ]
+        shaped_data["chunks"] = top_chunks
+        shaped_data["more_available"] = (
+            f"{remaining} more material chunks available. Call open_material(content_id) to inspect."
+        )
+        if omitted_ids:
+            shaped_data["omitted_content_ids"] = omitted_ids[:10]
+        payload = {**payload, "data": shaped_data}
+
+    # If still over budget, truncate string fields gracefully within data dict
+    try:
+        cur_len = len(json.dumps(payload, default=str))
+        if cur_len > max_chars:
+            for k, v in list(shaped_data.items()):
+                if isinstance(v, str) and len(v) > 200:
+                    shaped_data[k] = v[:200] + "..."
+                elif isinstance(v, list) and len(v) > 3:
+                    shaped_data[k] = v[:3]
+            payload = {**payload, "data": shaped_data}
+    except Exception:
+        pass
+
+    return payload
+
+
 @dataclass
 class ToolResult:
     """What a tool hands back to the model."""
@@ -114,7 +162,7 @@ class ToolResult:
     #: Set when the tool refused to act and wants the learner asked first.
     permission_required: Optional[Dict[str, Any]] = None
 
-    def to_json(self) -> str:
+    def to_json(self, max_chars: Optional[int] = None) -> str:
         if self.permission_required:
             payload: Dict[str, Any] = {
                 "ok": False,
@@ -128,6 +176,10 @@ class ToolResult:
             payload = {"ok": True, "data": self.data}
         else:
             payload = {"ok": False, "error": self.error}
+
+        if max_chars is not None and self.ok:
+            payload = _shape_dict_result(payload, max_chars)
+
         try:
             return json.dumps(payload, default=str, ensure_ascii=False)
         except Exception:
@@ -145,6 +197,8 @@ class ToolSpec:
     scopes: frozenset = field(default_factory=lambda: frozenset({SCOPE_READ}))
     #: True when the learner should be asked before this runs.
     consequential: bool = False
+    #: Maximum characters the model sees for this tool's result.
+    max_result_chars: int = 2500
 
     def schema(self) -> Dict[str, Any]:
         """OpenAI/Groq function-calling schema for this tool."""
@@ -203,6 +257,7 @@ def tool(
     *,
     scopes: Iterable[str] = (SCOPE_READ,),
     consequential: bool = False,
+    max_result_chars: int = 2500,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a function as an agent tool.
 
@@ -218,6 +273,7 @@ def tool(
             handler=fn,
             scopes=frozenset(scopes),
             consequential=consequential,
+            max_result_chars=max_result_chars,
         )
         if name in _REGISTRY:
             logger.warning("Tool %s registered twice — overwriting.", name)
@@ -237,6 +293,112 @@ def get_spec(name: str) -> Optional[ToolSpec]:
     return _REGISTRY.get(name)
 
 
+# ── Per-Surface Tool Sets ────────────────────────────────────────────────────
+
+SURFACE_TOOL_SETS: Dict[str, frozenset[str]] = {
+    "chat": frozenset({
+        "resolve_concept",
+        "retrieve_content",
+        "open_material",
+        "suggest_next_material",
+        "consult_expert",
+        "calculate",
+        "solve_symbolically",
+        "verify_result",
+        "check_dimensions",
+        "convert_units",
+        "check_student_work",
+        "draw_diagram",
+        "remember_about_learner",
+        "get_learner_context",
+    }),
+    "study_learn": frozenset({
+        "retrieve_content",
+        "open_material",
+        "suggest_next_material",
+        "solve_symbolically",
+        "calculate",
+        "check_dimensions",
+        "verify_result",
+        "draw_diagram",
+        "remember_about_learner",
+        "transition_phase",
+        "complete_study_session",
+        "complete_lesson_part",
+    }),
+    "study_practice": frozenset({
+        "serve_practice_question",
+        "grade_practice_answer",
+        "solve_symbolically",
+        "calculate",
+        "verify_result",
+        "check_dimensions",
+        "check_student_work",
+        "convert_units",
+        "remember_about_learner",
+        "transition_phase",
+        "complete_study_session",
+    }),
+    "classroom_lesson": frozenset({
+        "retrieve_content",
+        "open_material",
+        "draw_diagram",
+        "solve_symbolically",
+        "calculate",
+        "verify_result",
+        "check_dimensions",
+        "consult_expert",
+        "remember_about_learner",
+    }),
+    "classroom_doubt": frozenset({
+        "resolve_concept",
+        "retrieve_content",
+        "open_material",
+        "consult_expert",
+        "check_student_work",
+        "solve_symbolically",
+        "calculate",
+        "verify_result",
+        "check_dimensions",
+        "convert_units",
+        "remember_about_learner",
+    }),
+    "classroom_assess": frozenset({
+        "retrieve_content",
+        "grade_practice_answer",
+        "serve_practice_question",
+        "check_student_work",
+        "calculate",
+        "solve_symbolically",
+        "verify_result",
+        "check_dimensions",
+        "record_attempt",
+        "remember_about_learner",
+    }),
+    "coach": frozenset({
+        "get_learner_context",
+        "retrieve_content",
+        "remember_about_learner",
+        "schedule_review",
+    }),
+}
+
+
+def surface_for_state(state: Dict[str, Any]) -> str:
+    """Infer structural surface from state."""
+    if state.get("is_coach"):
+        return "coach"
+    classroom = (state.get("classroom_surface") or "").strip().lower()
+    if classroom in ("lesson", "doubt", "assess"):
+        return f"classroom_{classroom}"
+    if state.get("study_session_id") or state.get("surface") == "study":
+        stage = (state.get("study_phase") or state.get("study_stage") or "").lower()
+        if "practice" in stage or "assess" in stage:
+            return "study_practice"
+        return "study_learn"
+    return "chat"
+
+
 # ── Toolbelt ──────────────────────────────────────────────────────────────────
 
 
@@ -249,11 +411,24 @@ class Toolbelt:
         ctx: ToolContext,
         *,
         allowed_scopes: Iterable[str] = TUTOR_SCOPES,
+        surface: Optional[str] = None,
     ) -> None:
         self.ctx = ctx
         self.allowed_scopes = frozenset(allowed_scopes)
+        if surface is not None:
+            self.surface = surface
+        elif ctx.state.get("is_coach") or self.allowed_scopes == frozenset({"read", "write:schedule", "write:memory"}):
+            self.surface = "coach"
+        else:
+            self.surface = surface_for_state(ctx.state)
         self._specs: Dict[str, ToolSpec] = {}
-        for spec in specs:
+        all_specs = list(specs)
+        filter_surface = self.surface in SURFACE_TOOL_SETS and len(all_specs) > 15
+        allowed_names = SURFACE_TOOL_SETS.get(self.surface) if filter_surface else None
+
+        for spec in all_specs:
+            if allowed_names is not None and spec.name not in allowed_names:
+                continue
             if spec.scopes <= self.allowed_scopes:
                 self._specs[spec.name] = spec
             else:
@@ -263,6 +438,10 @@ class Toolbelt:
                     sorted(spec.scopes - self.allowed_scopes),
                     sorted(self.allowed_scopes),
                 )
+
+    def get_max_result_chars(self, name: str) -> int:
+        spec = self._specs.get(name)
+        return spec.max_result_chars if spec else 2500
 
     # ── introspection ────────────────────────────────────────────────────────
 
@@ -377,6 +556,14 @@ class Toolbelt:
 
         if is_cacheable:
             self.ctx._read_cache[cache_key] = result
+
+        if hasattr(self.ctx, "full_tool_results"):
+            self.ctx.full_tool_results.append({
+                "tool": name,
+                "args": parsed_args,
+                "result": result,
+                "time": started,
+            })
 
         self._record(name, parsed_args, result, started)
         return result

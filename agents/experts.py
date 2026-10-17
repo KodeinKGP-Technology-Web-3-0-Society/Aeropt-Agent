@@ -252,14 +252,13 @@ EXPERTS: Dict[str, Expert] = {
 
 
 def expert_catalogue() -> str:
-    """The menu the Main Tutor sees, grouped so the two kinds stay distinct."""
-    composers = [e for e in EXPERTS.values() if e.kind == "composer"]
-    analysts = [e for e in EXPERTS.values() if e.kind == "analyst"]
-    lines = ["Composers (they write what the student will read):"]
-    lines += [f"  - {e.name}: {e.purpose}" for e in composers]
-    lines.append("Analysts (they report a finding back to you, privately):")
-    lines += [f"  - {e.name}: {e.purpose}" for e in analysts]
-    return "\n".join(lines)
+    """Concise menu for consult_expert schema."""
+    composers = [f"{e.name} ({e.purpose.split('.')[0]})" for e in EXPERTS.values() if e.kind == "composer"]
+    analysts = [f"{e.name} ({e.purpose.split('.')[0]})" for e in EXPERTS.values() if e.kind == "analyst"]
+    return (
+        "Composers (draft student text): " + "; ".join(composers) + ".\n"
+        "Analysts (private check): " + "; ".join(analysts) + "."
+    )
 
 
 def draft_preview(draft: str) -> str:

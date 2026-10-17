@@ -16,6 +16,7 @@ The loop's job is not to make decisions — it is to make the agent's decisions
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -62,26 +63,23 @@ class LoopResult:
 
 
 def _serialise_assistant(message: Any) -> Dict[str, Any]:
-    """Convert an SDK assistant message back into request-shaped JSON."""
-    if hasattr(message, "model_dump"):
-        return message.model_dump(exclude_unset=True)
-    
+    """Convert an SDK assistant message or namespace back into request-shaped JSON."""
     payload: Dict[str, Any] = {
-        "role": "assistant",
+        "role": getattr(message, "role", "assistant") or "assistant",
         "content": getattr(message, "content", None) or "",
     }
     calls = getattr(message, "tool_calls", None)
     if calls:
         payload["tool_calls"] = [
             {
-                "id": c.id,
-                "type": "function",
+                "id": getattr(c, "id", f"call_{i}"),
+                "type": getattr(c, "type", "function") or "function",
                 "function": {
-                    "name": c.function.name,
-                    "arguments": c.function.arguments,
+                    "name": getattr(c.function, "name", ""),
+                    "arguments": getattr(c.function, "arguments", ""),
                 },
             }
-            for c in calls
+            for i, c in enumerate(calls)
         ]
     return payload
 
@@ -91,6 +89,66 @@ from agents.runtime.budget import (
     TurnBudget,
     current_budget_var,
 )
+
+
+def _compact_past_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Transform earlier tool messages on later steps to keep context compact.
+
+    After the model has processed a retrieval or large tool result, earlier steps
+    compact those messages: keeping cited items plus IDs instead of raw chunks.
+    """
+    last_assistant_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+
+    if last_assistant_idx <= 0:
+        return messages
+
+    recent_texts = [
+        str(m.get("content") or "")
+        for m in messages[last_assistant_idx:]
+        if m.get("role") == "assistant"
+    ]
+    combined_recent_text = " ".join(recent_texts)
+
+    compacted: List[Dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        if i < last_assistant_idx and msg.get("role") == "tool":
+            raw_content = msg.get("content") or ""
+            try:
+                parsed = json.loads(raw_content)
+                if isinstance(parsed, dict) and parsed.get("ok"):
+                    data = parsed.get("data")
+                    if isinstance(data, dict) and "chunks" in data:
+                        chunks = data.get("chunks") or []
+                        cited = []
+                        other_ids = []
+                        for c in chunks:
+                            cid = str(c.get("content_id") or c.get("id") or "")
+                            if cid and cid in combined_recent_text:
+                                cited.append(c)
+                            elif cid:
+                                other_ids.append(cid)
+                        compact_data = {
+                            "concept_id": data.get("concept_id"),
+                            "compacted": True,
+                            "cited_chunks": cited if cited else chunks[:1],
+                            "available_content_ids": other_ids[:10],
+                            "note": "Earlier retrieval pack compacted. Call open_material(id) for full text.",
+                        }
+                        msg = {**msg, "content": json.dumps({"ok": True, "data": compact_data}, default=str)}
+                    elif len(raw_content) > 800:
+                        compact_data = {
+                            "compacted": True,
+                            "summary": str(data)[:250] + "...",
+                        }
+                        msg = {**msg, "content": json.dumps({"ok": True, "data": compact_data}, default=str)}
+            except Exception:
+                pass
+        compacted.append(msg)
+    return compacted
 
 
 def run_agent_loop(
@@ -203,11 +261,12 @@ def run_agent_loop(
             final_pass = steps == max_steps - 1
 
             step_started = time.time()
+            messages_to_send = _compact_past_tool_messages(messages)
             try:
                 message, model_used = groq_chat(
                     client=groq,
                     model=model,
-                    messages=messages,
+                    messages=messages_to_send,
                     fallback_models=fallback_models,
                     # On the closing pass, take tools away entirely so the model has
                     # no option but to produce the student's answer.
@@ -295,12 +354,17 @@ def run_agent_loop(
                 name = call.function.name
                 tool_names_called.append(name)
                 result = toolbelt.call(name, call.function.arguments)
+                max_chars = (
+                    toolbelt.get_max_result_chars(name)
+                    if hasattr(toolbelt, "get_max_result_chars")
+                    else 2500
+                )
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": name,
-                        "content": result.to_json(),
+                        "content": result.to_json(max_chars=max_chars),
                     }
                 )
 

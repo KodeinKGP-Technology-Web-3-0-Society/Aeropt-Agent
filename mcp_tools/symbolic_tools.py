@@ -204,62 +204,35 @@ def _render(expression, sympy) -> Dict[str, Any]:
 class SolveSymbolicallyArgs(BaseModel):
     operation: str = Field(
         ...,
-        description=(
-            "What to do: 'solve' (rearrange an equation for one symbol), 'simplify', "
-            "'expand', 'factor', 'differentiate', 'integrate', 'limit', 'approximate' "
-            "(series expansion — small-angle, binomial), or 'substitute'."
-        ),
+        description="Operation: 'solve', 'simplify', 'expand', 'factor', 'differentiate', 'integrate', 'limit', 'approximate', or 'substitute'.",
     )
     expression: str = Field(
         ...,
-        description=(
-            "The expression or equation, LaTeX or plain: "
-            "'m*a = m*g*sin(theta) - mu*m*g*cos(theta)', '\\\\frac{1}{2}mv^2'. Write "
-            "products explicitly — 'm*g*h', not 'mgh'."
-        ),
+        description="The math expression or equation (e.g. 'm*a = m*g*sin(theta) - mu*m*g*cos(theta)').",
     )
     symbol: Optional[str] = Field(
         default=None,
-        description=(
-            "The symbol to act on: what to solve for, differentiate or integrate with "
-            "respect to, or take a limit in. Required for solve, differentiate, "
-            "integrate, limit and approximate."
-        ),
+        description="The target variable to solve for or differentiate/integrate with respect to.",
     )
     at: Optional[str] = Field(
         default=None,
-        description=(
-            "For 'limit': the point approached, e.g. '0' or 'inf'. For 'approximate': "
-            "the point to expand about, default 0. For 'integrate': omit for an "
-            "indefinite integral, or give bounds as 'a to b'."
-        ),
+        description="Point approached for 'limit' or expansion point for 'approximate' (default 0).",
     )
     order: int = Field(
         default=1,
-        description=(
-            "For 'differentiate': how many times — 1 unless you specifically want a "
-            "second derivative. For 'approximate': how many terms to keep (minimum 2)."
-        ),
+        description="Derivative order or approximation terms count.",
     )
     substitutions: Optional[Dict[str, str]] = Field(
         default=None,
-        description=(
-            "For 'substitute', and applied after any other operation: "
-            "{'theta': 'pi/6', 'mu': '0.2'} — values or expressions."
-        ),
+        description="Variable substitutions dict, e.g. {'theta': 'pi/6'}.",
     )
 
 
 @tool(
     name="solve_symbolically",
     description=(
-        "Do the algebra exactly instead of in your head: rearrange an equation for a "
-        "symbol, differentiate, integrate, expand, factor, take a limit, or get a "
-        "small-angle/binomial approximation. Returns LaTeX you can put straight in front "
-        "of a student. Use it for any rearrangement you are going to show, for deriving "
-        "a result rather than recalling it, and for the approximations JEE leans on "
-        "(sin(x) ~ x, (1+x)^n ~ 1+nx). Pair it with verify_result when the result "
-        "matters — this gives you the algebra, that proves it is the algebra you wanted."
+        "Exact algebra: solve for a symbol, differentiate, integrate, expand, factor, or approximate. "
+        "Returns formatted LaTeX. Use for rearranging equations and small-angle/binomial approximations."
     ),
     args_model=SolveSymbolicallyArgs,
     scopes=(SCOPE_READ,),

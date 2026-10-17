@@ -10,5 +10,11 @@
     "model": "gemini-3-flash-preview",
     "role": "assistant",
     "tool_calls": null
+  },
+  "f002d91177673efd7de17edd2cde5846790c92b6d726ad255ccacdd5782548ed": {
+    "content": "The escape velocity of $11.2\\text{ km/s}$ from Earth means that if an object is launched from the surface with at least this speed (neglecting air resistance), its kinetic energy is sufficient to completely overcome Earth's gravitational field. It will travel infinitely far without falling back, reaching infinity with zero or positive kinetic energy.",
+    "model": "gemini-3-flash-preview",
+    "role": "assistant",
+    "tool_calls": null
   }
 }
