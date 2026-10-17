@@ -803,15 +803,7 @@ def complete_study_session(args: CompleteSessionArgs, ctx: ToolContext) -> Dict[
         payload={"questions_served": questions_served, "questions_correct": questions_correct},
     )
     _close_pending_reviews(ctx)
-    import memory
-
-    if memory.is_on():
-        # Memory v2: the session becomes an episode whose numbers come from the
-        # ledger, instead of a "3/5 correct" fact that is stale after the next attempt.
-        memory.close_session(str(ctx.state.get("session_id") or ctx.session_id or ""), ctx.user_id,
-                             reason="study session completed")
-    else:
-        _remember_session(ctx, outcome, questions_served, questions_correct, difficulty)
+    _remember_session(ctx, outcome, questions_served, questions_correct, difficulty)
 
     ctx.stage(current_phase="evaluation", phase_transition="evaluation")
     ctx.state.update(ctx.updates)

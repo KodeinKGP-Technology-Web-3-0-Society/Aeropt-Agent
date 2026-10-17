@@ -118,9 +118,8 @@ async def _lifespan(_app: FastAPI):
         if production:
             raise RuntimeError(f"Retrieval database unavailable: {exc}") from exc
         log.warning("retrieval database unavailable (tutor answers ungrounded): %s", exc)
-    import memory
-
-    memory.start_sweeper()  # no-op when MEMORY_MODE=off
+    # Episodic memory is not a process-wide sweeper. Recall and commit run as
+    # graph nodes (agents/memory_agent.py) and fail open on their own.
     yield
     from services import durable_state
 
@@ -524,9 +523,6 @@ def _store_turn_presentation(
             session_id,
             turn_index,
         )
-    import memory
-
-    memory.on_turn_persisted(str(result.get("user_id") or ""), session_id)
 
 
 
