@@ -1,4 +1,4 @@
--- Read-only: which agent migrations (006-017) exist on this database?
+-- Read-only: which agent migrations (006-018) exist on this database?
 -- Paste into the Supabase dashboard -> SQL Editor and Run. Changes nothing.
 SELECT migration, applied FROM (VALUES
   ('006_learner_memory: learner_memory',           to_regclass('public.learner_memory') IS NOT NULL),
@@ -20,7 +20,14 @@ SELECT migration, applied FROM (VALUES
   ('016_durable_agent_state: served_items',        to_regclass('public.served_items') IS NOT NULL),
   ('016_durable_agent_state: carry_sessions',      to_regclass('public.carry_sessions') IS NOT NULL),
   ('017_episodic_memory',                          to_regclass('public.episodic_memory') IS NOT NULL),
+  ('018_episodic_memory_approach: approach',       EXISTS (SELECT 1 FROM information_schema.columns
+                                                     WHERE table_schema = 'public' AND table_name = 'episodic_memory' AND column_name = 'approach')),
+  ('018_episodic_memory_approach: consolidated_at', EXISTS (SELECT 1 FROM information_schema.columns
+                                                     WHERE table_schema = 'public' AND table_name = 'episodic_memory' AND column_name = 'consolidated_at')),
+  ('018_episodic_memory_approach: episodic_consolidation', to_regclass('public.episodic_consolidation') IS NOT NULL),
   ('020_agent_trace_metrics: metrics',             EXISTS (SELECT 1 FROM information_schema.columns
-                                                     WHERE table_schema = 'public' AND table_name = 'agent_trace' AND column_name = 'metrics'))
+                                                     WHERE table_schema = 'public' AND table_name = 'agent_trace' AND column_name = 'metrics')),
+  ('021_episodic_memory_evidence: assessment_status', EXISTS (SELECT 1 FROM information_schema.columns
+                                                     WHERE table_schema = 'public' AND table_name = 'episodic_memory' AND column_name = 'assessment_status'))
 ) AS t(migration, applied)
 ORDER BY migration;

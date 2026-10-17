@@ -120,6 +120,15 @@ class TutorState(TypedDict, total=False):
     has_graded_outcome: bool
     # This turn's user_attempts row. Written by diagnostic_node. Not carried.
     attempt_id: Optional[str]
+    # Scores for this grade only. Declared so LangGraph does not drop them
+    # before memory commit copies them onto the episode. Not carried.
+    proficiency_before: Optional[float]
+    proficiency_after: Optional[float]
+    # True when diagnostic could not store the attempt. Commit must not treat
+    # the turn as a verified incorrect outcome.
+    attempt_record_failed: Optional[bool]
+    # answer_key | checker | model | student_self_report | dialogue | none
+    evidence_source: Optional[str]
     attempt_source: str              # ledger source: chat | practice | assess | onboarding | study
     student_answer: Optional[str]
     is_correct: Optional[bool]

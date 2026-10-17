@@ -44,8 +44,17 @@ class FakeQuery:
         self.payload = payload
         return self
 
+    def insert(self, payload):
+        self.op = "insert"
+        self.payload = payload
+        return self
+
     def eq(self, col, val):
         self.filters.append(("eq", col, val))
+        return self
+
+    def is_(self, col, val):
+        self.filters.append(("is", col, val))
         return self
 
     def neq(self, col, val):
@@ -66,6 +75,8 @@ class FakeQuery:
             if kind == "eq" and row.get(col) != val:
                 return False
             if kind == "neq" and row.get(col) == val:
+                return False
+            if kind == "is" and val == "null" and row.get(col) is not None:
                 return False
         return True
 
@@ -102,6 +113,10 @@ class FakeQuery:
                     row.update(self.payload)
                     updated.append(dict(row))
             return type("R", (), {"data": updated})()
+        if self.op == "insert":
+            item = dict(self.payload)
+            rows.append(item)
+            return type("R", (), {"data": [item]})()
         hit = [row for row in rows if self._matches(row)]
         if self.order_col:
             hit.sort(key=lambda row: row.get(self.order_col) or "", reverse=self.order_desc)
@@ -309,7 +324,7 @@ def test_non_grade_replay_does_not_reopen_closed_feedback():
         _row(feedback_status="pending", feedback_outcome=None, retrieval_text="new")
     )
     assert stored is not None
-    assert stored["retrieval_text"] == "new"
+    assert stored["retrieval_text"] == "old"
     assert stored["feedback_status"] == "next_attempt"
     assert stored["feedback_outcome"] == "incorrect"
     assert stored["feedback_attempt_id"] == "attempt-9"
@@ -503,7 +518,8 @@ def test_close_pending_falls_back_to_newest_when_content_does_not_match():
             created_at="2026-01-03T00:00:00+00:00",
         ),
     )
-    assert _close(_client(fake), content_id="item-z") == "newer"
+    assert _close(_client(fake), content_id="item-z") is None
+    assert _close(_client(fake)) == "newer"
 
 
 def test_fetch_known_concept_merges_24_and_16_and_dedupes():
@@ -634,3 +650,47 @@ def test_invalidate_swallows_a_missing_table():
     client.invalidate_session("sess-1")
     client.invalidate_turn("sess-1", 2)
     assert client._episodes_enabled is False
+
+
+def test_upsert_keeps_approach_only_when_the_column_exists():
+    fake = FakeSupabase()
+    client = _client(fake)
+    client._episodes_enabled = True
+    client._approach_enabled = False
+    assert client.upsert_episode(_row(approach="Use the right-hand rule.")) is not None
+    assert "approach" not in _stored(fake, "ep-1")
+
+    client._approach_enabled = True
+    assert client.upsert_episode(_row(approach="Use the right-hand rule."))["approach"] == "Use the right-hand rule."
+    assert _stored(fake, "ep-1")["approach"] == "Use the right-hand rule."
+
+
+def test_consolidation_mark_and_list_stay_on_one_user():
+    fake = FakeSupabase()
+    _seed(
+        fake,
+        _row(episode_id="ep-a", consolidated_at=None),
+        _row(
+            episode_id="ep-b",
+            user_id="user-b",
+            session_id="sess-b",
+            assistant_turn_index=4,
+            query_excerpt="other student",
+        ),
+    )
+    fake.tables["learner_memory"] = []
+    client = _client(fake)
+    client._episodes_enabled = True
+    client._memory_enabled = True
+    client._consolidated_at_enabled = True
+    client._consolidation_table_enabled = True
+
+    listed = client.list_unconsolidated_episodes("user-a")
+    assert [row["episode_id"] for row in listed] == ["ep-a"]
+    assert client.list_users_with_open_episodes() == ["user-a", "user-b"]
+
+    client.mark_episodes_consolidated("user-a", ["ep-a", "ep-b"], "mem-1")
+    assert _stored(fake, "ep-a")["consolidated_at"]
+    assert _stored(fake, "ep-a")["consolidation_memory_id"] == "mem-1"
+    assert _stored(fake, "ep-b").get("consolidated_at") is None
+    assert client.list_unconsolidated_episodes("user-a") == []

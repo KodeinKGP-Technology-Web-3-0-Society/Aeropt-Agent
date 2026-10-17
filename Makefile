@@ -1,4 +1,4 @@
-.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status eval eval-live
+.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status eval eval-live memory-status memory-consolidate
 
 ci:
 	bash ci/run.sh
@@ -69,3 +69,12 @@ cursor-gateway:
 
 run-cursor:
 	bash cursor_gateway/run.sh agent
+
+# Episodic memory setup. Prints booleans only. Does not apply SQL.
+memory-status:
+	.venv/bin/python -m agents.memory_status
+
+# One learner fact per user, off the tutor request path. USER is required.
+# DRY=1 prints the proposal and writes nothing.
+memory-consolidate:
+	.venv/bin/python -m agents.memory_consolidate $(if $(DRY),--dry-run,) $(if $(USER),--user-id $(USER),--pending)

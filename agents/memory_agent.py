@@ -1,8 +1,9 @@
 """Memory Agent: deterministic episodic recall and commit.
 
-This module owns episodic memory. It does not call a model, and it is not
-wired into the graphs yet. Nodes return plain dicts so a later phase can
-place them on tutor_graph and study_graph.
+This module owns episodic memory. tutor_graph and study_graph call
+memory_recall_node and memory_commit_node. Neither node calls a model.
+Background consolidation lives in agents/memory_consolidate.py and is not
+on the request path.
 
 Every public function fails open. A missing table or a failed embed must not
 change the tutoring turn.
@@ -25,6 +26,7 @@ logger = logging.getLogger("jee_tutor.memory_agent")
 _HEADING = "Past experiences (this student, not course material):"
 _MAX_ACTIONS = 12
 _MAX_EXCERPT = 300
+_MAX_APPROACH = 180
 _MAX_RETRIEVAL = 800
 _MAX_LINE = 280
 _MAX_BLOCK = 900
@@ -141,7 +143,26 @@ def retrieve_relevant_episodes(
                 continue
             ranked.append((_score_episode(row, cosine, matched), row))
         ranked.sort(key=lambda item: item[0], reverse=True)
-        return [row for _, row in ranked[:_MAX_RECALL]]
+        improved_at: Dict[Any, str] = {}
+        for row in candidates:
+            if isinstance(row, dict) and _outcome_label(row) == "correct":
+                stamp = str(row.get("created_at") or "")
+                concept = row.get("concept_id")
+                if stamp > improved_at.get(concept, ""):
+                    improved_at[concept] = stamp
+        kept: List[Dict[str, Any]] = []
+        for row in (item[1] for item in ranked):
+            concept = row.get("concept_id")
+            stale_failure = (
+                _outcome_label(row) == "incorrect"
+                and str(row.get("created_at") or "") < improved_at.get(concept, "")
+            )
+            if stale_failure:
+                continue
+            kept.append(row)
+            if len(kept) >= _MAX_RECALL:
+                break
+        return kept
     except Exception:
         logger.debug("episode retrieval failed", exc_info=True)
         return []
@@ -157,12 +178,15 @@ def apply_delayed_feedback(state: Dict[str, Any]) -> None:
         user_id = state.get("user_id")
         if grade is None or turn is None or not user_id or not grade.get("concept_id"):
             return
+        if not isinstance(grade.get("is_correct"), bool):
+            return
         episode_id = db.close_pending_episode(
             user_id=str(user_id),
             concept_id=str(grade["concept_id"]),
             exclude_turn_index=turn,
             content_id=grade.get("content_id"),
-            is_correct=bool(grade.get("is_correct")),
+            interaction_id=grade.get("interaction_id"),
+            is_correct=grade.get("is_correct"),
             attempt_id=grade.get("attempt_id"),
             proficiency_before=grade.get("proficiency_before"),
             proficiency_after=grade.get("proficiency_after"),
@@ -208,6 +232,14 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
         return None
 
     surface, route, task_type, outcome, born_closed = _mapping(state, kind)
+    if state.get("attempt_record_failed"):
+        outcome = "unknown"
+        born_closed = False
+        assessment_status = "persistence_failed"
+    elif outcome == "unknown" and (kind == "graded" or state.get("has_graded_outcome")):
+        assessment_status = "failed"
+    else:
+        assessment_status = "not_requested"
     concept_id = _concept_from_state(state)
     grade = state.get("last_grade") if isinstance(state.get("last_grade"), dict) else None
     if kind == "study" and grade and grade.get("concept_id"):
@@ -221,7 +253,11 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
 
     actions = _actions(state, kind)
     excerpt = _clip(str(state.get("query") or "").strip(), _MAX_EXCERPT)
+    approach = _approach_from_response(response)
+    student_response = str(state.get("student_answer") or excerpt or "").strip()
+    interaction_id = _interaction_id(str(user_id), concept_id, content_id, str(session_id))
     feedback_outcome = None
+    evidence_source = "dialogue" if excerpt else "none"
     row: Dict[str, Any] = {
         "user_id": str(user_id),
         "session_id": str(session_id),
@@ -231,6 +267,11 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
         "task_type": task_type,
         "observed_outcome": outcome,
         "query_excerpt": excerpt,
+        "approach": approach,
+        "student_response": _clip(student_response, _MAX_EXCERPT),
+        "interaction_id": interaction_id,
+        "assessment_status": assessment_status,
+        "evidence_source": evidence_source,
         "actions": actions,
         "expert_used": _expert_used(actions),
         "checker_verdict": state.get("checker_verdict"),
@@ -242,16 +283,27 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
     if attempt_id:
         row["attempt_id"] = attempt_id
     if born_closed:
-        feedback_outcome = "correct" if _is_correct(state, kind) else "incorrect"
-        row["feedback_status"] = "next_attempt"
-        row["feedback_outcome"] = feedback_outcome
-        if attempt_id:
-            row["feedback_attempt_id"] = attempt_id
-        before, after = _proficiency(state, kind)
-        if before is not None:
-            row["proficiency_before"] = before
-        if after is not None:
-            row["proficiency_after"] = after
+        correct = _as_bool(_grade_flag(state, kind))
+        if correct is None:
+            outcome = "unknown"
+            row["observed_outcome"] = outcome
+            row["assessment_status"] = "failed"
+            born_closed = False
+        else:
+            feedback_outcome = "correct" if correct else "incorrect"
+            outcome = feedback_outcome
+            row["observed_outcome"] = outcome
+            row["feedback_status"] = "next_attempt"
+            row["feedback_outcome"] = feedback_outcome
+            row["assessment_status"] = "completed" if attempt_id else "persistence_failed"
+            row["evidence_source"] = str(state.get("evidence_source") or "student_self_report")
+            if attempt_id:
+                row["feedback_attempt_id"] = attempt_id
+            before, after = _proficiency(state, kind)
+            if before is not None:
+                row["proficiency_before"] = before
+            if after is not None:
+                row["proficiency_after"] = after
     row["retrieval_text"] = _build_retrieval_text(
         surface=surface,
         concept_id=concept_id,
@@ -260,6 +312,7 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
         feedback_outcome=feedback_outcome,
         actions=actions,
         query_excerpt=excerpt,
+        approach=approach,
     )
     return row
 
@@ -267,22 +320,22 @@ def _build_episode(state: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]
 def _mapping(state: Dict[str, Any], kind: str) -> Tuple[str, str, str, str, bool]:
     """surface, route, task_type, observed_outcome, born_closed."""
     if kind == "graded":
-        outcome = "correct" if state.get("is_correct") else "incorrect"
-        return "graded", "graded_fast_path", "grade", outcome, True
+        outcome = _graded_outcome(state.get("is_correct"))
+        return "graded", "graded_fast_path", "grade", outcome, outcome != "unknown"
     if kind == "study":
         grade = state.get("last_grade") if isinstance(state.get("last_grade"), dict) else None
         if grade:
-            outcome = "correct" if grade.get("is_correct") else "incorrect"
-            return "study", "teacher", "grade", outcome, True
-        return "study", "teacher", "study_phase", "taught", False
+            outcome = _graded_outcome(grade.get("is_correct"))
+            return "study", "teacher", "grade", outcome, outcome != "unknown"
+        return "study", "teacher", "study_phase", "unknown", False
 
     classroom = state.get("classroom_surface")
     surface = classroom if classroom in _CLASSROOM_SURFACES else "chat"
     grade_like = bool(state.get("has_graded_outcome"))
     if grade_like:
         task = "grade"
-        outcome = "correct" if state.get("is_correct") else "incorrect"
-        return surface, "agent_loop", task, outcome, True
+        outcome = _graded_outcome(state.get("is_correct"))
+        return surface, "agent_loop", task, outcome, outcome != "unknown"
     requested = state.get("content_type_requested")
     if requested in ("theory", "example") or surface == "lesson":
         task = "explain"
@@ -290,7 +343,53 @@ def _mapping(state: Dict[str, Any], kind: str) -> Tuple[str, str, str, str, bool
         task = "practice"
     else:
         task = "doubt"
-    return surface, "agent_loop", task, "taught", False
+    return surface, "agent_loop", task, "unknown", False
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    return value if isinstance(value, bool) else None
+
+
+def _graded_outcome(value: Any) -> str:
+    correct = _as_bool(value)
+    if correct is None:
+        return "unknown"
+    return "correct" if correct else "incorrect"
+
+
+def _grade_flag(state: Dict[str, Any], kind: str) -> Any:
+    if kind == "study":
+        grade = state.get("last_grade")
+        if isinstance(grade, dict):
+            return grade.get("is_correct")
+    return state.get("is_correct")
+
+
+def _interaction_id(
+    user_id: str,
+    concept_id: Optional[str],
+    content_id: Optional[str],
+    session_id: str,
+) -> Optional[str]:
+    import hashlib
+
+    if concept_id and content_id:
+        raw = f"{user_id}|{concept_id}|{content_id}"
+    elif concept_id:
+        raw = f"{user_id}|{session_id}|{concept_id}"
+    else:
+        return None
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _outcome_label(row: Dict[str, Any]) -> str:
+    feedback = row.get("feedback_outcome")
+    if feedback in ("correct", "incorrect"):
+        return str(feedback)
+    observed = row.get("observed_outcome")
+    if observed in ("correct", "incorrect"):
+        return str(observed)
+    return "unknown"
 
 
 def _is_correct(state: Dict[str, Any], kind: str) -> bool:
@@ -387,6 +486,7 @@ def _build_retrieval_text(
     feedback_outcome: Optional[str],
     actions: Sequence[str],
     query_excerpt: str,
+    approach: str = "",
 ) -> str:
     text = (
         f"surface={surface} concept={concept_id or 'unknown'} task={task_type}\n"
@@ -394,7 +494,21 @@ def _build_retrieval_text(
         f"actions={', '.join(actions)}\n"
         f"query={query_excerpt}"
     )
+    if approach:
+        text += f"\napproach={approach}"
     return _clip(text, _MAX_RETRIEVAL)
+
+
+def _approach_from_response(response: str) -> str:
+    """Short clip of the tutor's own reply. No model call."""
+    text = " ".join(str(response or "").split())
+    if len(text) <= _MAX_APPROACH:
+        return text
+    clipped = text[:_MAX_APPROACH]
+    space = clipped.rfind(" ")
+    if space >= 40:
+        clipped = clipped[:space]
+    return clipped.rstrip(".,;: ")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -424,6 +538,7 @@ def _refresh_closed_retrieval(user_id: str, episode_id: str) -> None:
             feedback_outcome=row.get("feedback_outcome"),
             actions=[str(item) for item in actions],
             query_excerpt=str(row.get("query_excerpt") or ""),
+            approach=str(row.get("approach") or ""),
         )
         vector, model = _embed_text(text)
         if vector is None:
@@ -561,6 +676,7 @@ def _grade_view(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "is_correct": grade.get("is_correct"),
             "attempt_id": grade.get("attempt_id"),
             "content_id": grade.get("content_id") or _content_id(state),
+            "interaction_id": grade.get("interaction_id"),
             "proficiency_before": grade.get("proficiency_before"),
             "proficiency_after": grade.get("proficiency_after"),
         }
@@ -570,6 +686,12 @@ def _grade_view(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "is_correct": state.get("is_correct"),
             "attempt_id": state.get("attempt_id"),
             "content_id": _content_id(state),
+            "interaction_id": _interaction_id(
+                str(state.get("user_id") or ""),
+                _concept_from_state(state),
+                _content_id(state),
+                str(state.get("session_id") or ""),
+            ),
             "proficiency_before": state.get("proficiency_before"),
             "proficiency_after": state.get("proficiency_after"),
         }
@@ -584,10 +706,15 @@ def _episode_line(episode: Dict[str, Any]) -> str:
         actions = []
     action_text = ", ".join(str(item) for item in actions) or "none"
     excerpt = str(episode.get("query_excerpt") or "").strip()
-    return (
+    approach = str(episode.get("approach") or "").strip()
+    line = (
         f"- {_when(episode.get('created_at'))} {concept}: {episode.get('task_type') or 'unknown'}, "
-        f"{outcome}; actions: {action_text}. Query: {excerpt}"
+        f"outcome {outcome}"
     )
+    if approach:
+        line += f"; approach: {approach}"
+    line += f"; actions: {action_text}. Query: {excerpt}"
+    return line
 
 
 def _when(created_at: Any) -> str:

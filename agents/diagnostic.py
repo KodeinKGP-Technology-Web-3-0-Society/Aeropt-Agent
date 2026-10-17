@@ -132,12 +132,18 @@ def _as_int(value: Any) -> Optional[int]:
 def diagnostic_node(state: TutorState) -> Dict[str, Any]:
     if not state.get("has_graded_outcome"):
         # Nothing to grade — skip silently
-        return {"trigger_quiz": False}
+        return {"trigger_quiz": False, "assessment_status": "not_requested"}
 
     user_id = state["user_id"]
     session_id = state["session_id"]
     primary_id = state.get("primary_concept_id", "")
-    is_correct: bool = state.get("is_correct", False)
+    if not isinstance(state.get("is_correct"), bool):
+        return {
+            "error": "assessment_missing_correctness",
+            "assessment_status": "failed",
+            "trigger_quiz": False,
+        }
+    is_correct: bool = state["is_correct"]
     error_type: Optional[str] = state.get("error_type")
     time_taken: Optional[int] = state.get("time_taken_sec")
     student_answer: Optional[str] = state.get("student_answer")

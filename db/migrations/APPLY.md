@@ -14,9 +14,11 @@ applied by hand in the Supabase dashboard: **Project → SQL Editor → New quer
    | `015_session_kind_title.sql` | columns `sessions.kind`, `sessions.title`, `sessions.deleted_at` (general chat history) | yes |
    | `016_durable_agent_state.sql` | tables `served_items`, `carry_sessions`, storage bucket `diagrams` (needed when `AEROPT_DURABLE_STATE=supabase`) | yes |
    | `017_episodic_memory.sql` | table `episodic_memory` | yes, `IF NOT EXISTS`; no data rewrite |
+   | `018_episodic_memory_approach.sql` | column `episodic_memory.approach`, consolidation tracking columns, table `episodic_consolidation` | yes, `IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`; no data rewrite |
    | `020_agent_trace_metrics.sql` | column `agent_trace.metrics jsonb` | yes, `IF NOT EXISTS` |
+   | `021_episodic_memory_evidence.sql` | assessment provenance columns; consolidation result `claimed` | yes; does not rewrite old outcomes |
 
-   Apply **006 before 009** (009 adds a column to 006's table).
+   Apply **006 before 009** (009 adds a column to 006's table). Apply **017 before 018**. Apply **020 before 021**.
 3. **Skip `008_learner_trajectory_view.sql`.** It references a column (`mastery_change`) that
    does not exist and fails even locally; nothing in the code reads the view.
 4. Run `check_status.sql` again; then the memory and review tools stop returning `saved: false`.

@@ -880,8 +880,10 @@ class SupabaseClient:
         try:
             from retrieval import embedder
             vec = embedder.encode_one(fact)
-            if vec:
-                row["embedding"] = list(vec)
+            # A NumPy vector is never a boolean. `if vec` raises on an array.
+            size = getattr(vec, "size", None) if vec is not None else 0
+            if vec is not None and size != 0:
+                row["embedding"] = [float(item) for item in list(vec)]
         except Exception:
             pass
         try:
@@ -1301,6 +1303,53 @@ class SupabaseClient:
                     return False
         return self._episodes_enabled
 
+    def _column_enabled(self, cache_name: str, table: str, column: str) -> bool:
+        """Probe one column. Cache False only when that column or table is absent.
+
+        A connection error is not cached. The probe result never includes the
+        database URL or key.
+        """
+        cached = getattr(self, cache_name, None)
+        if cached is not None:
+            return cached
+        try:
+            self.client.table(table).select(column).limit(1).execute()
+        except Exception as exc:
+            if self._is_missing_column(exc, column) or self._is_missing_table(exc):
+                setattr(self, cache_name, False)
+                return False
+            return False
+        setattr(self, cache_name, True)
+        return True
+
+    @staticmethod
+    def _is_missing_column(exc: Exception, column: str) -> bool:
+        msg = str(exc).lower()
+        name = column.lower()
+        if name not in msg:
+            return False
+        return any(marker in msg for marker in ("does not exist", "42703", "schema cache", "could not find"))
+
+    def episode_evidence_enabled(self) -> bool:
+        """True when migration 021 has added assessment provenance columns."""
+        if not self.episodes_enabled():
+            return False
+        return self._column_enabled("_evidence_enabled", "episodic_memory", "assessment_status")
+
+    def episode_approach_enabled(self) -> bool:
+        """True when migration 018 has added episodic_memory.approach."""
+        if not self.episodes_enabled():
+            return False
+        return self._column_enabled("_approach_enabled", "episodic_memory", "approach")
+
+    def consolidation_schema_ready(self) -> bool:
+        """True when 018's tracking column and table are both queryable."""
+        if not self.episodes_enabled() or not self.memory_enabled():
+            return False
+        column = self._column_enabled("_consolidated_at_enabled", "episodic_memory", "consolidated_at")
+        table = self._column_enabled("_consolidation_table_enabled", "episodic_consolidation", "cluster_key")
+        return column and table
+
     def upsert_episode(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Insert or update one episode keyed by (session_id, assistant_turn_index).
 
@@ -1320,9 +1369,11 @@ class SupabaseClient:
                 if not (str(key).startswith("feedback_") and value is None)
             }
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            if not payload.get("approach") or not self.episode_approach_enabled():
+                payload.pop("approach", None)
             existing = (
                 self.client.table("episodic_memory")
-                .select("user_id, feedback_status")
+                .select("user_id, feedback_status, feedback_outcome")
                 .eq("session_id", payload["session_id"])
                 .eq("assistant_turn_index", payload["assistant_turn_index"])
                 .limit(1)
@@ -1341,6 +1392,19 @@ class SupabaseClient:
             # feedback already closed. On insert the column default is pending.
             if found is not None and payload.get("feedback_status") == "pending":
                 payload.pop("feedback_status", None)
+            # A replay that no longer carries the grade must not replace the
+            # retrieval text that was refreshed when feedback closed the row.
+            if (
+                found is not None
+                and found.get("feedback_status") == "next_attempt"
+                and not payload.get("feedback_outcome")
+            ):
+                payload.pop("retrieval_text", None)
+                payload.pop("embedding", None)
+                payload.pop("embed_model", None)
+            if not self.episode_evidence_enabled():
+                for key in ("assessment_status", "evidence_source", "student_response", "interaction_id"):
+                    payload.pop(key, None)
             # default_to_null=False keeps omitted columns instead of writing NULL.
             res = (
                 self.client.table("episodic_memory")
@@ -1371,7 +1435,8 @@ class SupabaseClient:
         concept_id: str,
         exclude_turn_index: int,
         content_id: Optional[str] = None,
-        is_correct: bool = False,
+        interaction_id: Optional[str] = None,
+        is_correct: Optional[bool] = None,
         attempt_id: Optional[str] = None,
         proficiency_before: Optional[float] = None,
         proficiency_after: Optional[float] = None,
@@ -1382,7 +1447,7 @@ class SupabaseClient:
         at exclude_turn_index is never updated. A content_id match wins over a
         newer concept-only row inside the same candidate set.
         """
-        if not user_id or not concept_id or exclude_turn_index is None:
+        if not user_id or not concept_id or exclude_turn_index is None or not isinstance(is_correct, bool):
             return None
         if not self.episodes_enabled():
             return None
@@ -1403,12 +1468,15 @@ class SupabaseClient:
                 already = (prior.data or [None])[0]
                 if already and already.get("episode_id"):
                     return str(already["episode_id"])
+            columns = (
+                "episode_id, content_id, assistant_turn_index, created_at, "
+                "proficiency_before, proficiency_after, session_id"
+            )
+            if self.episode_evidence_enabled():
+                columns += ", interaction_id"
             res = (
                 self.client.table("episodic_memory")
-                .select(
-                    "episode_id, content_id, assistant_turn_index, created_at, "
-                    "proficiency_before, proficiency_after"
-                )
+                .select(columns)
                 .eq("user_id", user_id)
                 .eq("concept_id", concept_id)
                 .eq("status", "active")
@@ -1419,15 +1487,30 @@ class SupabaseClient:
             )
             rows = res.data or []
             chosen = None
-            if content_id:
+            basis = "none"
+            if interaction_id:
+                for candidate in rows:
+                    if candidate.get("interaction_id") == interaction_id:
+                        chosen = candidate
+                        basis = "interaction"
+                        break
+            if chosen is None and content_id:
                 for candidate in rows:
                     if candidate.get("content_id") == content_id:
                         chosen = candidate
+                        basis = "content"
                         break
-            if chosen is None and rows:
+            # Concept-only is a fallback used only when this grade names no question.
+            # Historical rows have no interaction_id, so a computed id that matches
+            # nothing must not block that fallback.
+            if chosen is None and rows and not content_id:
                 chosen = rows[0]
+                basis = "concept"
             if chosen is None:
                 return None
+            logging.getLogger("jee_tutor.db").debug(
+                "close_pending_episode basis=%s episode=%s", basis, chosen.get("episode_id")
+            )
             episode_id = chosen.get("episode_id")
             if not episode_id or chosen.get("assistant_turn_index") == exclude_turn_index:
                 return None
@@ -1473,6 +1556,7 @@ class SupabaseClient:
                     "episode_id, user_id, surface, concept_id, task_type, "
                     "observed_outcome, query_excerpt, actions, feedback_outcome, "
                     "embedding, embed_model"
+                    + (", approach" if self.episode_approach_enabled() else "")
                 )
                 .eq("user_id", user_id)
                 .eq("episode_id", episode_id)
@@ -1524,6 +1608,8 @@ class SupabaseClient:
             "observed_outcome, checker_verdict, feedback_status, feedback_outcome, "
             "embedding, embed_model, created_at"
         )
+        if self.episode_approach_enabled():
+            columns += ", approach"
         try:
             if concept_id:
                 concept_res = (
@@ -1582,6 +1668,7 @@ class SupabaseClient:
             ).eq("session_id", session_id).execute()
         except Exception:
             return None
+        self.retire_facts_without_active_support(session_id=session_id)
 
     def invalidate_turn(self, session_id: str, assistant_turn_index: int) -> None:
         """Mark one assistant slot invalid. A missing row is a no-op."""
@@ -1602,6 +1689,203 @@ class SupabaseClient:
             )
         except Exception:
             return None
+        self.retire_facts_without_active_support(session_id=session_id, assistant_turn_index=assistant_turn_index)
+
+    def retire_facts_without_active_support(
+        self,
+        *,
+        session_id: str,
+        assistant_turn_index: Optional[int] = None,
+    ) -> None:
+        """Supersede a derived fact only when every supporting episode is inactive.
+
+        Facts with no consolidation_memory_id link are left alone. Historical
+        rows from before migration 018 have no such link.
+        """
+        if not session_id or not self.episodes_enabled() or not self.memory_enabled():
+            return None
+        try:
+            q = (
+                self.client.table("episodic_memory")
+                .select("consolidation_memory_id")
+                .eq("session_id", session_id)
+                .eq("status", "invalid")
+            )
+            if assistant_turn_index is not None:
+                q = q.eq("assistant_turn_index", assistant_turn_index)
+            linked = q.limit(100).execute()
+        except Exception:
+            return None
+        memory_ids = []
+        for row in linked.data or []:
+            memory_id = (row or {}).get("consolidation_memory_id")
+            if memory_id and memory_id not in memory_ids:
+                memory_ids.append(memory_id)
+        for memory_id in memory_ids:
+            try:
+                active = (
+                    self.client.table("episodic_memory")
+                    .select("episode_id")
+                    .eq("consolidation_memory_id", memory_id)
+                    .eq("status", "active")
+                    .limit(1)
+                    .execute()
+                )
+            except Exception:
+                continue
+            if active.data:
+                continue
+            self.supersede_learner_memory(str(memory_id), None)
+
+    def list_unconsolidated_episodes(self, user_id: str) -> List[Dict[str, Any]]:
+        """Active episodes for one user that consolidation has not consumed.
+
+        Empty when the schema is missing or the query fails. Never returns
+        another user's rows.
+        """
+        if not user_id or not self.consolidation_schema_ready():
+            return []
+        columns = (
+            "episode_id, user_id, concept_id, task_type, query_excerpt, approach, "
+            "observed_outcome, feedback_outcome, feedback_status, created_at"
+        )
+        try:
+            res = (
+                self.client.table("episodic_memory")
+                .select(columns)
+                .eq("user_id", user_id)
+                .eq("status", "active")
+                .is_("consolidated_at", "null")
+                .order("created_at", desc=True)
+                .limit(80)
+                .execute()
+            )
+            return [
+                row for row in (res.data or [])
+                if isinstance(row, dict) and str(row.get("user_id")) == str(user_id)
+            ]
+        except Exception:
+            return []
+
+    def list_users_with_open_episodes(self) -> List[str]:
+        """Distinct user ids that still have an unconsolidated active episode."""
+        if not self.consolidation_schema_ready():
+            return []
+        try:
+            res = (
+                self.client.table("episodic_memory")
+                .select("user_id")
+                .eq("status", "active")
+                .is_("consolidated_at", "null")
+                .order("created_at", desc=False)
+                .limit(500)
+                .execute()
+            )
+        except Exception:
+            return []
+        seen: List[str] = []
+        for row in res.data or []:
+            user_id = str((row or {}).get("user_id") or "")
+            if user_id and user_id not in seen:
+                seen.append(user_id)
+        return seen
+
+    def active_learner_facts(self, user_id: str) -> List[Dict[str, Any]]:
+        """Active facts for duplicate checks. No embeddings, this user only."""
+        if not user_id or not self.memory_enabled():
+            return []
+        try:
+            res = (
+                self.client.table("learner_memory")
+                .select("memory_id, user_id, kind, fact, subject_key")
+                .eq("user_id", user_id)
+                .is_("superseded_by", "null")
+                .limit(200)
+                .execute()
+            )
+            return [
+                row for row in (res.data or [])
+                if isinstance(row, dict) and str(row.get("user_id") or user_id) == str(user_id)
+            ]
+        except Exception:
+            return []
+
+    def consolidation_seen(self, user_id: str, cluster_key: str) -> bool:
+        """True when this exact episode set was already proposed for this user."""
+        if not user_id or not cluster_key or not self.consolidation_schema_ready():
+            return False
+        try:
+            res = (
+                self.client.table("episodic_consolidation")
+                .select("cluster_key")
+                .eq("user_id", user_id)
+                .eq("cluster_key", cluster_key)
+                .limit(1)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception:
+            return False
+
+    def record_consolidation(
+        self,
+        *,
+        user_id: str,
+        cluster_key: str,
+        episode_ids: List[str],
+        result: str,
+        memory_id: Optional[str] = None,
+        fact: Optional[str] = None,
+    ) -> bool:
+        """Remember one proposal so the same cluster is not sent to the model again."""
+        if not user_id or not cluster_key or not self.consolidation_schema_ready():
+            return False
+        try:
+            self.client.table("episodic_consolidation").insert(
+                {
+                    "user_id": user_id,
+                    "cluster_key": cluster_key,
+                    "episode_ids": list(episode_ids),
+                    "result": result,
+                    "memory_id": memory_id,
+                    "fact": fact,
+                }
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def mark_episodes_consolidated(
+        self,
+        user_id: str,
+        episode_ids: List[str],
+        memory_id: Optional[str],
+    ) -> None:
+        """Consume episodes that became a fact, or matched one that already exists.
+
+        Updates are filtered by user_id. A missing row is a no-op.
+        """
+        if not user_id or not episode_ids or not self.consolidation_schema_ready():
+            return None
+        stamp = datetime.now(timezone.utc).isoformat()
+        for episode_id in episode_ids:
+            try:
+                (
+                    self.client.table("episodic_memory")
+                    .update(
+                        {
+                            "consolidated_at": stamp,
+                            "consolidation_memory_id": memory_id,
+                            "updated_at": stamp,
+                        }
+                    )
+                    .eq("user_id", user_id)
+                    .eq("episode_id", episode_id)
+                    .execute()
+                )
+            except Exception:
+                continue
+        return None
 
     # ─────────────────────────── registration helper ──────────────────────────
 

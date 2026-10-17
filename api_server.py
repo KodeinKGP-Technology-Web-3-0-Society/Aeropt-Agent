@@ -129,6 +129,12 @@ async def _lifespan(_app: FastAPI):
 
     # Episodic memory is not a process-wide sweeper. Recall and commit run as
     # graph nodes (agents/memory_agent.py) and fail open on their own.
+    try:
+        from agents.memory_status import log_episodic_status
+
+        log_episodic_status(log)
+    except Exception:
+        log.warning("episodic memory status check failed")
     yield
     from services import durable_state
 

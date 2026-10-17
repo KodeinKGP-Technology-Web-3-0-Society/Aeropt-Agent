@@ -146,7 +146,8 @@ def test_chat_graded_and_study_row_shapes():
     assert chat["surface"] == "chat"
     assert chat["route"] == "agent_loop"
     assert chat["task_type"] == "doubt"
-    assert chat["observed_outcome"] == "taught"
+    assert chat["observed_outcome"] == "unknown"
+    assert chat["assessment_status"] == "not_requested"
     assert "feedback_status" not in chat
     assert "feedback_outcome" not in chat
     assert chat["expert_used"] == "worked_solution"
@@ -177,7 +178,7 @@ def test_chat_graded_and_study_row_shapes():
     assert study["surface"] == "study"
     assert study["route"] == "teacher"
     assert study["task_type"] == "study_phase"
-    assert study["observed_outcome"] == "taught"
+    assert study["observed_outcome"] == "unknown"
     assert study["actions"] == ["serve_practice_question"]
     assert "feedback_status" not in study
 
@@ -411,6 +412,35 @@ def test_format_and_recall_node(monkeypatch):
     assert "error" not in recalled
 
 
+def test_approach_comes_from_the_reply_and_stays_inside_the_prompt_budget():
+    row = build_episode(_state(), kind="chat")
+    assert row is not None
+    assert row["approach"] == "Keep the right-hand rule and redraw the force."
+    assert "approach=Keep the right-hand rule" in row["retrieval_text"]
+    assert "feedback_status" not in row
+
+    long_reply = "Explain the sign by redrawing the lever arm. " + ("more " * 80)
+    clipped = build_episode(_state(response=long_reply), kind="chat")
+    assert clipped is not None
+    assert len(clipped["approach"]) <= 180
+    assert "model" not in clipped["approach"].lower()
+
+    block = format_episode_context([
+        _episode(
+            feedback_outcome="incorrect",
+            observed_outcome="taught",
+            approach=clipped["approach"],
+            query_excerpt="q" * 300,
+            actions=["tool:" + ("x" * 40)] * 12,
+        )
+    ])
+    assert "outcome incorrect" in block
+    assert "approach:" in block
+    assert len(block) <= 900
+    assert all(len(line) <= 280 for line in block.splitlines())
+    assert len(format_episode_context([_episode(episode_id=str(i)) for i in range(5)]).splitlines()) <= 4
+
+
 def test_delayed_feedback_refreshes_retrieval_and_keeps_the_old_vector_on_embed_failure(monkeypatch):
     from db.supabase_client import SupabaseClient
     from tests.test_episodic_memory import FakeSupabase, _row, _seed, _stored
@@ -428,6 +458,7 @@ def test_delayed_feedback_refreshes_retrieval_and_keeps_the_old_vector_on_embed_
             observed_outcome="taught",
             actions=["tool:search"],
             query_excerpt="sign of torque",
+            approach="Use the right-hand rule for the force direction.",
         ),
     )
     client = SupabaseClient.__new__(SupabaseClient)
@@ -446,6 +477,7 @@ def test_delayed_feedback_refreshes_retrieval_and_keeps_the_old_vector_on_embed_
     assert stored["feedback_outcome"] == "incorrect"
     assert stored["feedback_attempt_id"] == "attempt-a"
     assert "feedback=incorrect" in stored["retrieval_text"]
+    assert "approach=Use the right-hand rule" in stored["retrieval_text"]
     assert stored["embedding"] == [0.4, 0.6]
     assert stored["embed_model"] == "refreshed-model"
 
@@ -593,8 +625,10 @@ def test_states_accept_episode_context_and_grade_metadata():
     assert _ann(TutorState, "attempt_id") == "Optional[str]"
     assert _ann(StudyRoomState, "episode_context") == "Optional[str]"
     assert "Dict" in _ann(StudyRoomState, "last_grade")
-    for banned in ("current_episode_id", "recalled_episodes", "memory_action", "proficiency_before", "proficiency_after"):
+    for banned in ("current_episode_id", "recalled_episodes", "memory_action"):
         assert banned not in TutorState.__annotations__
+    assert _ann(TutorState, "proficiency_before") == "Optional[float]"
+    assert _ann(TutorState, "proficiency_after") == "Optional[float]"
     assert "attempt_id" not in StudyRoomState.__annotations__
 
 
@@ -650,6 +684,8 @@ def test_tutor_graph_recalls_only_free_text_and_commits_both_paths(monkeypatch):
     assert route_after_turn({"run_context_manager": True, "error": "boom"}) == "end"
     assert "episode_context" not in _CARRY_KEYS
     assert "attempt_id" not in _CARRY_KEYS
+    assert "proficiency_before" not in _CARRY_KEYS
+    assert "proficiency_after" not in _CARRY_KEYS
     assert "last_grade" not in _CARRY_KEYS
 
     workflow_source = inspect.getsource(__import__("graph.workflow", fromlist=["build_graph"]))

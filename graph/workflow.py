@@ -107,6 +107,7 @@ def graded_fast_path_node(state: TutorState) -> Dict[str, Any]:
     updates.update(follow_up)
 
     updates.setdefault("agent_used", "graded_fast_path")
+    updates.setdefault("evidence_source", "student_self_report")
     updates["error"] = None
     return updates
 

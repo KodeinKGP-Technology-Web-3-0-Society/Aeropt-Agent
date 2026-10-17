@@ -274,9 +274,13 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
     )
 
     result = diagnostic_node(state)  # type: ignore[arg-type]
-    if result.get("error"):
-        ctx.stage(attempt_record_failed=True)
-        return {"error": result["error"]}
+    if result.get("error") or not result.get("attempt_id"):
+        ctx.stage(
+            attempt_record_failed=True,
+            has_graded_outcome=False,
+            assessment_status="persistence_failed" if not result.get("error") else "failed",
+        )
+        return {"error": result.get("error") or "attempt_not_persisted", "recorded": False}
 
     prob_state = dict(
         ctx.state.get("problem_state")
@@ -294,6 +298,11 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
     ctx.stage(
         has_graded_outcome=True,
         is_correct=args.is_correct,
+        attempt_id=result.get("attempt_id"),
+        proficiency_before=result.get("proficiency_before"),
+        proficiency_after=result.get("proficiency_after"),
+        evidence_source="student_self_report",
+        assessment_status="completed",
         trigger_quiz=bool(result.get("trigger_quiz")),
         mistake_brief=result.get("mistake_brief"),
         score_summary=result.get("score_summary"),
