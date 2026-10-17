@@ -1,4 +1,4 @@
-"""Map JEE/NCERT text onto the 33 PrepWise concept_ids.
+"""Map JEE/NCERT text onto the 33 JEEPath concept_ids.
 
 Be conservative: skip rather than attach a question to the wrong concept.
 The solver will hallucinate less from a miss than from a wrong PYQ.

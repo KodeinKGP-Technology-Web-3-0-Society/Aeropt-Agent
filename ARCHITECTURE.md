@@ -1,6 +1,6 @@
 # Learning Agent: Simple Overview
 
-This file is the product architecture for PrepWise. Implementation details live in
+This file is the product architecture for JEEPath. Implementation details live in
 `README.md`. The graph around the agent is deliberately small; educational decisions
 happen inside the Main Tutor, not as keyword routing.
 

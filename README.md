@@ -1,4 +1,4 @@
-# PrepWise — Tutor Agent
+# JEEPath — Tutor Agent
 
 LangGraph Learning Agent for JEE Physics. One Main Tutor owns each student turn:
 it calls tools, may consult a temporary expert, then the Answer Checker reviews

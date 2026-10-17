@@ -1,5 +1,5 @@
 /**
- * Prepwise Cursor gateway.
+ * JEEPath Cursor gateway.
  *
  * Speaks the Groq/OpenAI chat protocol on 127.0.0.1 so the tutor can run on Cursor
  * models with no change to its call sites: point GROQ_BASE_URL at this process.

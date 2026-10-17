@@ -800,7 +800,7 @@ Not a pytest. Requires migration `017` applied and the four phases shipped.
 
 ## 20. Context for a fresh Cursor session
 
-You are adding episodic memory to `Aeropt-episodic-memory` (PrepWise / Aeropt-Agent). Read this file and implement **Phase 0 only**. Do not re-design.
+You are adding episodic memory to `Aeropt-episodic-memory` (JEEPath / Aeropt-Agent). Read this file and implement **Phase 0 only**. Do not re-design.
 
 - There is no episodic code yet. Do not look for a previous `017` implementation.
 - The Memory Agent is `agents/memory_agent.py` with `memory_recall_node` and `memory_commit_node`. Deterministic. No skill file and no model call in Phases 0–4.
