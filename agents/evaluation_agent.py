@@ -119,6 +119,7 @@ def evaluation_agent_node(state: StudyRoomState) -> Dict[str, Any]:
                 temperature=0.3,
                 max_tokens=2000,
                 min_chars=40,
+                lane="background",
             )
             summary = summary.strip()
         except Exception as e:

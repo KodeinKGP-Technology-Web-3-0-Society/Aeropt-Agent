@@ -155,6 +155,7 @@ class GeminiKeyPool:
         self,
         override: Optional[OpenAI],
         model: str,
+        lane: str = "live",
     ) -> Iterable[Tuple[int, OpenAI]]:
         """Live keys in round-robin order: cool ones first, then the hot ones."""
         now = time.monotonic()
@@ -181,8 +182,85 @@ class GeminiKeyPool:
                     continue
                 ordered.append(idx)
 
+        # Priority lane enforcement: drop background calls if all keys are hot for this model
+        if not ordered and lane == "background":
+            logger.warning("[LLM] All keys hot for model %s; dropping background call", model)
+            return
+
         for idx in ordered or fallback:
             yield idx, self._clients[idx]
+
+
+_MODEL_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+_MODEL_CACHE_TTL = 3600.0  # 1 hour
+_PRUNED_MODELS: Set[str] = set()
+
+
+def get_pruned_models() -> Set[str]:
+    """Return the set of models pruned due to drift."""
+    return set(_PRUNED_MODELS)
+
+
+def clear_pruned_models() -> None:
+    """Clear pruned models set and model cache (for testing)."""
+    _PRUNED_MODELS.clear()
+    _MODEL_CACHE.clear()
+
+
+def check_model_drift(
+    client: Optional[OpenAI] = None,
+    configured_models: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Check provider's available models against configured models (cached 1h).
+
+    Returns a list of missing models that were logged and removed from active chain.
+    """
+    if client is None:
+        try:
+            pool = get_pool()
+            client = pool._clients[0] if pool and pool._clients else None
+        except Exception:
+            client = None
+
+    if client is None:
+        return []
+
+    if configured_models is None:
+        import config
+
+        configured_models = [
+            getattr(config, "LEARNING_AGENT_MODEL", ""),
+            *getattr(config, "LEARNING_AGENT_FALLBACK_MODELS", []),
+            getattr(config, "ANSWER_CHECKER_MODEL", ""),
+        ]
+
+    now = time.time()
+    cache_key = "models_list"
+    cached = _MODEL_CACHE.get(cache_key)
+    available_ids: List[str] = []
+
+    if cached and now - cached[0] < _MODEL_CACHE_TTL:
+        available_ids = cached[1]
+    else:
+        try:
+            resp = client.models.list()
+            available_ids = [m.id for m in getattr(resp, "data", []) or []]
+            _MODEL_CACHE[cache_key] = (now, available_ids)
+        except Exception as exc:
+            logger.warning("[Model Drift Guard] Unable to fetch models from provider: %s", exc)
+            return []
+
+    if not available_ids:
+        return []
+
+    missing = [m for m in configured_models if m and m not in available_ids]
+    if missing:
+        logger.error(
+            "[Model Drift Guard] Configured models missing from provider: %s",
+            ", ".join(missing),
+        )
+        _PRUNED_MODELS.update(missing)
+    return missing
 
 
 SarvamKeyPool = GeminiKeyPool

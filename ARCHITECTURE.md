@@ -319,3 +319,17 @@ Experts: composers `worked_solution`, `socratic_guide`, `practice_set`, `quiz_bu
 - Platform Content Worker
 - Coach actions: change study plan, suggest an activity, start a new conversation
 - Checker loop where the Main Tutor corrects and the checker runs again. The checker rewrites once and returns that text. It does not send the draft back for another tutor pass.
+
+---
+
+## Harness and Runtime Guarantees
+
+For operational guarantees, deterministic offline evals, telemetry, and runtime budgeting, see [`HARNESS.md`](HARNESS.md).
+
+Key runtime properties:
+- **Turn Budget & Forced Close:** Strict wall-clock deadlines and call caps prevent runaway loops; budget overruns force-close cleanly without dropping the turn.
+- **Proof & Release Gates:** Analytical drafts require verification, while non-analytical conversational turns skip the Answer Checker to preserve interactive latency.
+- **Pedagogical Policy as State:** Progressive reveals and hint ladders are tracked explicitly via `problem_state` rather than heuristic keyword matching.
+- **Priority Lanes:** Interactive chat runs on the `live` lane; background tasks (coach, episodic memory, summarization) run on the `background` lane and yield when rate limits approach.
+- **Model Drift Guard:** Model catalogs are validated on startup (cached 1h); missing model IDs log an error and are pruned from the active fallback chain.
+- **Deterministic Cassette Replay:** 25 offline scenarios evaluate agent trajectories without external network dependency.

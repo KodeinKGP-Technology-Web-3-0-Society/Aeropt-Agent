@@ -118,7 +118,15 @@ async def _lifespan(_app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         if production:
             raise RuntimeError(f"Retrieval database unavailable: {exc}") from exc
-        log.warning("retrieval database unavailable (tutor answers ungrounded): %s", exc)
+    # Model drift check against provider availability (cached 1h)
+    try:
+        from utils.groq_pool import check_model_drift
+        missing = check_model_drift()
+        if missing:
+            log.error("Model drift detected: %s missing from provider", ", ".join(missing))
+    except Exception as exc:
+        log.warning("Model drift check skipped: %s", exc)
+
     # Episodic memory is not a process-wide sweeper. Recall and commit run as
     # graph nodes (agents/memory_agent.py) and fail open on their own.
     yield

@@ -202,6 +202,7 @@ def run_learning_coach(
         client=_groq,
         trace=trace,
         label="coach",
+        lane="background",
     )
 
     actions = [s.name for s in trace.steps if s.kind == "tool" and s.ok]

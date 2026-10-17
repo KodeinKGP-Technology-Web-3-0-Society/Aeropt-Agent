@@ -168,6 +168,7 @@ def run_agent_loop(
     client: Optional[OpenAI] = None,
     trace: Optional[AgentTrace] = None,
     label: str = "agent",
+    lane: str = "live",
 ) -> LoopResult:
     """Run one bounded reasoning loop and return the agent's final text.
 
@@ -175,7 +176,9 @@ def run_agent_loop(
     message — recalled memory, session summary, retrieved evidence the caller
     already has. They are context, not instructions.
     """
-    groq = client or OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+    if label == "coach" and lane == "live":
+        lane = "background"
+    llm_client = client or OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     trace = trace or toolbelt.ctx.trace
     budget = budget or getattr(toolbelt.ctx, "budget", None)
     if budget is None:
@@ -246,7 +249,7 @@ def run_agent_loop(
                 stop_r = "call_cap" if is_cap else "time_budget"
                 logger.warning("[%s] budget exhausted after %d steps (%s)", label, steps, stop_r)
                 return _forced_close(
-                    groq=groq,
+                    client=llm_client,
                     messages=messages,
                     model=model,
                     fallback_models=fallback_models,
@@ -260,6 +263,7 @@ def run_agent_loop(
                     depth=toolbelt.ctx.depth,
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
+                    lane=lane,
                 )
 
             tool_rounds_limit = max_tool_rounds if max_tool_rounds is not None else max_steps - 1
@@ -270,7 +274,7 @@ def run_agent_loop(
             progress.report("stage", "thinking", "start", step=steps)
             try:
                 message, model_used = groq_chat(
-                    client=groq,
+                    client=llm_client,
                     model=model,
                     messages=messages_to_send,
                     fallback_models=fallback_models,
@@ -282,13 +286,14 @@ def run_agent_loop(
                     max_tokens=max_tokens,
                     budget=budget,
                     reserve_s=budget.close_reserve_s,
+                    lane=lane,
                 )
             except BudgetExhausted as exc:
                 is_cap = "call cap" in str(exc).lower() or (budget and budget.llm_calls >= budget.max_llm_calls)
                 stop_r = "call_cap" if is_cap else "time_budget"
                 logger.warning("[%s] budget exhausted during step (%s): %s", label, stop_r, exc)
                 return _forced_close(
-                    groq=groq,
+                    client=llm_client,
                     messages=messages,
                     model=model,
                     fallback_models=fallback_models,
@@ -302,6 +307,7 @@ def run_agent_loop(
                     depth=toolbelt.ctx.depth,
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
+                    lane=lane,
                 )
             except Exception as exc:  # noqa: BLE001 — the whole chain failed
                 logger.exception("[%s] LLM chain failed", label)
@@ -328,6 +334,16 @@ def run_agent_loop(
             steps += 1
             progress.report("stage", "thinking", "done", step=steps)
             trace.model_used = model_used
+            if message is None:
+                logger.warning("[%s] call dropped (key exhaustion on priority lane)", label)
+                return LoopResult(
+                    text="",
+                    model_used=model_used,
+                    steps_taken=steps,
+                    stop_reason="key_exhaustion",
+                    messages=messages,
+                    tool_calls_made=tool_names_called,
+                )
             calls = getattr(message, "tool_calls", None)
             text = (getattr(message, "content", None) or "").strip()
 
@@ -416,7 +432,7 @@ def run_agent_loop(
 
         # Budget spent while still mid-reasoning: force one closing answer.
         return _forced_close(
-            groq=groq,
+            client=llm_client,
             messages=messages,
             model=model,
             fallback_models=fallback_models,
@@ -430,6 +446,7 @@ def run_agent_loop(
             depth=toolbelt.ctx.depth,
             stop_reason="time_budget" if budget.is_exhausted() or time.time() >= deadline else "max_steps",
             reserve_s=budget.close_reserve_s,
+            lane=lane,
         )
     finally:
         current_budget_var.reset(budget_token)
@@ -437,7 +454,7 @@ def run_agent_loop(
 
 def _forced_close(
     *,
-    groq: OpenAI,
+    client: OpenAI,
     messages: List[Dict[str, Any]],
     model: str,
     fallback_models: Optional[List[str]],
@@ -451,13 +468,14 @@ def _forced_close(
     depth: int,
     stop_reason: str = "max_steps",
     reserve_s: float = 8.0,
+    lane: str = "live",
 ) -> LoopResult:
     """One last tool-free call so a budget overrun still answers the student."""
     messages = messages + [{"role": "system", "content": _FORCED_CLOSE_NUDGE}]
     started = time.time()
     try:
         message, model_used = groq_chat(
-            client=groq,
+            client=client,
             model=model,
             messages=messages,
             fallback_models=fallback_models,
@@ -465,6 +483,7 @@ def _forced_close(
             max_tokens=max_tokens,
             timeout=reserve_s,
             budget=None,
+            lane=lane,
         )
         text = (getattr(message, "content", None) or "").strip()
         trace.add(

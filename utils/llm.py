@@ -162,12 +162,14 @@ def _note_key_failure(pool, key_idx: Optional[int], kind: str, exc: Exception, m
         pool.mark_limited(key_idx, model, _retry_seconds(exc))
 
 
-def _pick_client(pool, override_client: OpenAI, model: str) -> Tuple[Optional[int], OpenAI]:
+def _pick_client(pool, override_client: OpenAI, model: str, lane: str = "live") -> Tuple[Optional[int], Optional[OpenAI]]:
     """Return (key_index_or_None, client) for one attempt against `model`."""
     if pool is None:
         return None, override_client
-    for idx, client in pool.iter_clients(override=override_client, model=model):
+    for idx, client in pool.iter_clients(override=override_client, model=model, lane=lane):
         return idx, client
+    if lane == "background":
+        return None, None
     return None, override_client
 
 
@@ -200,15 +202,19 @@ def _run_chain(
     different-org keys don't, so this is the actual fix for a 429 rather than
     just retrying the same (still-limited) key or downgrading model quality.
     """
-    chain = [model] + (fallback_models or [])
-    last_exc: Exception = RuntimeError("No attempts made")
-
     try:
-        from utils.groq_pool import get_pool
+        from utils.groq_pool import get_pool, get_pruned_models
 
         pool = get_pool()
+        pruned = get_pruned_models()
     except Exception:
         pool = None
+        pruned = set()
+
+    chain = [m for m in ([model] + (fallback_models or [])) if m not in pruned]
+    if not chain:
+        chain = [model] + (fallback_models or [])
+    last_exc: Exception = RuntimeError("No attempts made")
 
     from agents.runtime.budget import (
         BudgetExhausted,
@@ -222,6 +228,7 @@ def _run_chain(
         budget = current_budget_var.get()
     per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
     reserve_s = kwargs.pop("reserve_s", 0.0)
+    lane = kwargs.pop("lane", "live")
 
     try:
         from evals.cassettes import (
@@ -290,7 +297,11 @@ def _run_chain(
                 call_kwargs["timeout"] = per_call_cap
 
             attempt += 1
-            key_idx, active_client = _pick_client(pool, client, current_model)
+            key_idx, active_client = _pick_client(pool, client, current_model, lane=lane)
+            if active_client is None:
+                logger.warning("[LLM] Background call dropped due to key exhaustion on %s", current_model)
+                last_exc = RuntimeError(f"Background call dropped: all keys hot for {current_model}")
+                break
             if pool is not None and key_idx is not None:
                 pool.note_attempt(key_idx, current_model)
 
@@ -426,6 +437,9 @@ def _run_chain(
                     )
                     break  # move to next model in chain
 
+    if lane == "background" and "Background call dropped" in str(last_exc):
+        return None, chain[-1] if chain else model
+
     raise RuntimeError(
         f"All LLM models in chain failed. Last error: {last_exc}\n"
         f"Chain tried: {chain}"
@@ -538,14 +552,19 @@ def groq_stream(
     Returns a generator yielding (delta_text, is_final).
     Returns the model_used when the generator finishes.
     """
-    chain = [model] + (fallback_models or [])
-    last_exc: Exception = RuntimeError("No attempts made")
-
     try:
-        from utils.groq_pool import get_pool
+        from utils.groq_pool import get_pool, get_pruned_models
+
         pool = get_pool()
+        pruned = get_pruned_models()
     except Exception:
         pool = None
+        pruned = set()
+
+    chain = [m for m in ([model] + (fallback_models or [])) if m not in pruned]
+    if not chain:
+        chain = [model] + (fallback_models or [])
+    last_exc: Exception = RuntimeError("No attempts made")
 
     from agents.runtime.budget import (
         BudgetExhausted,
@@ -556,6 +575,7 @@ def groq_stream(
     budget = kwargs.pop("budget", None) or current_budget_var.get()
     per_call_cap = kwargs.pop("per_call_cap", DEFAULT_TUTOR_STEP_TIMEOUT_S)
     reserve_s = kwargs.pop("reserve_s", 0.0)
+    lane = kwargs.pop("lane", "live")
 
     try:
         from evals.cassettes import (
@@ -625,7 +645,11 @@ def groq_stream(
                 call_kwargs["timeout"] = per_call_cap
 
             attempt += 1
-            key_idx, active_client = _pick_client(pool, client, current_model)
+            key_idx, active_client = _pick_client(pool, client, current_model, lane=lane)
+            if active_client is None:
+                logger.warning("[LLM] Background call dropped due to key exhaustion on %s", current_model)
+                last_exc = RuntimeError(f"Background call dropped: all keys hot for {current_model}")
+                break
             if pool is not None and key_idx is not None:
                 pool.note_attempt(key_idx, current_model)
 

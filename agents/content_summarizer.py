@@ -191,6 +191,7 @@ def summarize_to_slide_cards(
         min_chars=MIN_RESPONSE_CHARS,
         temperature=0.3,
         max_tokens=1800,
+        lane="background",
     )
     cleaned = _clean_output(raw)
 
@@ -207,6 +208,7 @@ def summarize_to_slide_cards(
             min_chars=MIN_RESPONSE_CHARS,
             temperature=0.3,
             max_tokens=1800,
+            lane="background",
         )
         cleaned = _clean_output(raw)
 
