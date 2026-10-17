@@ -37,7 +37,22 @@ from openai import (
     RateLimitError,
 )
 
+import contextvars
+from dataclasses import dataclass
+
 logger = logging.getLogger("jee_tutor.llm")
+
+
+@dataclass
+class UsageMeter:
+    """Accumulates token usage and call counts across a single turn."""
+    llm_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+
+
+usage_meter: contextvars.ContextVar[Optional[UsageMeter]] = contextvars.ContextVar("usage_meter", default=None)
 
 # Errors that are worth retrying on the same model
 _TRANSIENT = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
@@ -232,6 +247,13 @@ def _run_chain(
             )
         if budget is not None:
             budget.record_call()
+        meter = usage_meter.get()
+        if meter is not None:
+            meter.llm_calls += 1
+            u = entry.get("usage") or {}
+            meter.prompt_tokens += u.get("prompt_tokens", 0)
+            meter.completion_tokens += u.get("completion_tokens", 0)
+            meter.cached_tokens += u.get("cached_tokens", 0)
         msg = deserialize_message(entry)
         return msg, entry.get("model") or model
 
@@ -292,6 +314,17 @@ def _run_chain(
                 if budget is not None:
                     budget.record_call()
 
+                meter = usage_meter.get()
+                if meter is not None:
+                    meter.llm_calls += 1
+                    u = getattr(completion, "usage", None)
+                    if u is not None:
+                        meter.prompt_tokens += getattr(u, "prompt_tokens", 0) or 0
+                        meter.completion_tokens += getattr(u, "completion_tokens", 0) or 0
+                        d = getattr(u, "prompt_tokens_details", None)
+                        cached = getattr(d, "cached_tokens", 0) if d else (getattr(u, "cached_tokens", 0) or 0)
+                        meter.cached_tokens += (cached or 0)
+
                 if is_fallback or attempt > 0:
                     logger.info(
                         "[LLM] Success — model=%s attempt=%d/%d",
@@ -307,7 +340,17 @@ def _run_chain(
                         temperature=kwargs.get("temperature"),
                         response_format=kwargs.get("response_format"),
                     )
-                    active_cassette.set(req_hash, serialize_message(message, current_model))
+                    ser = serialize_message(message, current_model)
+                    u = getattr(completion, "usage", None)
+                    if u is not None:
+                        d = getattr(u, "prompt_tokens_details", None)
+                        cached = getattr(d, "cached_tokens", 0) if d else (getattr(u, "cached_tokens", 0) or 0)
+                        ser["usage"] = {
+                            "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                            "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                            "cached_tokens": cached or 0,
+                        }
+                    active_cassette.set(req_hash, ser)
 
                 return message, current_model
 
@@ -536,6 +579,13 @@ def groq_stream(
             )
         if budget is not None:
             budget.record_call()
+        meter = usage_meter.get()
+        if meter is not None:
+            meter.llm_calls += 1
+            u = entry.get("usage") or {}
+            meter.prompt_tokens += u.get("prompt_tokens", 0)
+            meter.completion_tokens += u.get("completion_tokens", 0)
+            meter.cached_tokens += u.get("cached_tokens", 0)
         content = entry.get("content") or ""
         if content:
             yield (content, False)
@@ -597,6 +647,15 @@ def groq_stream(
                 yield ("", True)
                 if budget is not None:
                     budget.record_call()
+
+                meter = usage_meter.get()
+                if meter is not None:
+                    meter.llm_calls += 1
+                    c_text = "".join(streamed_text)
+                    meter.completion_tokens += max(1, len(c_text) // 4)
+                    p_text = "".join(str(m.get("content") or "") for m in messages)
+                    meter.prompt_tokens += max(1, len(p_text) // 4)
+
                 if active_cassette is not None and active_cassette.mode == "record":
                     req_hash = compute_request_hash(
                         model=current_model,
@@ -605,13 +664,20 @@ def groq_stream(
                         temperature=kwargs.get("temperature"),
                         response_format=kwargs.get("response_format"),
                     )
+                    c_text = "".join(streamed_text)
+                    p_text = "".join(str(m.get("content") or "") for m in messages)
                     active_cassette.set(
                         req_hash,
                         {
                             "role": "assistant",
-                            "content": "".join(streamed_text),
+                            "content": c_text,
                             "tool_calls": None,
                             "model": current_model,
+                            "usage": {
+                                "prompt_tokens": max(1, len(p_text) // 4),
+                                "completion_tokens": max(1, len(c_text) // 4),
+                                "cached_tokens": 0,
+                            },
                         },
                     )
                 if is_fallback or attempt > 0:

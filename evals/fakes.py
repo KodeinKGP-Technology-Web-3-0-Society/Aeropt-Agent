@@ -196,6 +196,13 @@ class InMemoryDatabase:
             ]
         }
         self.concept_states: Dict[str, Dict[str, Any]] = {}
+        self.agent_traces: List[Dict[str, Any]] = []
+
+    def insert_agent_trace(self, trace: Dict[str, Any]) -> None:
+        self.agent_traces.append(dict(trace))
+
+    def memory_enabled(self) -> bool:
+        return True
 
     def read_user(self, user_id: str) -> Dict[str, Any]:
         return self.users.get(user_id) or {

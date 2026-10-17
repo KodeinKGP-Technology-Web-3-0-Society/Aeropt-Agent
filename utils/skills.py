@@ -25,3 +25,20 @@ def load_skill(name: str) -> Optional[Dict[str, Any]]:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
+
+def get_skill_version(name: str) -> str:
+    """Return sha1 hash of the skill YAML file bytes (first 12 characters)."""
+    import hashlib
+
+    clean_name = name
+    if clean_name.startswith("skills/"):
+        clean_name = clean_name[len("skills/"):]
+    if clean_name.endswith(".yaml"):
+        clean_name = clean_name[:-5]
+
+    path = _SKILLS_DIR / f"{clean_name}.yaml"
+    if not path.is_file():
+        return ""
+    return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+
+

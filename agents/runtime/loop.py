@@ -128,17 +128,48 @@ def run_agent_loop(
         messages.extend(priming_messages)
     messages.append({"role": "user", "content": user_message})
 
+    import hashlib
+    import json
+    import os
+    from pathlib import Path
+
     schemas = toolbelt.schemas()
+    toolset_version = hashlib.sha1(json.dumps(schemas, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    if trace:
+        trace.toolset_version = toolset_version
+
     tool_names_called: List[str] = []
     model_used = model
     steps = 0
+    max_step_input_chars = 0
 
     from services import progress
 
+    def _record_transcript_step():
+        if os.getenv("AEROPT_TRACE_TRANSCRIPTS") == "1":
+            try:
+                sid = getattr(trace, "session_id", None) or "session"
+                tidx = getattr(trace, "turn_index", None) or 0
+                out_dir = Path("var/transcripts") / str(sid)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_file = out_dir / f"{tidx}.jsonl"
+                with open(out_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"step": steps, "messages": messages}, default=str) + "\n")
+            except Exception:
+                pass
+
     try:
         while steps < max_steps:
+            step_chars = sum(len(str(m.get("content") or "")) for m in messages)
+            if step_chars > max_step_input_chars:
+                max_step_input_chars = step_chars
+            if trace:
+                trace.max_step_input_chars = max(trace.max_step_input_chars, max_step_input_chars)
+
+            _record_transcript_step()
+
             if progress.is_cancelled():
-                return LoopResult(
+                res = LoopResult(
                     text="",
                     model_used=model_used,
                     steps_taken=steps,
@@ -146,6 +177,9 @@ def run_agent_loop(
                     messages=messages,
                     tool_calls_made=tool_names_called,
                 )
+                if trace:
+                    trace.stop_reason = res.stop_reason
+                return res
             out_of_time = budget.is_exhausted() or time.time() >= deadline
             if out_of_time:
                 logger.warning("[%s] time budget exhausted after %d steps", label, steps)
@@ -243,11 +277,14 @@ def run_agent_loop(
             )
 
             if not calls:
+                stop_r = "max_steps" if final_pass and steps >= max_steps else "answered"
+                if trace:
+                    trace.stop_reason = stop_r
                 return LoopResult(
                     text=text,
                     model_used=model_used,
                     steps_taken=steps,
-                    stop_reason="max_steps" if final_pass and steps >= max_steps else "answered",
+                    stop_reason=stop_r,
                     messages=messages,
                     tool_calls_made=tool_names_called,
                 )
@@ -333,6 +370,8 @@ def _forced_close(
                 depth=depth,
             )
         )
+        if trace:
+            trace.stop_reason = stop_reason
         return LoopResult(
             text=text,
             model_used=model_used,
@@ -353,6 +392,8 @@ def _forced_close(
                 depth=depth,
             )
         )
+        if trace:
+            trace.stop_reason = "llm_error"
         return LoopResult(
             text="",
             model_used=model_used,

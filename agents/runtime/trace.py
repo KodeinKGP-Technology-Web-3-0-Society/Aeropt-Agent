@@ -70,6 +70,16 @@ class AgentTrace:
     steps: List[TraceStep] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
 
+    # Telemetry metrics (migration 020)
+    llm_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    stop_reason: Optional[str] = None
+    prompt_version: Optional[str] = None
+    toolset_version: Optional[str] = None
+    max_step_input_chars: int = 0
+
     def add(self, step: TraceStep) -> TraceStep:
         self.steps.append(step)
         return step
@@ -89,12 +99,25 @@ class AgentTrace:
     def latency_ms(self) -> int:
         return int((time.time() - self.started_at) * 1000)
 
+    @property
+    def metrics(self) -> Dict[str, Any]:
+        return {
+            "llm_calls": self.llm_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+            "stop_reason": self.stop_reason or "",
+            "prompt_version": self.prompt_version or "",
+            "toolset_version": self.toolset_version or "",
+            "max_step_input_chars": self.max_step_input_chars,
+        }
+
     def path(self) -> List[str]:
         """Compact human-readable path, e.g. ['tool:retrieve_content', 'handoff:solver']."""
         return [f"{s.kind}:{s.name}" for s in self.steps if s.kind in ("tool", "handoff", "check")]
 
     def to_row(self) -> Dict[str, Any]:
-        """Shape expected by `agent_trace` (migration 006)."""
+        """Shape expected by `agent_trace` (migration 006, 020)."""
         return {
             "user_id": self.user_id,
             "session_id": self.session_id,
@@ -106,6 +129,7 @@ class AgentTrace:
             "checker_verdict": self.checker_verdict,
             "latency_ms": self.latency_ms,
             "model_used": self.model_used,
+            "metrics": self.metrics,
         }
 
     def persist(self) -> None:

@@ -348,6 +348,12 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     _import_tools()
     started = time.time()
 
+    from utils.llm import UsageMeter, usage_meter
+    from utils.skills import get_skill_version
+
+    meter = UsageMeter()
+    u_token = usage_meter.set(meter)
+
     user_id = state["user_id"]
     session_id = state["session_id"]
     query = (state.get("query") or "").strip()
@@ -357,7 +363,16 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         session_id=session_id,
         turn_index=state.get("interaction_count"),
         route="agent_loop",
+        prompt_version=get_skill_version("learning_agent"),
     )
+
+    def _finalize_trace():
+        trace.llm_calls = meter.llm_calls
+        trace.input_tokens = meter.prompt_tokens
+        trace.output_tokens = meter.completion_tokens
+        trace.cached_tokens = meter.cached_tokens
+        trace.persist()
+
     # The doubt room already ran check_student_work before this loop. Record it
     # on the trace so the turn shows the check that the student is about to hear.
     if "Working check:" in (state.get("classroom_job") or ""):
@@ -373,7 +388,8 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     if _OUTSIDE_PHYSICS.search(query):
         trace.note("outside physics syllabus")
         trace.checker_verdict = "skipped"
-        trace.persist()
+        _finalize_trace()
+        usage_meter.reset(u_token)
         return {
             "response": _PHYSICS_ONLY_REPLY,
             "agent_used": "learning_agent",
@@ -447,7 +463,8 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             result.error,
         )
         trace.checker_verdict = VERDICT_SKIPPED
-        trace.persist()
+        _finalize_trace()
+        usage_meter.reset(u_token)
         return {
             "response": _FALLBACK_REPLY,
             "agent_used": "learning_agent",
@@ -519,7 +536,8 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         checked.verdict,
         int((time.time() - started) * 1000),
     )
-    trace.persist()
+    _finalize_trace()
+    usage_meter.reset(u_token)
     return updates
 
 

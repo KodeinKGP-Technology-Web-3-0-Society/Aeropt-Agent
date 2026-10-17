@@ -14,6 +14,7 @@ applied by hand in the Supabase dashboard: **Project → SQL Editor → New quer
    | `015_session_kind_title.sql` | columns `sessions.kind`, `sessions.title`, `sessions.deleted_at` (general chat history) | yes |
    | `016_durable_agent_state.sql` | tables `served_items`, `carry_sessions`, storage bucket `diagrams` (needed when `AEROPT_DURABLE_STATE=supabase`) | yes |
    | `017_episodic_memory.sql` | table `episodic_memory` | yes, `IF NOT EXISTS`; no data rewrite |
+   | `020_agent_trace_metrics.sql` | column `agent_trace.metrics jsonb` | yes, `IF NOT EXISTS` |
 
    Apply **006 before 009** (009 adds a column to 006's table).
 3. **Skip `008_learner_trajectory_view.sql`.** It references a column (`mastery_change`) that

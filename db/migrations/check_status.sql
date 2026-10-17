@@ -19,6 +19,8 @@ SELECT migration, applied FROM (VALUES
                                                      WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'kind')),
   ('016_durable_agent_state: served_items',        to_regclass('public.served_items') IS NOT NULL),
   ('016_durable_agent_state: carry_sessions',      to_regclass('public.carry_sessions') IS NOT NULL),
-  ('017_episodic_memory',                          to_regclass('public.episodic_memory') IS NOT NULL)
+  ('017_episodic_memory',                          to_regclass('public.episodic_memory') IS NOT NULL),
+  ('020_agent_trace_metrics: metrics',             EXISTS (SELECT 1 FROM information_schema.columns
+                                                     WHERE table_schema = 'public' AND table_name = 'agent_trace' AND column_name = 'metrics'))
 ) AS t(migration, applied)
 ORDER BY migration;

@@ -36,7 +36,8 @@ assets/
 # Local scratch work (not part of the project)
 scratch/
 scratch.py
-scripts/
+scripts/*
+!scripts/harness_report.py
 tests/fixtures/routing_baseline*.json
 .local-run/
 .pytest_cache/
