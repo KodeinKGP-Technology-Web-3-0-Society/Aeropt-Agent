@@ -24,6 +24,7 @@ Design rules, in priority order:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import time
@@ -35,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 from agents.runtime.trace import AgentTrace, TraceStep
 
 logger = logging.getLogger("jee_tutor.toolbelt")
+_TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="tool_worker")
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
 SCOPE_READ = "read"                     # read learner/content data
@@ -199,6 +201,8 @@ class ToolSpec:
     consequential: bool = False
     #: Maximum characters the model sees for this tool's result.
     max_result_chars: int = 2500
+    #: Timeout in seconds for tool execution.
+    timeout_s: float = 8.0
 
     def schema(self) -> Dict[str, Any]:
         """OpenAI/Groq function-calling schema for this tool."""
@@ -258,6 +262,7 @@ def tool(
     scopes: Iterable[str] = (SCOPE_READ,),
     consequential: bool = False,
     max_result_chars: int = 2500,
+    timeout_s: float = 8.0,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a function as an agent tool.
 
@@ -274,6 +279,7 @@ def tool(
             scopes=frozenset(scopes),
             consequential=consequential,
             max_result_chars=max_result_chars,
+            timeout_s=timeout_s,
         )
         if name in _REGISTRY:
             logger.warning("Tool %s registered twice — overwriting.", name)
@@ -421,7 +427,9 @@ class Toolbelt:
             self.surface = "coach"
         else:
             self.surface = surface_for_state(ctx.state)
+        self.surface = self.surface
         self._specs: Dict[str, ToolSpec] = {}
+        self._failures: Dict[str, int] = {}
         all_specs = list(specs)
         filter_surface = self.surface in SURFACE_TOOL_SETS and len(all_specs) > 15
         allowed_names = SURFACE_TOOL_SETS.get(self.surface) if filter_surface else None
@@ -443,6 +451,9 @@ class Toolbelt:
         spec = self._specs.get(name)
         return spec.max_result_chars if spec else 2500
 
+    def get_spec(self, name: str) -> Optional[ToolSpec]:
+        return self._specs.get(name)
+
     # ── introspection ────────────────────────────────────────────────────────
 
     @property
@@ -456,7 +467,11 @@ class Toolbelt:
         return len(self._specs)
 
     def schemas(self) -> List[Dict[str, Any]]:
-        return [self._specs[n].schema() for n in self.names]
+        return [
+            self._specs[n].schema()
+            for n in self.names
+            if self._failures.get(n, 0) < 2
+        ]
 
     # ── dispatch ─────────────────────────────────────────────────────────────
 
@@ -490,6 +505,14 @@ class Toolbelt:
             self._record(name, None, result, started)
             return result
 
+        if self._failures.get(name, 0) >= 2:
+            result = ToolResult(
+                ok=False,
+                error=f"Tool '{name}' failed repeatedly this turn, do not call it again.",
+            )
+            self._record(name, None, result, started)
+            return result
+
         parsed_args = self._parse_args(raw_args)
         if isinstance(parsed_args, ToolResult):       # parse failure
             self._record(name, None, parsed_args, started)
@@ -517,6 +540,8 @@ class Toolbelt:
             cache_key = f"{name}:{json.dumps(parsed_args, sort_keys=True, default=str)}"
             cached = self.ctx._read_cache.get(cache_key)
             if cached is not None:
+                if not cached.ok:
+                    self._failures[name] = self._failures.get(name, 0) + 1
                 repeat = ToolResult(
                     ok=cached.ok,
                     data=(
@@ -547,14 +572,25 @@ class Toolbelt:
             self._record(name, parsed_args, result, started)
             return result
 
+        timeout_s = getattr(spec, "timeout_s", 8.0)
         try:
-            data = spec.handler(args, self.ctx)
+            future = _TOOL_POOL.submit(spec.handler, args, self.ctx)
+            data = future.result(timeout=timeout_s)
             result = ToolResult(ok=True, data=data)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Tool %s timed out after %.1fs", name, timeout_s)
+            result = ToolResult(
+                ok=False,
+                error=f"Tool '{name}' timed out after {timeout_s:.0f}s, try a simpler call or answer without it.",
+            )
         except Exception as exc:  # noqa: BLE001 — deliberate: never break the loop
             logger.exception("Tool %s failed", name)
             result = ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
-        if is_cacheable:
+        if not result.ok:
+            self._failures[name] = self._failures.get(name, 0) + 1
+
+        if is_cacheable and result.ok:
             self.ctx._read_cache[cache_key] = result
 
         if hasattr(self.ctx, "full_tool_results"):

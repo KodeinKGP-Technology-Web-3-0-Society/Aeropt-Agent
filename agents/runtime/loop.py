@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 import config
-from agents.runtime.toolbelt import Toolbelt
+from agents.runtime.toolbelt import SCOPE_READ, Toolbelt
 from agents.runtime.trace import AgentTrace, TraceStep
 from utils.llm import groq_chat
 
@@ -160,7 +160,9 @@ def run_agent_loop(
     fallback_models: Optional[List[str]] = None,
     priming_messages: Optional[List[Dict[str, Any]]] = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    max_tool_rounds: Optional[int] = None,
     time_budget_s: float = DEFAULT_TIME_BUDGET_S,
+    budget: Optional[TurnBudget] = None,
     temperature: float = 0.3,
     max_tokens: int = 1800,
     client: Optional[OpenAI] = None,
@@ -175,7 +177,7 @@ def run_agent_loop(
     """
     groq = client or OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     trace = trace or toolbelt.ctx.trace
-    budget = getattr(toolbelt.ctx, "budget", None)
+    budget = budget or getattr(toolbelt.ctx, "budget", None)
     if budget is None:
         budget = TurnBudget.from_duration(time_budget_s)
     deadline = budget.deadline
@@ -240,7 +242,9 @@ def run_agent_loop(
                 return res
             out_of_time = budget.is_exhausted() or time.time() >= deadline
             if out_of_time:
-                logger.warning("[%s] time budget exhausted after %d steps", label, steps)
+                is_cap = budget and budget.llm_calls >= budget.max_llm_calls
+                stop_r = "call_cap" if is_cap else "time_budget"
+                logger.warning("[%s] budget exhausted after %d steps (%s)", label, steps, stop_r)
                 return _forced_close(
                     groq=groq,
                     messages=messages,
@@ -254,11 +258,12 @@ def run_agent_loop(
                     trace=trace,
                     label=label,
                     depth=toolbelt.ctx.depth,
-                    stop_reason="time_budget",
+                    stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                 )
 
-            final_pass = steps == max_steps - 1
+            tool_rounds_limit = max_tool_rounds if max_tool_rounds is not None else max_steps - 1
+            final_pass = steps >= tool_rounds_limit
 
             step_started = time.time()
             messages_to_send = _compact_past_tool_messages(messages)
@@ -278,7 +283,9 @@ def run_agent_loop(
                     reserve_s=budget.close_reserve_s,
                 )
             except BudgetExhausted as exc:
-                logger.warning("[%s] budget exhausted during step: %s", label, exc)
+                is_cap = "call cap" in str(exc).lower() or (budget and budget.llm_calls >= budget.max_llm_calls)
+                stop_r = "call_cap" if is_cap else "time_budget"
+                logger.warning("[%s] budget exhausted during step (%s): %s", label, stop_r, exc)
                 return _forced_close(
                     groq=groq,
                     messages=messages,
@@ -292,7 +299,7 @@ def run_agent_loop(
                     trace=trace,
                     label=label,
                     depth=toolbelt.ctx.depth,
-                    stop_reason="time_budget",
+                    stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                 )
             except Exception as exc:  # noqa: BLE001 — the whole chain failed
@@ -350,23 +357,57 @@ def run_agent_loop(
 
             # Act on every call the model asked for, then observe.
             messages.append(_serialise_assistant(message))
-            for call in calls:
-                name = call.function.name
-                tool_names_called.append(name)
-                result = toolbelt.call(name, call.function.arguments)
-                max_chars = (
-                    toolbelt.get_max_result_chars(name)
-                    if hasattr(toolbelt, "get_max_result_chars")
-                    else 2500
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": name,
-                        "content": result.to_json(max_chars=max_chars),
-                    }
-                )
+
+            def _is_parallel_read(call_item) -> bool:
+                c_name = getattr(call_item.function, "name", "")
+                c_spec = toolbelt.get_spec(c_name) if hasattr(toolbelt, "get_spec") else None
+                if c_spec is None:
+                    return False
+                return c_spec.scopes <= frozenset({SCOPE_READ}) and not c_spec.consequential
+
+            if len(calls) > 1 and all(_is_parallel_read(c) for c in calls):
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(calls))) as executor:
+                    futures = [
+                        executor.submit(toolbelt.call, c.function.name, c.function.arguments)
+                        for c in calls
+                    ]
+                    results = [f.result() for f in futures]
+                for c, result in zip(calls, results):
+                    name = c.function.name
+                    tool_names_called.append(name)
+                    max_chars = (
+                        toolbelt.get_max_result_chars(name)
+                        if hasattr(toolbelt, "get_max_result_chars")
+                        else 2500
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": c.id,
+                            "name": name,
+                            "content": result.to_json(max_chars=max_chars),
+                        }
+                    )
+            else:
+                for call in calls:
+                    name = call.function.name
+                    tool_names_called.append(name)
+                    result = toolbelt.call(name, call.function.arguments)
+                    max_chars = (
+                        toolbelt.get_max_result_chars(name)
+                        if hasattr(toolbelt, "get_max_result_chars")
+                        else 2500
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "name": name,
+                            "content": result.to_json(max_chars=max_chars),
+                        }
+                    )
 
             if time.time() >= deadline:
                 messages.append({"role": "system", "content": _FORCED_CLOSE_NUDGE})

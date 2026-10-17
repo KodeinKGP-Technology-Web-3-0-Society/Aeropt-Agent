@@ -60,8 +60,8 @@ class TurnBudget:
         return max(0.0, self.deadline - t)
 
     def is_exhausted(self, now: Optional[float] = None) -> bool:
-        """True when deadline has passed."""
-        return self.remaining(now) <= 0.0
+        """True when deadline has passed or LLM call cap reached."""
+        return self.remaining(now) <= 0.0 or self.llm_calls >= self.max_llm_calls
 
     def timeout_for(
         self,
@@ -69,6 +69,8 @@ class TurnBudget:
         reserve_s: float = 0.0,
     ) -> float:
         """Calculate per-request timeout as min(remaining - reserve, per_call_cap)."""
+        if self.llm_calls >= self.max_llm_calls:
+            raise BudgetExhausted(f"LLM call cap reached ({self.llm_calls}/{self.max_llm_calls})")
         rem = self.remaining() - reserve_s
         if rem <= 0.0:
             raise BudgetExhausted(f"Turn budget deadline exceeded (remaining: {rem:.2f}s)")

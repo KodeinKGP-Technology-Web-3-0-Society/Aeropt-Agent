@@ -189,6 +189,7 @@ def resolve_concept(args: ResolveConceptArgs, ctx: ToolContext) -> Dict[str, Any
     args_model=RetrieveContentArgs,
     scopes=(SCOPE_READ,),
     max_result_chars=6000,
+    timeout_s=10.0,
 )
 def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, Any]:
     from agents.graphrag_retriever import graphrag_retriever_node

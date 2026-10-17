@@ -236,6 +236,7 @@ class SolveSymbolicallyArgs(BaseModel):
     ),
     args_model=SolveSymbolicallyArgs,
     scopes=(SCOPE_READ,),
+    timeout_s=6.0,
 )
 def solve_symbolically(args: SolveSymbolicallyArgs, ctx: ToolContext) -> Dict[str, Any]:
     operation = (args.operation or "").strip().lower()
