@@ -190,13 +190,48 @@ def build(
 
     dynamic_context_text = "\n\n".join(p for p in dynamic_parts if p.strip())
 
-    # Recent turns
-    recent_turns: List[Dict[str, Any]] = []
-    for turn in (state.get("recent_turns") or [])[-4:]:
+    # Recent turns (filter out canned refusal messages so past turns do not anchor a physics-only persona)
+    def _is_refusal_content(text: str) -> bool:
+        c = text.lower()
+        return any(
+            kw in c
+            for kw in (
+                "only teach physics",
+                "strictly in physics",
+                "only cover physics",
+                "only cover jee physics",
+                "won't invent a chemistry",
+                "cannot provide organic chemistry",
+                "expertise and syllabus coverage are strictly in physics",
+                "as your physics tutor",
+                "outside my syllabus",
+                "chemistry mechanism or a reaction scheme",
+                "cannot provide chemistry",
+            )
+        )
+
+    raw_turns = (state.get("recent_turns") or [])[-8:]
+    filtered_turns: List[Dict[str, Any]] = []
+    for turn in raw_turns:
         role = "assistant" if turn.get("role") == "assistant" else "user"
         content = (turn.get("content") or "").strip()
-        if content:
-            recent_turns.append({"role": role, "content": content[:1500]})
+        if not content:
+            continue
+        if role == "assistant" and _is_refusal_content(content):
+            if filtered_turns and filtered_turns[-1]["role"] == "user":
+                filtered_turns.pop()
+            continue
+        filtered_turns.append({"role": role, "content": content[:1500]})
+
+    current_q = (state.get("query") or "").strip().lower()
+    recent_turns: List[Dict[str, Any]] = []
+    for item in filtered_turns[-4:]:
+        if item["role"] == "user" and current_q and item["content"].strip().lower() == current_q:
+            continue
+        if recent_turns and recent_turns[-1]["role"] == item["role"]:
+            recent_turns[-1]["content"] = f"{recent_turns[-1]['content']}\n{item['content']}"[:1500]
+        else:
+            recent_turns.append(item)
 
     section_chars = {
         "core": len(core_block),

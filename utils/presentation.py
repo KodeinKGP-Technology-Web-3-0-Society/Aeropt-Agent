@@ -436,23 +436,7 @@ def build_proactive_card(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     node = result.get("sandbox_card")
     if isinstance(node, dict):
         return node
-    concept_id = result.get("primary_concept_id") or result.get("roadmap_concept_id")
-    if not concept_id:
-        return None
-    chunks = result.get("retrieved_chunks") or []
-    preview = _truncate((chunks[0].get("core_text") if chunks else "") or concept_id.replace("_", " "), 180)
-    target = result.get("target_concept_state") or {}
-    return {
-        "card_type": result.get("content_type_requested", "theory"),
-        "title": concept_id.replace("_", " ").title(),
-        "duration_min": 8,
-        "proficiency_pct": _proficiency_pct_from_state(target),
-        "weak_prereq": None,
-        "preview_text": preview,
-        "image_url": None,
-        "actions": ["start", "skip", "why"],
-        "concept_id": concept_id,
-    }
+    return None
 
 
 def build_flashcards_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:

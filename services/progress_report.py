@@ -313,12 +313,42 @@ def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30)
             "readiness": (data["readiness"].get(cid) or {}).get("score"),
             "review_due": review.get("due_at") if review else None,
         })
+    # Taught in chat or a lesson but never practised: no user_concept_state row, yet
+    # the student did study it. Listed as "new" with no score, so the study page and
+    # the tutor know it was covered without pretending it was assessed.
+    practised = {c["concept_id"] for c in concepts}
+    for e in turns:
+        cid = e.get("concept_id")
+        if not cid or cid in practised:
+            continue
+        practised.add(cid)
+        touched = last_touch.get(cid)
+        review = review_by_concept.get(cid)
+        concepts.append({
+            "concept_id": cid,
+            "name": meta[cid]["name"],
+            "chapter": meta[cid]["chapter"],
+            "unit": meta[cid]["unit"],
+            "proficiency": 0.0,
+            "attempts": 0,
+            "correct": 0,
+            "accuracy": None,
+            "trend": None,
+            "status": "new",
+            "discussed_only": True,
+            "flagged_weak": False,
+            "last_practised": touched,
+            "days_since": (now - touched).days if touched else None,
+            "readiness": (data["readiness"].get(cid) or {}).get("score"),
+            "review_due": review.get("due_at") if review else None,
+        })
+
     concepts.sort(key=lambda c: (c["last_practised"] or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
     overview["concepts_mastered"] = sum(c["status"] == "mastered" for c in concepts)
 
-    # ── chapters ──
+    # ── chapters ── (practice-based: a concept only discussed has no score to average)
     chapters_acc: Dict[str, Dict[str, Any]] = {}
-    for c in concepts:
+    for c in (c for c in concepts if c["attempts"]):
         ch = chapters_acc.setdefault(c["chapter"], {
             "chapter": c["chapter"], "unit": c["unit"], "concepts": 0, "attempts": 0, "correct": 0,
             "mastered": 0, "weak": 0, "_wprof": 0.0, "last_practised": None,
@@ -333,7 +363,7 @@ def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30)
             ch["last_practised"] = c["last_practised"]
     chapters = []
     for ch in chapters_acc.values():
-        weight = sum(max(1, c["attempts"]) for c in concepts if c["chapter"] == ch["chapter"])
+        weight = sum(c["attempts"] for c in concepts if c["chapter"] == ch["chapter"])
         ch["proficiency"] = round(ch.pop("_wprof") / weight, 3) if weight else 0.0
         ch["accuracy"] = round(ch["correct"] / ch["attempts"], 3) if ch["attempts"] else None
         chapters.append(ch)
@@ -512,7 +542,8 @@ def progress_digest(user_id: str, *, tz_name: Optional[str] = None) -> str:
         logger.debug("progress digest failed", exc_info=True)
         return ""
     o = r["overview"]
-    if not o["questions_attempted"] and not o["study_sessions_completed"]:
+    discussed = [c for c in r["concepts"] if c.get("discussed_only")][:5]
+    if not o["questions_attempted"] and not o["study_sessions_completed"] and not discussed:
         return ""
     lines = []
     if o["accuracy"] is not None:
@@ -533,4 +564,6 @@ def progress_digest(user_id: str, *, tz_name: Optional[str] = None) -> str:
         lines.append(f"- Most common mistake type: {top} ({count} of {r['mistakes']['total_wrong']}).")
     if r["reviews"]:
         lines.append("- Reviews pending: " + ", ".join(x["name"] for x in r["reviews"][:3]) + ".")
+    if discussed:
+        lines.append("- Studied with the tutor recently, not practised yet: " + ", ".join(c["name"] for c in discussed) + ".")
     return "\n".join(lines)

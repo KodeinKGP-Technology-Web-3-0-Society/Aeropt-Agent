@@ -27,6 +27,11 @@ def _clip(value: Any, limit: int = 400) -> Any:
     return value
 
 
+# Wide enough that the admin dashboard can show what retrieval actually returned.
+RESULT_CLIP = 1600
+TEXT_CLIP = 2400
+
+
 @dataclass
 class TraceStep:
     """One thing the agent did: a tool call, a handoff, or a verification pass."""
@@ -39,6 +44,7 @@ class TraceStep:
     result_preview: Optional[Any] = None
     duration_ms: int = 0
     depth: int = 0                  # 0 = main tutor, 1 = expert subagent
+    text: Optional[str] = None      # llm steps: what the model wrote at this step
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -53,7 +59,9 @@ class TraceStep:
         if self.error:
             out["error"] = _clip(self.error, 200)
         if self.result_preview is not None:
-            out["result"] = _clip(self.result_preview)
+            out["result"] = _clip(self.result_preview, RESULT_CLIP)
+        if self.text:
+            out["text"] = _clip(self.text, TEXT_CLIP)
         return out
 
 
@@ -77,6 +85,7 @@ class AgentTrace:
     cached_tokens: int = 0
     stop_reason: Optional[str] = None
     prompt_version: Optional[str] = None
+    query: str = ""                 # the student's message that started the turn
     toolset_version: Optional[str] = None
     max_step_input_chars: int = 0
 
@@ -110,6 +119,7 @@ class AgentTrace:
             "prompt_version": self.prompt_version or "",
             "toolset_version": self.toolset_version or "",
             "max_step_input_chars": self.max_step_input_chars,
+            "query": _clip(self.query, 2000),
         }
 
     def path(self) -> List[str]:

@@ -44,6 +44,12 @@ _FORCED_CLOSE_NUDGE = (
     "remains unverified, say so plainly rather than guessing."
 )
 
+_GROUND_FIRST_NUDGE = (
+    "Before you answer: this is a substantive course question and you have not "
+    "called `{tool}`. Call it now and build your answer on what it returns. If it "
+    "returns nothing useful, answer from your own knowledge."
+)
+
 
 @dataclass
 class LoopResult:
@@ -70,8 +76,9 @@ def _serialise_assistant(message: Any) -> Dict[str, Any]:
     }
     calls = getattr(message, "tool_calls", None)
     if calls:
-        payload["tool_calls"] = [
-            {
+        tool_calls_payload = []
+        for i, c in enumerate(calls):
+            item = {
                 "id": getattr(c, "id", f"call_{i}"),
                 "type": getattr(c, "type", "function") or "function",
                 "function": {
@@ -79,8 +86,11 @@ def _serialise_assistant(message: Any) -> Dict[str, Any]:
                     "arguments": getattr(c.function, "arguments", ""),
                 },
             }
-            for i, c in enumerate(calls)
-        ]
+            extra_content = getattr(c, "extra_content", None)
+            if extra_content:
+                item["extra_content"] = extra_content
+            tool_calls_payload.append(item)
+        payload["tool_calls"] = tool_calls_payload
     return payload
 
 
@@ -169,12 +179,16 @@ def run_agent_loop(
     trace: Optional[AgentTrace] = None,
     label: str = "agent",
     lane: str = "live",
+    require_tool: Optional[str] = None,
 ) -> LoopResult:
     """Run one bounded reasoning loop and return the agent's final text.
 
     `priming_messages` are inserted between the system prompt and the student's
     message — recalled memory, session summary, retrieved evidence the caller
     already has. They are context, not instructions.
+
+    `require_tool`: if the model tries to answer without having called this tool,
+    it is sent back once to call it. The draft it wrote is discarded.
     """
     if label == "coach" and lane == "live":
         lane = "background"
@@ -205,6 +219,7 @@ def run_agent_loop(
     model_used = model
     steps = 0
     max_step_input_chars = 0
+    nudged = False
 
     from services import progress
 
@@ -357,8 +372,22 @@ def run_agent_loop(
                     ),
                     duration_ms=int((time.time() - step_started) * 1000),
                     depth=toolbelt.ctx.depth,
+                    text=text or None,
                 )
             )
+
+            if (
+                not calls
+                and require_tool
+                and not nudged
+                and not final_pass
+                and require_tool in toolbelt
+                and require_tool not in tool_names_called
+            ):
+                nudged = True
+                trace.note(f"nudge: answered without {require_tool}, sent back to ground first", depth=toolbelt.ctx.depth)
+                messages.append({"role": "system", "content": _GROUND_FIRST_NUDGE.format(tool=require_tool)})
+                continue
 
             if not calls:
                 stop_r = "max_steps" if final_pass and steps >= max_steps else "answered"

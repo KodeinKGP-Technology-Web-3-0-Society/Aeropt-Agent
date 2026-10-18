@@ -212,7 +212,7 @@ class ToolSpec:
         # is what this did before — leaves a dangling $ref, and the tool is then either
         # rejected outright or quietly never called.
         params = _inline_refs(params, params.pop("$defs", {}) or {})
-        params.pop("title", None)
+        params = _strip_titles(params)
         return {
             "type": "function",
             "function": {
@@ -221,6 +221,24 @@ class ToolSpec:
                 "parameters": params,
             },
         }
+
+
+def _strip_titles(node: Any, in_properties: bool = False) -> Any:
+    """Drop pydantic's auto-generated "title" from every schema node.
+
+    The model reads the property name; "title": "Query" next to `query` is pure
+    input tokens, resent on every call of the turn. A *property* called `title`
+    is a key of a "properties" mapping and is kept.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _strip_titles(value, in_properties=(key == "properties" and not in_properties))
+            for key, value in node.items()
+            if in_properties or key != "title"
+        }
+    if isinstance(node, list):
+        return [_strip_titles(item) for item in node]
+    return node
 
 
 def _inline_refs(node: Any, defs: Dict[str, Any], depth: int = 0) -> Any:
@@ -485,9 +503,76 @@ class Toolbelt:
 
         if progress.is_cancelled():
             return ToolResult(ok=False, error="The student stopped this turn. Do not continue.")
-        progress.report("tool", name, "start")
+
+        thought = None
+        args_dict = raw_args if isinstance(raw_args, dict) else None
+        if not args_dict and isinstance(raw_args, str):
+            try:
+                import json
+                args_dict = json.loads(raw_args)
+            except Exception:
+                args_dict = None
+
+        if isinstance(args_dict, dict):
+            if name == "retrieve_content":
+                cid = args_dict.get("concept_id") or ""
+                thought = (
+                    f"Looking up syllabus material on {cid.replace('_', ' ').title()}"
+                    if cid
+                    else "Searching syllabus material"
+                )
+            elif name == "resolve_concept":
+                q = args_dict.get("query") or ""
+                thought = f"Identifying syllabus concept for '{q[:50]}'" if q else "Resolving topic in JEE syllabus"
+            elif name == "solve_symbolically":
+                eq = args_dict.get("equation") or args_dict.get("expression") or ""
+                thought = f"Solving equation symbolically: {eq[:50]}" if eq else "Computing symbolic algebra"
+            elif name == "calculate":
+                expr = args_dict.get("expression") or ""
+                thought = f"Evaluating numerical expression: {expr[:50]}" if expr else "Evaluating numbers"
+            elif name == "verify_result":
+                thought = "Verifying physical and mathematical consistency"
+            elif name == "check_dimensions":
+                thought = "Checking units and dimensional consistency"
+
+        progress.report("tool", name, "start", thought=thought)
         result = self._call(name, raw_args)
-        progress.report("tool", name, "done" if result.ok else "error")
+
+        extra: Dict[str, Any] = {}
+        if name == "retrieve_content" and result.ok and isinstance(result.data, dict):
+            cid = result.data.get("concept_id") or ""
+            chunks = result.data.get("chunks") or []
+            sources = result.data.get("sources") or []
+            extra["material"] = {
+                "concept_id": cid,
+                "title": cid.replace("_", " ").title() if cid else "Course Material",
+                "sources": sources[:5],
+                "chunks_found": result.data.get("chunks_found", len(chunks)),
+                "snippets": [
+                    {
+                        "title": c.get("heading") or c.get("cite") or "Syllabus Excerpt",
+                        "text": (c.get("core_text") or c.get("preview") or "")[:400],
+                        "cite": c.get("cite") or "",
+                    }
+                    for c in chunks[:4]
+                    if isinstance(c, dict)
+                ],
+            }
+            extra["thought"] = f"Retrieved {len(chunks)} course reference{'s' if len(chunks) != 1 else ''} for {cid.replace('_', ' ').title()}"
+        elif name == "resolve_concept" and result.ok and isinstance(result.data, dict):
+            cid = result.data.get("concept_id") or ""
+            if cid:
+                extra["thought"] = f"Mapped topic to: {cid.replace('_', ' ').title()}"
+        elif name == "solve_symbolically" and result.ok and isinstance(result.data, dict):
+            sol = result.data.get("result") or result.data.get("solution") or ""
+            if sol:
+                extra["thought"] = f"Solved symbolically: {str(sol)[:60]}"
+        elif name == "calculate" and result.ok and isinstance(result.data, dict):
+            val = result.data.get("result") or ""
+            if val:
+                extra["thought"] = f"Calculated: {str(val)[:40]}"
+
+        progress.report("tool", name, "done" if result.ok else "error", **extra)
         return result
 
     def _call(self, name: str, raw_args: Any) -> ToolResult:
@@ -639,6 +724,8 @@ class Toolbelt:
             preview = result.data
         elif result.permission_required:
             preview = "permission_required"
+        duration_ms = int((time.time() - started) * 1000)
+        logger.info("[tool:%s] ok=%s (%dms)", name, result.ok, duration_ms)
         self.ctx.trace.add(
             TraceStep(
                 kind="tool",
@@ -647,7 +734,7 @@ class Toolbelt:
                 ok=result.ok,
                 error=result.error,
                 result_preview=preview,
-                duration_ms=int((time.time() - started) * 1000),
+                duration_ms=duration_ms,
                 depth=self.ctx.depth,
             )
         )

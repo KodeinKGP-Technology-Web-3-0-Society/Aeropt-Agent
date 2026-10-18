@@ -161,3 +161,26 @@ def test_cache_friendly_skill_split():
     assert "{{target_exam}}" not in skill["stable"]
     assert "You are this student's tutor" in skill["stable"]
     assert "{{target_exam}}" in skill["dynamic"]
+
+
+def test_refusal_filtering_in_recent_turns():
+    """Ensure previous assistant refusal messages are stripped from recent_turns."""
+    state = {
+        "user_id": "u_test",
+        "session_id": "s_test",
+        "query": "explain me all kind of reactions in organic chemistry with diagrams",
+        "recent_turns": [
+            {
+                "role": "user",
+                "content": "explain me all kind of reactions in organic chemistry with diagrams",
+            },
+            {
+                "role": "assistant",
+                "content": "I understand you're curious about organic chemistry reactions, but as your physics tutor for JEE, my expertise and syllabus coverage are strictly in physics. I cannot provide organic chemistry mechanisms or reaction schemes.",
+            },
+        ],
+    }
+    sec = context.build(state, stable_system_prompt="Static Tutor Prompt")
+    # Both the assistant refusal and its triggering user turn should be filtered out
+    assert len(sec.recent_turns) == 0
+

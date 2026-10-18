@@ -34,7 +34,8 @@ class DrawDiagramArgs(BaseModel):
 @tool(
     name="draw_diagram",
     description=(
-        "Render a physics diagram (circuit, free-body diagram, ray diagram, field lines, function graph) "
+        "Render a diagram (physics diagrams like circuits and free-body diagrams, chemistry diagrams "
+        "like reaction energy profiles and mechanism pathways, mathematics graphs) "
         "from TikZ code and return markdown image to put in your reply."
     ),
     args_model=DrawDiagramArgs,

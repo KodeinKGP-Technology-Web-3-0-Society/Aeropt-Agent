@@ -253,7 +253,15 @@ def check_model_drift(
     if not available_ids:
         return []
 
-    missing = [m for m in configured_models if m and m not in available_ids]
+    available_set = set(available_ids) | {
+        m[len("models/"):] if m.startswith("models/") else m for m in available_ids
+    }
+
+    missing = [
+        m
+        for m in configured_models
+        if m and m not in available_set and f"models/{m}" not in available_set
+    ]
     if missing:
         logger.error(
             "[Model Drift Guard] Configured models missing from provider: %s",

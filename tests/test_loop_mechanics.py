@@ -196,6 +196,49 @@ class LoopMechanicsTests(unittest.TestCase):
         second_call_tools = chat_mock.call_args_list[1].kwargs.get("tools")
         self.assertIsNone(second_call_tools)
 
+    def test_require_tool_sends_ungrounded_answer_back_once(self):
+        """Answering without the required tool earns one nudge; the draft is discarded."""
+        belt = Toolbelt([READ1], self.ctx)
+
+        replies = [
+            (_msg("Answer from memory."), "test-model"),
+            (_msg(tool_calls=[("read1", '{"value": "q"}')]), "test-model"),
+            (_msg("Grounded answer."), "test-model"),
+        ]
+
+        with patch("agents.runtime.loop.groq_chat", side_effect=replies):
+            res = run_agent_loop(
+                system_prompt="prompt",
+                user_message="question",
+                toolbelt=belt,
+                model="test-model",
+                require_tool="read1",
+            )
+
+        self.assertEqual(res.text, "Grounded answer.")
+        self.assertEqual(res.tool_calls_made, ["read1"])
+        contents = [str(m.get("content")) for m in res.messages]
+        self.assertTrue(any("`read1`" in c for c in contents))
+        self.assertNotIn("Answer from memory.", contents)
+
+    def test_require_tool_nudges_only_once(self):
+        """A model that still refuses after the nudge gets its answer through."""
+        belt = Toolbelt([READ1], self.ctx)
+
+        replies = [(_msg("Answer from memory."), "test-model"), (_msg("Still from memory."), "test-model")]
+
+        with patch("agents.runtime.loop.groq_chat", side_effect=replies):
+            res = run_agent_loop(
+                system_prompt="prompt",
+                user_message="question",
+                toolbelt=belt,
+                model="test-model",
+                require_tool="read1",
+            )
+
+        self.assertEqual(res.text, "Still from memory.")
+        self.assertEqual(res.stop_reason, "answered")
+
 
 if __name__ == "__main__":
     unittest.main()
