@@ -76,6 +76,7 @@ from graph.workflow import tutor_graph
 from models.state import TutorState
 
 # ── Session-management helpers — imported from services.turn_service ───────────
+from services import admin_traces
 from services.auth import AgentAuthMiddleware, check_production_config
 from services.classroom_evidence import post_turn_evidence, resolve_learner_token
 from services.turn_service import (
@@ -92,8 +93,10 @@ from onboarding_diagnostic import grade_placement_answer, start_placement_diagno
 from sandbox_execute import prepare_sandbox_state_overrides
 from utils.presentation import build_chat_payload
 
+_log_level_name = os.getenv("LOG_LEVEL", os.getenv("AEROPT_LOG_LEVEL", "INFO")).upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
 logging.basicConfig(
-    level=logging.WARNING,
+    level=_log_level,
     format="[%(levelname)s %(name)s] %(message)s",
 )
 
@@ -144,6 +147,8 @@ async def _lifespan(_app: FastAPI):
 check_production_config()
 
 app = FastAPI(title="JEE Tutor Agent API", version="1.0.0", lifespan=_lifespan)
+
+app.include_router(admin_traces.router)
 
 # Added before CORS so CORS wraps it: a 401/429 must still carry CORS headers,
 # or the browser hides the status and the frontend cannot refresh the token.
@@ -821,6 +826,8 @@ async def _sse_frames(queue: "asyncio.Queue", keepalive_s: float = SSE_KEEPALIVE
             yield f"event: token\ndata: {json.dumps(msg['data'])}\n\n"
         elif msg["type"] == "status":
             yield f"event: status\ndata: {json.dumps(msg['data'])}\n\n"
+        elif msg["type"] == "replace":
+            yield f"event: replace\ndata: {json.dumps(msg['data'])}\n\n"
         elif msg["type"] == "result":
             yield f"event: result\ndata: {msg['data']}\n\n"
             return
@@ -874,10 +881,15 @@ async def chat_message(
         streamed_parts.append(token)
         loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "data": token})
 
+    def sync_replace(text: str):
+        streamed_parts[:] = [text]
+        loop.call_soon_threadsafe(queue.put_nowait, {"type": "replace", "data": text})
+
     def sync_worker():
         from services import progress
-        from utils.stream import stream_callback_var
+        from utils.stream import stream_callback_var, stream_replace_var
         stream_callback_var.set(sync_cb)
+        stream_replace_var.set(sync_replace)
         # Tool and stage events ("Reading your course material…") as SSE `status`
         # frames, the same feed the Study Room shows while the tutor works.
         progress.install(
