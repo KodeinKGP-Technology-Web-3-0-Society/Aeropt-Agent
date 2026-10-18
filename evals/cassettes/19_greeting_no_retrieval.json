@@ -1,10 +1,4 @@
 {
-  "47f14fff022f8d96a7372930e093efcc17b63490e4c4d37f5b76271e4ab11664": {
-    "content": "Hello! Welcome to your JEE study session. I am ready to help you explore concepts, work through practice problems, and clarify any doubts. Which topic should we start with today?",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
-  },
   "bca72ba0b023ee572ca66c235bf5d172b11baca6f393e35531bbe41d5b17ec17": {
     "content": "Hello! Welcome to your JEE study session. I am ready to help you explore concepts, work through practice problems, and clarify any doubts. Which topic should we start with today?",
     "model": "gemini-3-flash-preview",

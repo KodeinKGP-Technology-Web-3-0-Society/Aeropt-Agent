@@ -1,10 +1,4 @@
 {
-  "06c2324912bbc643e8ab891fc135ee15f5fc7ccae76f087d8a35188b82ad48ec": {
-    "content": "Electromagnetic induction is governed by Faraday's law $\\mathcal{E} = -\\frac{d\\Phi_B}{dt}$ and Lenz's law.",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
-  },
   "bad10be15021d1e58a1c5288ae5937f9bb1b17ab745cc865d145bc0d2fe8f40d": {
     "content": "",
     "model": "gemini-3-flash-preview",
@@ -25,20 +19,5 @@
     "model": "gemini-3-flash-preview",
     "role": "assistant",
     "tool_calls": null
-  },
-  "fedaa6168a291440224ca69d375a4947129b3f27682aa44400836d348770f2b6": {
-    "content": "",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": [
-      {
-        "function": {
-          "arguments": "{\"concept_id\": \"phy_em_induction\", \"content_type\": \"theory\"}",
-          "name": "retrieve_content"
-        },
-        "id": "call_ground_14",
-        "type": "function"
-      }
-    ]
   }
 }

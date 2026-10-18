@@ -1,30 +1,9 @@
 {
-  "1e780809962ee1228abbeb7e667fee74a58a158b1760ab98b644e32e6c3bee3b": {
-    "content": "Here is an official JEE PYQ on the Bohr model: In Bohr's model of the hydrogen atom, how does orbital radius $r_n$ scale with principal quantum number $n$?",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
-  },
   "5d4e95b5b7841b021501b6cc84a62580132b08b61c6bf4d1d0d85554fb00d089": {
     "content": "Here is an official JEE PYQ on the Bohr model: In Bohr's model of the hydrogen atom, how does orbital radius $r_n$ scale with principal quantum number $n$?",
     "model": "gemini-3-flash-preview",
     "role": "assistant",
     "tool_calls": null
-  },
-  "b4585f11a3c0b972c58d168db640ef4a6c3ef9ba6f7d1a6bbc8c354001cde752": {
-    "content": "",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": [
-      {
-        "function": {
-          "arguments": "{\"concept_id\": \"phy_mod_bohr\", \"content_type\": \"pyq\"}",
-          "name": "retrieve_content"
-        },
-        "id": "call_ground_18",
-        "type": "function"
-      }
-    ]
   },
   "ca0badc189d9a1674b648489ec5fe4dcad303674b628bbc1cf1303b0e658b100": {
     "content": "",

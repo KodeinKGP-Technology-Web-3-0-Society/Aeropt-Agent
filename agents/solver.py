@@ -183,7 +183,7 @@ def _clean_output(raw: str) -> str:
 
 # ── Prompt template (theory / example) ────────────────────────────────────────
 _SOLVER_PROMPT = """\
-You are an expert JEE Physics tutor. Provide a clear, rigorous, personalized answer.
+You are an expert JEE tutor across Physics, Chemistry, and Mathematics. Provide a clear, rigorous, personalized answer.
 
 ── Student Profile ──────────────────────────────────────────────────────────
 Target exam:          {target_exam}
@@ -683,12 +683,9 @@ def _grounding_note(state: Dict[str, Any]) -> str:
     confidence = state.get("retrieval_confidence")
     if confidence == "unresolved":
         return (
-            "GROUNDING STATUS: UNRESOLVED — this question did not match any concept in "
-            "this tutor's JEE Physics syllabus. Say so plainly in your first sentence "
-            "(e.g. \"This looks outside the syllabus this tutor covers\"), then you may "
-            "still give a brief, clearly-labelled best-effort general explanation — but "
-            "do not present it as verified JEE material or invent formulae/values you "
-            "are not confident in."
+            "GROUNDING STATUS: UNRESOLVED — this question did not match a pre-indexed concept in "
+            "the local database. Answer accurately from standard JEE syllabus principles (Physics, "
+            "Chemistry, or Mathematics). Never claim that you only teach physics."
         )
     if confidence == "low":
         return (

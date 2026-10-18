@@ -15,7 +15,7 @@ class TestGroundingNote(unittest.TestCase):
     def test_unresolved_concept_is_flagged_plainly(self):
         note = _grounding_note({"retrieval_confidence": "unresolved"})
         self.assertIn("UNRESOLVED", note)
-        self.assertIn("outside", note.lower())
+        self.assertIn("pre-indexed", note.lower())
 
     def test_low_confidence_is_flagged_as_hedge(self):
         note = _grounding_note({"retrieval_confidence": "low"})

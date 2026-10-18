@@ -133,10 +133,10 @@ def test_turn_index_and_skip_rules():
     assert build_episode(_state(interaction_count="nope"), kind="chat") is None
     assert build_episode(_state(cancelled=True), kind="study") is None
 
-    physics, fallback = memory_agent._skip_replies()
-    assert physics and fallback
-    assert build_episode(_state(response=physics), kind="chat") is None
-    assert build_episode(_state(response=fallback), kind="chat") is None
+    skip_replies = memory_agent._skip_replies()
+    assert len(skip_replies) > 0
+    for reply in skip_replies:
+        assert build_episode(_state(response=reply), kind="chat") is None
     assert build_episode(_state(response="Well done!"), kind="graded") is not None
 
 

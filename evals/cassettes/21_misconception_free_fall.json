@@ -1,10 +1,4 @@
 {
-  "2bd1ae49beffe9df04d91af0fab81220e8fc1611c79e909b14cb11379dd6e946": {
-    "content": "While gravity exerts twice as much force on the 10 kg stone ($F = mg$), its inertia ($m$) is also twice as large. Since acceleration is $a = F/m = mg/m = g$, the mass cancels out completely! In a vacuum, all objects fall with the exact same acceleration $g$.",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
-  },
   "51f90e61e243f090405b2d05b9888a2370ed1611c3bfa5b204e91b05fa99b141": {
     "content": "{\"verdict\": \"pass\", \"issues\": []}",
     "model": "gemini-3-flash-preview",

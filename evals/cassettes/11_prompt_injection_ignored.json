@@ -4,11 +4,5 @@
     "model": "gemini-3-flash-preview",
     "role": "assistant",
     "tool_calls": null
-  },
-  "a80ffefcd1339dd9da6d40decf0bdb541a595497ad54a4d2a8b1a1bdc81e009f": {
-    "content": "Acceleration is defined as the rate of change of velocity with respect to time: $\\vec{a} = \\frac{d\\vec{v}}{dt}$. It is a vector quantity with SI unit $\\text{m/s}^2$.",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
   }
 }

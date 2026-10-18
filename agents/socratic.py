@@ -29,7 +29,7 @@ from utils.llm import groq_complete
 _groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _SOCRATIC_PROMPT = """\
-You are an elite, world-class Socratic tutor for JEE Physics, modeled after the best educators in the world. Your ultimate goal is to lead the student to their own "aha!" moment, NEVER to simply hand them the answer.
+You are an elite, world-class Socratic tutor for JEE (Physics, Chemistry, and Mathematics), modeled after the best educators in the world. Your ultimate goal is to lead the student to their own "aha!" moment, NEVER to simply hand them the answer.
 
 ── Context ──────────────────────────────────────────────────────────────────
 Concept being studied: {concept_name}
@@ -91,8 +91,21 @@ def _format_recent_turns(turns: List[Dict[str, Any]]) -> str:
         return "  (start of session)"
     lines = []
     for t in turns:
-        lines.append(f"  [{t.get('role', '')}]: {t.get('content', '')[:250]}")
-    return "\n".join(lines)
+        role = t.get("role", "")
+        content = (t.get("content") or "").strip()
+        c = content.lower()
+        if role == "assistant" and (
+            "only teach physics" in c
+            or "strictly in physics" in c
+            or "only cover physics" in c
+            or "only cover jee physics" in c
+            or "won't invent a chemistry" in c
+            or "cannot provide organic chemistry" in c
+            or "as your physics tutor" in c
+        ):
+            continue
+        lines.append(f"  [{role}]: {content[:250]}")
+    return "\n".join(lines) if lines else "  (start of session)"
 
 
 def socratic_node(state: TutorState) -> Dict[str, Any]:
