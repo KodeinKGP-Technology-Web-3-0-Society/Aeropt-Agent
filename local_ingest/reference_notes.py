@@ -579,6 +579,19 @@ Multinomial Theorem and Binomial Divisibility:
   - Expansion: $(1 + x)^n = 1 + nx + \frac{n(n-1)}{2}x^2 + \dots + x^n$.
   - To test divisibility by $x^2$: truncate higher order terms $\mathcal{O}(x^2)$.
 """),
+    ("binomial_theorem", "Summation of series involving binomial coefficients", r"""
+Summation of series involving binomial coefficients. Start from the binomial theorem for a positive integer $n$:
+$$(1 + x)^n = \sum_{r=0}^{n} \binom{n}{r} x^r.$$
+Reading off coefficients, or substituting a value of $x$, gives the standard sums.
+
+- **Sum of coefficients.** Put $x = 1$: $\sum_{r=0}^{n} \binom{n}{r} = 2^n$. Put $x = -1$: $\sum_{r=0}^{n} (-1)^r \binom{n}{r} = 0$ for $n > 0$, so the alternating sum of binomial coefficients vanishes and the even-indexed and odd-indexed sums are each $2^{n-1}$.
+- **Weighted by the index.** Differentiate, then set $x = 1$. Since $r \binom{n}{r} = n \binom{n-1}{r-1}$,
+  $$\sum_{r=1}^{n} r \binom{n}{r} = n \, 2^{n-1}, \qquad \sum_{r=2}^{n} r(r-1)\binom{n}{r} = n(n-1)\,2^{n-2}.$$
+- **Divided by the index.** Integrate from $0$ to $1$. Because $\binom{n}{r}/(r+1) = \binom{n+1}{r+1}/(n+1)$,
+  $$\sum_{r=0}^{n} \frac{\binom{n}{r}}{r+1} = \frac{2^{n+1} - 1}{n+1}.$$
+- **Square of the coefficients.** $\sum_{r=0}^{n} \binom{n}{r}^2 = \binom{2n}{n}$. This is the coefficient of $x^n$ in $(1+x)^{2n} = (1+x)^n(1+x)^n$.
+- **A short check.** For $n = 3$ the coefficients are $1, 3, 3, 1$. Their sum is $8 = 2^3$, the alternating sum is $0$, and $\sum r \binom{3}{r} = 0 + 3 + 6 + 3 = 12 = 3 \cdot 2^{2}$.
+"""),
     ("matrices", "Cayley-Hamilton theorem and powers of matrices", r"""
 Cayley-Hamilton Theorem and Matrix Powers:
 
@@ -786,6 +799,21 @@ Tangents to the parabola $y^2 = 4ax$ ($a > 0$).
 - At the point $(at^2, 2at)$: $ty = x + at^2$.
 - Of slope $m$: $y = mx + \frac{a}{m}$, for $m \ne 0$. The condition of tangency for the line $y = mx + c$ is $c = a/m$.
 - A focal chord joins two points whose parameters $t_1, t_2$ satisfy $t_1 t_2 = -1$. It passes through the focus $(a, 0)$.
+"""),
+    ("hydrogen", "Position, isotopes and preparation of hydrogen", r"""
+Hydrogen on the JEE Advanced syllabus. Hydrogen has three isotopes: protium ($^1\mathrm{H}$), deuterium ($^2\mathrm{H}$, also written $\mathrm{D}$) and tritium ($^3\mathrm{H}$).
+
+- Laboratory preparation is the reaction of zinc with dilute acid, $\mathrm{Zn} + 2\mathrm{H}^+ \rightarrow \mathrm{Zn}^{2+} + \mathrm{H}_2$. Industrially it is made by steam reforming of hydrocarbons.
+- Hydrides are ionic (saline hydrides of the alkali and alkaline-earth metals, such as $\mathrm{NaH}$), covalent (for example $\mathrm{H}_2\mathrm{O}$, $\mathrm{NH}_3$, $\mathrm{CH}_4$) or interstitial (hydrogen absorbed in the lattice of a transition metal).
+- Water has a bent molecule and extensive hydrogen bonding, so its boiling point is high for its molar mass. Heavy water is $\mathrm{D}_2\mathrm{O}$.
+- Hydrogen peroxide, $\mathrm{H}_2\mathrm{O}_2$, has a non-planar open-book structure. It oxidises and reduces: it oxidises $\mathrm{I}^-$ to $\mathrm{I}_2$ in acid, and it reduces acidified $\mathrm{KMnO}_4$.
+"""),
+    ("chemistry_in_everyday_life", "Drugs and their therapeutic action", r"""
+Chemistry in everyday life, limited to the classes the JEE Advanced syllabus names. Structures of the individual drug molecules are not required.
+
+- Antacids neutralise excess acid in the stomach. Antihistamines oppose the action of histamine. Tranquilizers act on the central nervous system. Analgesics relieve pain. Antimicrobials (including antibiotics) stop or slow the growth of microorganisms. Antifertility drugs are named as a class.
+- Artificial sweeteners are known by name only.
+- Soaps are sodium or potassium salts of long-chain fatty acids, made by saponification of fats with alkali. A soap anion has a hydrophobic tail and a hydrophilic head. In water the tails collect inward and the heads face the water, forming micelles that take grease into the interior. Detergents are synthetic and keep working in hard water, where soap precipitates as calcium and magnesium salts.
 """),
     ("probability_12", "Bayes' theorem and total probability", r"""
 Law of Total Probability and Bayes' Theorem:

@@ -1098,6 +1098,25 @@ def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiency
     )
 
 
+@app.get("/api/v1/concepts/{concept_id}/pyqs")
+def concept_pyqs(concept_id: str) -> Dict[str, Any]:
+    """JEE Advanced questions already linked to this concept. Empty when none are."""
+    from retrieval.store import RetrievalUnavailable
+    from services.concept_pyqs import list_concept_pyqs
+
+    concept_id = concept_id.strip()
+    if not concept_id:
+        raise HTTPException(status_code=400, detail="concept_id required")
+    try:
+        items = list_concept_pyqs(concept_id)
+    except RetrievalUnavailable:
+        raise HTTPException(status_code=503, detail="Retrieval is unavailable")
+    except Exception:
+        logging.exception("concept pyqs failed for %s", concept_id)
+        raise HTTPException(status_code=503, detail="Retrieval is unavailable")
+    return {"concept_id": concept_id, "items": items}
+
+
 @app.post("/api/v1/chat/sessions", response_model=CreateSessionResponse)
 def create_chat_session(req: CreateSessionRequest) -> CreateSessionResponse:
     """Create an empty study session so the client can land on /chat/<id> before the first message."""

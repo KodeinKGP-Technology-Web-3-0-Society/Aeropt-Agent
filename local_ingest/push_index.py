@@ -307,7 +307,7 @@ def relink_topics(url: str, *, allow_hosted: bool, subject: str, dry_run: bool) 
     conn = connect(url, allow_hosted)
     try:
         cur = conn.cursor()
-        cur.execute("set statement_timeout = '60s'")
+        cur.execute("set statement_timeout = '180s'")
         ensure_schema(cur)
         removed = purge_unreadable(cur)
         print(f"removed unreadable passages: {removed}")

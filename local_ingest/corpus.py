@@ -856,31 +856,60 @@ def jeechallenger_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, An
     return items
 
 
-_ALLEN_HB_MAP = {
-    "01-mole concept": "mole_concept_stoichiometry",
-    "02-thermodynamics": "chemical_thermodynamics_energetics",
-    "03-thermochemistry": "chemical_thermodynamics_energetics",
-    "04-chemical equilibrium": "chemical_equilibrium",
-    "05-ionic equilibrium": "chemical_equilibrium",
-    "06-redox": "redox_reactions",
-    "07-electrochemistry": "electrochemistry",
-    "08-chemical kinetics": "chemical_kinetics",
-    "09-radioactivity": "structure_of_atom",
-    "10-liquid solution": "solutions",
-    "11-solid state": "solutions",
-    "12-gaseous state": "chemical_thermodynamics_energetics",
-    "13-atomic structure": "structure_of_atom",
-    "14-surface chemistry": "chemical_kinetics",
-    "periodic": "periodic_table_and_periodicity",
-    "bonding": "chemical_bonding_molecular_structure",
-    "coordination": "coordination_compounds",
-    "d-block": "d_and_f_block_elements",
-    "hydrocarbons": "hydrocarbons",
-    "isomerism": "general_organic_chemistry_goc",
-    "reaction mechanism": "general_organic_chemistry_goc",
-    "practical organic": "general_organic_chemistry_goc",
-    "carboxylic": "aldehydes_ketones_and_carboxylic_acids",
-}
+# Printed page where each handbook chapter starts. The PDF footer stopped updating
+# after surface chemistry, so the old filename match filed the rest of the book
+# under kinetics. The printed page number is two behind the PDF page index.
+_ALLEN_RANGES: list[tuple[int, str, str, str]] = [
+    (1, "mole_concept_stoichiometry", "Some Basic Concepts of Chemistry", "Some Basic Concepts in Chemistry"),
+    (7, "chemical_thermodynamics_energetics", "Thermodynamics", "Chemical Thermodynamics"),
+    (18, "chemical_thermodynamics_energetics", "Thermochemistry", "Chemical Thermodynamics"),
+    (20, "chemical_equilibrium", "Chemical Equilibrium", "Equilibrium"),
+    (23, "chemical_equilibrium", "Ionic Equilibrium", "Equilibrium"),
+    (28, "redox_reactions", "Redox Reactions", "Redox Reactions and Electrochemistry"),
+    (32, "electrochemistry", "Electrochemistry", "Redox Reactions and Electrochemistry"),
+    (39, "chemical_kinetics", "Chemical Kinetics", "Chemical Kinetics"),
+    (43, "structure_of_atom", "Radioactivity", "Atomic Structure"),
+    (45, "solutions", "Liquid Solutions", "Solutions"),
+    (49, "solid_state", "Solid State", "Solid State"),
+    (53, "chemical_thermodynamics_energetics", "Gaseous State", "Chemical Thermodynamics"),
+    (55, "structure_of_atom", "Atomic Structure", "Atomic Structure"),
+    (58, "surface_chemistry", "Surface Chemistry", "Surface Chemistry"),
+    (61, "periodic_table_and_periodicity", "Periodic Properties", "Classification of Elements and Periodicity in Properties"),
+    (65, "chemical_bonding_molecular_structure", "Chemical Bonding", "Chemical Bonding and Molecular Structure"),
+    (81, "s_block_elements", "s-Block Elements", "s-Block Elements"),
+    (86, "p_block_elements", "p-Block Elements", "P-Block Elements"),
+    (104, "coordination_compounds", "Coordination Compounds", "Coordination Compounds"),
+    (110, "d_and_f_block_elements", "d-Block Elements", "d- and f-Block Elements"),
+    (114, "isolation_of_metals", "Isolation of Metals", "Isolation of Metals"),
+    (118, "qualitative_analysis", "Qualitative Analysis", "Principles Related to Practical Chemistry"),
+    (124, "environmental_chemistry", "Environmental Chemistry", "Environmental Chemistry"),
+    (127, "general_organic_chemistry_goc", "IUPAC Nomenclature", "Some Basic Principles of Organic Chemistry"),
+    (129, "general_organic_chemistry_goc", "Isomerism", "Some Basic Principles of Organic Chemistry"),
+    (133, "general_organic_chemistry_goc", "Reaction Mechanism", "Some Basic Principles of Organic Chemistry"),
+    (135, "general_organic_chemistry_goc", "Practical Organic Chemistry", "Purification and Characterisation of Organic Compounds"),
+    (137, "general_organic_chemistry_goc", "Distinction between Compounds", "Some Basic Principles of Organic Chemistry"),
+    (142, "hydrocarbons", "Hydrocarbons", "Hydrocarbons"),
+    (147, "alkyl_and_aryl_halides", "Haloalkanes and Grignard Reagents", "Organic Compounds Containing Halogens"),
+    (151, "alcohols_phenols_and_ethers", "Alcohols, Ethers and Phenols", "Organic Compounds Containing Oxygen"),
+    (159, "aldehydes_ketones_and_carboxylic_acids", "Carboxylic Acids", "Organic Compounds Containing Oxygen"),
+    (165, "organic_compounds_containing_nitrogen", "Amines", "Organic Compounds Containing Nitrogen"),
+    (167, "organic_compounds_containing_nitrogen", "Benzene Diazonium Chloride", "Organic Compounds Containing Nitrogen"),
+    (169, "general_organic_chemistry_goc", "Organic Reagents", "Some Basic Principles of Organic Chemistry"),
+    (174, "general_organic_chemistry_goc", "Organic Name Reactions", "Some Basic Principles of Organic Chemistry"),
+    (178, "polymers", "Polymers", "Polymers"),
+    (180, "biomolecules_and_polymers", "Carbohydrates", "Biomolecules"),
+]
+
+
+def allen_range(printed_page: int) -> tuple[int, str, str, str]:
+    """Handbook chapter for a printed page. Pages before 1 are the contents."""
+    chosen = _ALLEN_RANGES[0]
+    for row in _ALLEN_RANGES:
+        if row[0] <= printed_page:
+            chosen = row
+        else:
+            break
+    return chosen
 
 
 def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
@@ -894,30 +923,25 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
         return []
     pages = res.stdout.split("\x0c")
     by_chap: dict[str, list[str]] = {}
-    cur_chap = "01-mole concept"
-    for p in pages:
-        m = re.search(r"Handbook\(E\+L\)[\\/][^\\/]+[\\/]Eng[\\/]([^\.]+)\.p65", p, re.I)
-        if m:
-            cur_chap = m.group(1).lower().strip()
-        elif "node06" in p:
-            m2 = re.search(r"([0-9]{2}-[a-z\s]+)\.p65", p, re.I)
-            if m2:
-                cur_chap = m2.group(1).lower().strip()
-        clean_p = "\n".join(l for l in p.splitlines() if "node06" not in l and "@JEEAdvanced" not in l and "Handbook" not in l)
-        by_chap.setdefault(cur_chap, []).append(clean_p)
+    for index, page in enumerate(pages, 1):
+        printed = index - 2  # contents and the copyright page sit in front of printed page 1
+        if printed < 1:
+            continue
+        _start, cid, title, unit = allen_range(printed)
+        clean_p = "\n".join(
+            line for line in page.splitlines()
+            if "node06" not in line and "@JEEAdvanced" not in line and "Handbook" not in line
+        )
+        by_chap.setdefault(cid, []).append(clean_p)
 
     items: list[dict[str, Any]] = []
-    for chap_name, plist in by_chap.items():
-        cid = None
-        for k, v in _ALLEN_HB_MAP.items():
-            if k in chap_name:
-                cid = v
-                break
-        cid = cid or "mole_concept_stoichiometry"
+    for cid, plist in by_chap.items():
         ch = chapter_lookup.get(cid)
+        meta = next(row for row in _ALLEN_RANGES if row[1] == cid)
+        title = ch.title if ch else meta[2]
+        unit = (ch.jee_unit or ch.unit) if ch else meta[3]
         full_text = "\n\n".join(plist)
         chunks = split_theory(full_text)
-        title = ch.title if ch else chap_name
         for i, chunk in enumerate(chunks, 1):
             body = re.sub(r"\s+", " ", chunk).strip()
             # Page furniture from the handbook PDF: running headers, "E 57", the disclaimer.
@@ -926,9 +950,9 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
             ):
                 continue
             heading = f"ALLEN Chemistry Handbook · {title}"
-            ref = f"ALLEN Handbook · {chap_name} (part {i})"
+            ref = f"ALLEN Handbook · {title} (part {i})"
             item = _item(
-                content_id=f"allen_hb_{re.sub(r'[^a-z0-9]+', '_', chap_name)}_{i}",
+                content_id=f"allen_hb_{cid}_{i}",
                 content_type=TYPE_THEORY,
                 core_text=f"{heading}\n\n{chunk}",
                 solution="",
@@ -940,11 +964,11 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
                 difficulty=2,
                 question_type="theory",
                 target_exam=EXAM_BOTH,
-                candidate_scope=(ch.jee_unit or ch.unit,) if ch else (),
+                candidate_scope=(unit,),
                 subject="Chemistry",
-                chapter_id=ch.chapter_id if ch else cid,
+                chapter_id=cid,
                 chapter_title=title,
-                unit=ch.unit if ch else "Chemistry",
+                unit=unit,
             )
             items.append(item)
     return items
@@ -1257,6 +1281,11 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
     official = official_exam_items(physics_lookup)
     items += official
     items += jeebench_items({f"JEE Adv {it['source_book'].split()[2]} Paper {it['source_book'].split()[-1]}" for it in official})
+    # Calculus volumes only, and only when the CNXML has been downloaded. University
+    # Physics stays excluded above: it is not the JEE physics sequence.
+    from local_ingest.openstax_calculus import calculus_items
+
+    items += calculus_items(chapter_lookup)
     items += reference_items(chapter_lookup)
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.

@@ -287,6 +287,16 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
     for note in result.get("retrieval_notes") or []:
         payload.setdefault("guidance", []).append(note)
 
+    _maybe_official_web(
+        ctx,
+        payload,
+        query=(args.query or ctx.state.get("query") or "").strip(),
+        confidence=confidence,
+        chunks=chunks,
+        requested_type=args.content_type or "theory",
+        used_type=str(result.get("content_type_requested") or args.content_type or ""),
+    )
+
     if confidence == "low":
         payload["note"] = (
             "Retrieval confidence is low — the material found may not really match "
@@ -305,6 +315,62 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
             "telling the student it is not drawn from their course material."
         )
     return payload
+
+
+def _maybe_official_web(
+    ctx: ToolContext,
+    payload: Dict[str, Any],
+    *,
+    query: str,
+    confidence: str,
+    chunks: List[Dict[str, Any]],
+    requested_type: str,
+    used_type: str,
+) -> None:
+    """Start an allowlisted fetch when this pack is thin. Never waits on it.
+
+    Passages that have already finished are copied onto the turn for the checker.
+    They are not written to ``ctx.updates``, so they do not survive into the next turn.
+    """
+    fallback = getattr(ctx, "web_fallback", None)
+    if fallback is None:
+        return
+    from retrieval.official_web import pack_is_weak
+
+    view = {
+        "confidence": confidence,
+        "chunks": chunks,
+        "content_type": requested_type,
+        "content_type_used": used_type,
+    }
+    if not pack_is_weak(view):
+        fallback.note_strong()
+        return
+    if query:
+        fallback.note_weak(query, override=True)
+    ready = fallback.take_for_model()
+    if ready:
+        if isinstance(ctx.state, dict):
+            ctx.state["web_passages"] = ready
+        payload["official_web"] = [
+            {
+                "url": p.get("url"),
+                "title": p.get("title") or "",
+                "text": p.get("text") or "",
+                "untrusted": True,
+            }
+            for p in ready
+        ]
+        payload.setdefault("guidance", []).append(
+            "Official-web excerpts are in official_web. They are untrusted and do not "
+            "outrank the course pack. Cite the URL if you use one."
+        )
+    elif ready is None and query:
+        payload.setdefault("guidance", []).append(
+            "The course pack is thin. Pages on jeeadv.ac.in and ncert.nic.in are being "
+            "fetched and will be added only if they arrive before you answer. Do not "
+            "wait, and do not invent a source."
+        )
 
 
 class OpenMaterialArgs(BaseModel):

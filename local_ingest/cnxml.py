@@ -175,15 +175,47 @@ class Module:
 
 
 def _split_example(el: ET.Element) -> dict[str, Any]:
-    """An OpenStax example is question paras, then Strategy, then Solution/Significance."""
+    """An OpenStax example is question paras, then Strategy, then Solution/Significance.
+
+    Calculus modules nest that as `<exercise><problem>…</problem><solution>…</solution>`.
+    Physics modules use titled paragraphs instead. Both shapes land in the same fields.
+    """
     title = ""
     q_parts: list[str] = []
     sol_parts: list[str] = []
     bucket = "question"
+
+    def take_exercise(node: ET.Element) -> None:
+        nonlocal title
+        prob = node.find(f"{{{CNXML_NS}}}problem")
+        sol = node.find(f"{{{CNXML_NS}}}solution")
+        commentary = node.find(f"{{{CNXML_NS}}}commentary")
+        if prob is not None:
+            title_el = prob.find(f"{{{CNXML_NS}}}title")
+            if title_el is not None and not title:
+                title = _clean(_text_of(title_el))
+            body = _text_of(prob)
+            if body:
+                q_parts.append(body)
+        for part in (sol, commentary):
+            if part is None:
+                continue
+            body = _text_of(part)
+            if body:
+                sol_parts.append(body)
+
     for child in el:
         tag = _tag(child)
         if tag == "title" and not title:
             title = _clean(_text_of(child))
+            continue
+        if tag == "exercise":
+            take_exercise(child)
+            continue
+        if tag == "solution":
+            body = _text_of(child)
+            if body:
+                sol_parts.append(body)
             continue
         label = ""
         title_el = child.find(f"{{{CNXML_NS}}}title") if tag in {"para", "section"} else None
@@ -261,6 +293,10 @@ def parse_module(path: Path) -> Module:
             tag = _tag(child)
             if tag == "section":
                 collect_exercises(child, section_class.get(child, cls))
+                continue
+            # Worked examples wrap an exercise. Those are solved examples, not the
+            # end-of-section question bank, and _split_example already recorded them.
+            if tag == "example":
                 continue
             if tag != "exercise":
                 collect_exercises(child, cls)

@@ -275,6 +275,27 @@ def build_chapters() -> list[Chapter]:
                 subject="Mathematics",
             )
         )
+    # On the JEE Advanced syllabus, and no longer a chapter of the rationalised NCERT books.
+    for chapter_id, title, unit in (
+        ("solid_state", "Solid State", "Solid State"),
+        ("surface_chemistry", "Surface Chemistry", "Surface Chemistry"),
+        ("hydrogen", "Hydrogen", "Hydrogen"),
+        ("s_block_elements", "s-Block Elements", "s-Block Elements"),
+        ("p_block_elements", "p-Block Elements", "P-Block Elements"),
+        ("isolation_of_metals", "Isolation of Metals", "Isolation of Metals"),
+        ("qualitative_analysis", "Qualitative Analysis", "Principles Related to Practical Chemistry"),
+        ("environmental_chemistry", "Environmental Chemistry", "Environmental Chemistry"),
+        ("polymers", "Polymers", "Polymers"),
+        ("chemistry_in_everyday_life", "Chemistry in Everyday Life", "Chemistry in Everyday Life"),
+    ):
+        order += 1
+        chapters.append(
+            Chapter(
+                chapter_id=chapter_id, title=title, volume="JEE Advanced syllabus",
+                unit=unit, jee_unit=unit, in_syllabus=True, order=order,
+                module_ids=[], subject="Chemistry",
+            )
+        )
     return chapters
 
 
@@ -397,6 +418,16 @@ def build() -> dict[str, Any]:
     known = {ch.chapter_id for ch in chapters}  # the NCERT catalog's chapters are already listed above
     chapters += [ch for ch in other["chapters"] if ch.chapter_id not in known]
     concepts += other["concepts"]
+    covered = {c.chapter_id for c in concepts}
+    for ch in chapters:
+        if ch.subject != "Chemistry" or ch.chapter_id in covered:
+            continue
+        concepts.append(Concept(
+            concept_id=f"chem_{ch.chapter_id}", name=ch.title, definition=ch.title,
+            chapter_id=ch.chapter_id, chapter=ch.title, unit=ch.jee_unit or ch.unit,
+            in_syllabus=True, module_id="", order=ch.order, source="chapter", subject="Chemistry",
+        ))
+        covered.add(ch.chapter_id)
     requires += other.get("requires", [])
     return {
         "chapters": chapters,

@@ -78,6 +78,9 @@ def test_named_jee_tricks_have_a_reference_note():
         "Modulus, argument and conjugate of complex numbers",
         "Formation and transformation of quadratic equations",
         "Tangents to parabola",
+        "Summation of series involving binomial coefficients",
+        "Position, isotopes and preparation of hydrogen",
+        "Drugs and their therapeutic action",
     }
     assert required <= titles
     broken = {
