@@ -87,12 +87,16 @@ def _group(rows: List[Dict[str, Any]], idx: Dict[str, Any]) -> List[Dict[str, An
 
 
 def build_overview(user_id: str, *, tz_name: Optional[str] = None) -> Dict[str, Any]:
+    from services.progress_report import _load_pool
+
+    # The sessions read does not depend on the report: fetch it alongside.
+    sessions_f = _load_pool.submit(db.list_user_study_sessions, user_id, 60)
     idx = _index()
     report = build_report(user_id, tz_name=tz_name, days=14)
     now = datetime.now(timezone.utc)
 
     try:
-        sessions = db.list_user_study_sessions(user_id, limit=60)
+        sessions = sessions_f.result()
     except Exception:
         sessions = []
     # Newest session per concept, and only sessions the student actually used.

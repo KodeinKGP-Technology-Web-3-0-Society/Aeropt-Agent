@@ -99,9 +99,10 @@ def _get_pool():
 
                 # Keep the socket alive. A dropped connection to the hosted database
                 # is what turns a 1–2 s query into a multi-ten-second reconnect.
-                _pool = ThreadedConnectionPool(
+                size = int(os.getenv("RETRIEVAL_DB_POOL", "8"))
+                pool = ThreadedConnectionPool(
                     1,
-                    int(os.getenv("RETRIEVAL_DB_POOL", "8")),
+                    size,
                     url,
                     connect_timeout=8,
                     keepalives=1,
@@ -109,7 +110,31 @@ def _get_pool():
                     keepalives_interval=10,
                     keepalives_count=3,
                 )
+                # psycopg2 closes every connection handed back above `minconn`. With
+                # minconn=1, any two overlapping requests meant the second paid a fresh
+                # TLS connect (1–2 s to the hosted pooler) and then threw it away.
+                # Raising minconn after construction keeps up to `size` idle
+                # connections without opening them all at startup.
+                pool.minconn = size
+                _pool = pool
     return _pool
+
+
+def prewarm(count: int = 4) -> int:
+    """Open `count` pooled connections now, so the first requests to overlap do not
+    each pay a fresh connect. psycopg2 connects while holding the pool lock, which
+    also stalls every other thread waiting for a connection. Returns how many opened."""
+    pool = _get_pool()
+    held = []
+    try:
+        for _ in range(max(0, min(count, pool.maxconn))):
+            held.append(pool.getconn())
+    except Exception:  # noqa: BLE001
+        logger.warning("retrieval pool prewarm stopped after %d connections", len(held))
+    finally:
+        for conn in held:
+            pool.putconn(conn)
+    return len(held)
 
 
 @contextmanager

@@ -116,6 +116,8 @@ async def _lifespan(_app: FastAPI):
     try:
         contract = retrieval_store.verify_embedding_contract()
         result = retrieval_service.warm()
+        # Off the startup path: a few connects to the hosted pooler take seconds.
+        threading.Thread(target=retrieval_store.prewarm, name="retrieval-prewarm", daemon=True).start()
         log.warning("retrieval database: %s %s", contract, retrieval_service.status() if result.get("warmed") else result)
     except embedder.EmbeddingMismatch:
         raise  # vectors from another model rank noise; never serve on them

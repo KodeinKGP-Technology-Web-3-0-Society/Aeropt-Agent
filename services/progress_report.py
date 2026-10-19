@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -239,13 +239,39 @@ def _read_memories(user_id: str) -> List[Dict[str, Any]]:
         return []
 
 
+_load_inflight: Dict[str, "Future[Dict[str, Any]]"] = {}
+
+
 def _load(user_id: str) -> Dict[str, Any]:
+    # Single flight: the home page fires progress, overview and plan together and
+    # all three need this load. The first caller reads; the others wait for it
+    # instead of repeating the same five round trips.
     now = time.monotonic()
     with _load_lock:
         hit = _load_cache.get(user_id)
         if hit and now - hit[0] < _LOAD_TTL_S:
             return hit[1]
+        pending = _load_inflight.get(user_id)
+        if pending is None:
+            pending = _load_inflight[user_id] = Future()
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        return pending.result()
+    try:
+        data = _read_all(user_id)
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _load_lock:
+            _load_inflight.pop(user_id, None)
+    pending.set_result(data)
+    return data
 
+
+def _read_all(user_id: str) -> Dict[str, Any]:
     # Five independent reads: run them together so the page waits for the
     # slowest one, not the sum of all five.
     events = _load_pool.submit(_read_events, user_id)
