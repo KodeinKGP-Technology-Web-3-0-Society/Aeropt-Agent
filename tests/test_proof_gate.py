@@ -25,6 +25,10 @@ class ProofGateTests(unittest.TestCase):
         notes = [s.name for s in trace.steps if s.kind == "note"]
         self.assertNotIn("proof=passed", notes)
 
+    def test_code_explanation_does_not_trigger_proof(self):
+        code_text = "Here is the function:\n```python\nroot = ET.parse(path)\nmid = path.stem\n```\nIt sets `x = 1`."
+        self.assertFalse(needs_proof(code_text))
+
     def test_existing_physics_tool_is_enough(self):
         trace = _trace("calculate")
         text = "The force is 12 N."

@@ -193,7 +193,8 @@ class SupabaseClient:
                 .order("turn_index")
                 .execute()
             )
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("jee_tutor.db").warning("first_user_turn_previews failed: %s", exc)
             return {}
         previews: Dict[str, str] = {}
         for row in res.data or []:
@@ -413,6 +414,18 @@ class SupabaseClient:
             self._agent_used_is_narrow = True
             row["agent_used"] = self.normalize_agent_used(agent_used)
             res = self.client.table("chat_turns").insert(row).execute()
+
+        if role == "user" and content and content.strip():
+            try:
+                sess = self.read_session(session_id)
+                if sess and not sess.get("title"):
+                    title_preview = content.strip()
+                    if len(title_preview) > 80:
+                        title_preview = title_preview[:79] + "…"
+                    self.update_session_title(session_id, title_preview)
+            except Exception:
+                pass
+
         return res.data[0]
 
     def update_chat_turn_presentation(

@@ -35,7 +35,9 @@ def needs_proof(text: str) -> bool:
     """True when the draft asserts a magnitude, a unit, or an equation."""
     if not (text or "").strip():
         return False
-    return bool(_UNIT.search(text) or _EQUATION.search(text) or _LATEX_NUMBER.search(text))
+    cleaned = re.sub(r"```[\s\S]*?```", "", text)
+    cleaned = re.sub(r"`[^`\n]+`", "", cleaned)
+    return bool(_UNIT.search(cleaned) or _EQUATION.search(cleaned) or _LATEX_NUMBER.search(cleaned))
 
 
 def already_checked(trace: Optional[AgentTrace]) -> bool:
