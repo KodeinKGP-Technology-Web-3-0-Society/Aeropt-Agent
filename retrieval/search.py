@@ -55,6 +55,18 @@ EXAM_ALLOWED: dict[str, tuple[str, ...]] = {
     "JEE_MAINS": ("Jee main", "Jee main and Advanced"),
 }
 
+# Same exclusions as local_ingest.pg_syllabus_topics.PASSAGE_SKIP. Kept here so a theory
+# request does not wait for the next ingest to stop seeing them.
+_PASSAGE_SKIP = """
+not (c.content_type = 'Theory' and length(c.core_text) < 400 and c.core_text ~* 'exercise')
+and not (c.content_type = 'PYQ' and length(c.core_text) < 120)
+and not (
+  c.source_book ilike 'ALLEN%%'
+  and (length(c.core_text) < 180
+       or c.core_text ~* 'due care and diligence|shall not hold any responsibility')
+)
+"""
+
 MAX_CANDIDATES = 600
 RRF_K = 10
 MMR_LAMBDA = 0.78
@@ -194,7 +206,7 @@ def _fetch_candidates(
         "ids": list(concept_ids), "types": list(types), "limit": limit,
         "qv": embedder.to_pg(qvec) if qvec is not None else None, "terms": _terms(query),
     }
-    where = ["cc.concept_id = any(%(ids)s)", "c.content_type = any(%(types)s)"]
+    where = ["cc.concept_id = any(%(ids)s)", "c.content_type = any(%(types)s)", _PASSAGE_SKIP]
     if require_solution:
         where.append("c.has_solution")
     if in_syllabus_only:

@@ -256,10 +256,13 @@ def _topic_coverage(
             return "mastered"
         return "started"
 
-    units: Dict[str, Dict[str, Any]] = {}
-    unit_last: Dict[str, str] = {}
+    units: Dict[tuple, Dict[str, Any]] = {}
+    unit_last: Dict[tuple, str] = {}
     for t in topics:
-        u = units.setdefault(t["unit"], {"unit": t["unit"], "total": 0, "mastered": 0, "started": 0, "topics": []})
+        subject = str(t.get("subject") or "Physics")
+        u = units.setdefault((subject, t["unit"]), {
+            "unit": t["unit"], "subject": subject, "total": 0, "mastered": 0, "started": 0, "topics": [],
+        })
         st = status(t["concept_id"])
         u["topics"].append({
             "topic": t["topic"],
@@ -275,16 +278,16 @@ def _topic_coverage(
             for cid in members.get(t["concept_id"], set()) | {t["concept_id"]}:
                 when = _iso((progress.get(cid) or {}).get("last_practised")
                             or (latest_session.get(cid) or {}).get("started_at")) or ""
-                unit_last[t["unit"]] = max(unit_last.get(t["unit"], ""), when)
+                unit_last[(subject, t["unit"])] = max(unit_last.get((subject, t["unit"]), ""), when)
     syllabus = list(units.values())
 
     coverage = []
-    for unit in sorted(unit_last, key=lambda u: unit_last[u], reverse=True)[:3]:
-        u = units[unit]
+    for key in sorted(unit_last, key=lambda k: unit_last[k], reverse=True)[:3]:
+        u = units[key]
         remaining = [t for t in u["topics"] if t["status"] == "new"]
         coverage.append({
-            "chapter_id": unit,
-            "chapter": unit,
+            "chapter_id": u["unit"],
+            "chapter": u["unit"],
             "total": u["total"],
             "mastered": u["mastered"],
             "started": u["started"],
@@ -332,11 +335,13 @@ def _chapter_coverage(idx, done_ids, started_ids, progress, latest_session) -> t
         when = _iso((progress.get(cid) or {}).get("last_practised") or (latest_session.get(cid) or {}).get("started_at")) or ""
         if ch and when > chapter_last.get(ch, ""):
             chapter_last[ch] = when
-    units: Dict[str, Dict[str, Any]] = {}
+    units: Dict[tuple, Dict[str, Any]] = {}
     for ch in idx["chapters"]:
         rows = idx["by_chapter"].get(ch["chapter_id"], [])
-        unit = units.setdefault(ch.get("jee_unit") or ch.get("unit"), {
-            "unit": ch.get("jee_unit") or ch.get("unit"), "total": 0, "mastered": 0, "started": 0, "topics": []})
+        subject = str(ch.get("subject") or "Physics")
+        unit_name = ch.get("jee_unit") or ch.get("unit")
+        unit = units.setdefault((subject, unit_name), {
+            "unit": unit_name, "subject": subject, "total": 0, "mastered": 0, "started": 0, "topics": []})
         for c in rows:
             st = "mastered" if c["concept_id"] in done_ids else "started" if c["concept_id"] in started_ids else "new"
             unit["topics"].append({"topic": c.get("name"), "concept_id": c["concept_id"], "status": st, "tutor_taught": False})

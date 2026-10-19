@@ -919,6 +919,12 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
         chunks = split_theory(full_text)
         title = ch.title if ch else chap_name
         for i, chunk in enumerate(chunks, 1):
+            body = re.sub(r"\s+", " ", chunk).strip()
+            # Page furniture from the handbook PDF: running headers, "E 57", the disclaimer.
+            if len(body) < 180 or re.search(
+                r"due care and diligence|shall not hold any responsibility", body, re.I
+            ):
+                continue
             heading = f"ALLEN Chemistry Handbook · {title}"
             ref = f"ALLEN Handbook · {chap_name} (part {i})"
             item = _item(

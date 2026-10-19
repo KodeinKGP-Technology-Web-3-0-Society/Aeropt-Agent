@@ -3,9 +3,12 @@
 The passage search is Postgres full text (`public.content.fts`) and everything is written
 through the push's open cursor (one transaction with the rest of the corpus):
 
-  1. a concept with the same name/alias in the topic's unit *is* the topic — link it;
-  2. otherwise create a concept (source='syllabus'), attach it (role='syllabus') to the
-     passages whose text matches the topic's phrases, and embed it.
+  1. a concept with the same name/alias in the topic's unit *is* the topic;
+  2. otherwise create a concept (source='syllabus') and embed it.
+
+Either way, attach (role='syllabus') the passages whose text matches the topic's
+phrases. A section title that only names the methods is not the methods: "Methods
+of integration" must also pick up substitution, parts and partial fractions.
 
 Idempotent: what a previous run added is removed first. Existing concepts, their
 primary/secondary links and their vectors are never modified.
@@ -22,18 +25,89 @@ from local_ingest.syllabus import slug
 
 PASSAGES_PER_TOPIC = 25   # links to the best-matching passages; enough to teach and practise from
 MIN_MATERIAL = 3          # fewer linked passages than this = no real course material
+# Words that sit between the terms a heading actually uses ("modulus and the conjugate
+# of a complex number") without being the phrase as written.
+_STOP = frozenset("a an the of to in for on by and or its from with as at into".split())
+
+# Exercise instruction lines, orphan later-parts of a paper, and handbook page furniture
+# match the topic words and then outrank the passage that teaches it.
+PASSAGE_SKIP = """
+  and not (content_type = 'Theory' and length(core_text) < 400 and core_text ~* 'exercise')
+  and not (content_type = 'PYQ' and length(core_text) < 120)
+  and not (
+    source_book ilike 'ALLEN%%'
+    and (length(core_text) < 180
+         or core_text ~* 'due care and diligence|shall not hold any responsibility')
+  )
+"""
 
 
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower().replace("’", "'")).strip()
 
 
-def _tsquery(cur, phrases: list[str]):
-    """OR of phrase queries, built by Postgres so no operator can leak in from text."""
+def proximity_query(phrase: str) -> str | None:
+    """Content words of one phrase, ANDed, for `to_tsquery`.
+
+    `phraseto_tsquery` demands the words in order. A heading such as "The Modulus and
+    the Conjugate of a Complex Number" never matches "modulus of complex number" that
+    way, because stop-words still occupy positions. Requiring the content words
+    anywhere in the passage is enough: the search is already limited to the subject.
+    The returned string is only letters, digits and ` & `.
+    """
+    words = []
+    for raw in re.findall(r"[A-Za-z0-9']+", phrase or ""):
+        word = re.sub(r"[^A-Za-z0-9]", "", raw)
+        if len(word) > 2 and word.lower() not in _STOP:
+            words.append(word)
+    if len(words) < 2:
+        return None
+    return " & ".join(words)
+
+
+def _tsquery(phrases: list[str]):
+    """OR of a strict phrase and a looser proximity query, parameters only — no interpolated text."""
     words = [p for p in dict.fromkeys(phrases) if re.search(r"[A-Za-z0-9]", p or "")]
-    if not words:
+    parts: list[str] = []
+    params: list[str] = []
+    for phrase in words:
+        parts.append("phraseto_tsquery('english', %s)")
+        params.append(phrase)
+        loose = proximity_query(phrase)
+        if loose:
+            parts.append("to_tsquery('english', %s)")
+            params.append(loose)
+    if not parts:
         return None, []
-    return " || ".join(["phraseto_tsquery('english', %s)"] * len(words)), words
+    return " || ".join(parts), params
+
+
+def _search_passages(cur, phrases: list[str], subject: str, chapter_ids: list[str]):
+    """Best passages for these phrases, theory before questions. Home hits stay inside the unit."""
+    expr, params = _tsquery(phrases)
+    if not expr or not chapter_ids:
+        return [], []
+    ranked = (
+        " order by case content_type when 'Theory' then 0 when 'Solved Example' then 1 else 2 end,"
+        " ts_rank_cd(fts, q) desc limit %s"
+    )
+    home_sql = (
+        f"select content_id, chapter_id from public.content, (select {expr} as q) s"
+        " where fts @@ q and subject = %s and chapter_id = any(%s) and coalesce(in_syllabus, true)"
+        f"{PASSAGE_SKIP}{ranked}"
+    )
+    cur.execute(home_sql, (*params, subject, chapter_ids, PASSAGES_PER_TOPIC))
+    home = cur.fetchall()
+    hits = home
+    if len(hits) < MIN_MATERIAL:
+        wide_sql = (
+            f"select content_id, chapter_id from public.content, (select {expr} as q) s"
+            " where fts @@ q and subject = %s and coalesce(in_syllabus, true)"
+            f"{PASSAGE_SKIP}{ranked}"
+        )
+        cur.execute(wide_sql, (*params, subject, PASSAGES_PER_TOPIC))
+        hits = cur.fetchall() or hits
+    return hits, home
 
 
 def apply(cur, concepts, chapters, items, embed, *, subject: str = "Physics",
@@ -108,32 +182,22 @@ def apply(cur, concepts, chapters, items, embed, *, subject: str = "Physics",
                     break
             if not existing:
                 existing = next((c for c in by_name.get(_norm(name), []) if c.in_syllabus and getattr(c, "subject", subject) == subject), None)
+            hits, home = _search_passages(cur, [name, *phrases], subject, unit_chapter_ids)
             if existing:
+                # The section concept already owns its own heading. Phrase hits add the
+                # subsections that name the technique ("integration by substitution").
+                owned = {
+                    it["content_id"]
+                    for it in items
+                    if it["concept_id"] == existing.concept_id or existing.concept_id in it["secondary_concepts"]
+                }
+                extra = [h for h in hits if h[0] not in owned]
+                links.extend((h[0], existing.concept_id) for h in extra)
                 topic_rows.append((subject, unit, unit_ord, name, topic_ord, existing.concept_id,
-                                   existing.chapter_id, False, material_of[existing.concept_id]))
+                                   existing.chapter_id, False, material_of[existing.concept_id] + len(extra)))
                 stats["linked"] += 1
+                stats["no_material"] += material_of[existing.concept_id] + len(extra) < MIN_MATERIAL
                 continue
-
-            hits: list[tuple[str, str]] = []
-            home: list[tuple[str, str]] = []
-            expr, words = _tsquery(cur, [name, *phrases])
-            if expr:
-                cur.execute(
-                    f"select content_id, chapter_id from public.content, (select {expr} as q) s"
-                    " where fts @@ q and subject = %s and chapter_id = any(%s) and coalesce(in_syllabus, true)"
-                    " order by ts_rank_cd(fts, q) desc limit %s",
-                    (*words, subject, unit_chapter_ids, PASSAGES_PER_TOPIC),
-                )
-                hits = home = cur.fetchall()
-                if len(hits) < MIN_MATERIAL:
-                    # The material can live in a chapter mapped to another unit.
-                    cur.execute(
-                        f"select content_id, chapter_id from public.content, (select {expr} as q) s"
-                        " where fts @@ q and subject = %s and coalesce(in_syllabus, true)"
-                        " order by ts_rank_cd(fts, q) desc limit %s",
-                        (*words, subject, PASSAGES_PER_TOPIC),
-                    )
-                    hits = cur.fetchall() or hits
 
             chapter_id = Counter(h[1] for h in home).most_common(1)[0][0] if home else unit_chapter_ids[0]
             prefix = f"{subject.lower()[:4]}_" if subject != "Physics" else ""

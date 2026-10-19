@@ -281,6 +281,133 @@ def verify(cur) -> None:
         print(f"  probe {q[:40]!r} ->", cur.fetchall())
 
 
+def purge_unreadable(cur) -> int:
+    """Drop passages that match topic words and teach nothing: exercise banners and handbook furniture."""
+    where = """
+        (content_type = 'Theory' and length(core_text) < 400 and core_text ~* 'exercise')
+        or (source_book ilike 'ALLEN%%' and (
+              length(core_text) < 180
+              or core_text ~* 'due care and diligence|shall not hold any responsibility'))
+    """
+    cur.execute(f"delete from public.chunk_concepts where content_id in (select content_id from public.content where {where})")
+    cur.execute(f"delete from public.content where {where}")
+    return cur.rowcount
+
+
+def relink_topics(url: str, *, allow_hosted: bool, subject: str, dry_run: bool) -> int:
+    """Upsert authored notes and rebuild syllabus-topic links for one subject, or all three.
+
+    Does not re-embed the corpus. Textbook rows stay; only note rows and role='syllabus' links move.
+    """
+    from local_ingest.corpus import reference_items
+    from local_ingest.reference_notes import REFERENCE_BOOK
+    from local_ingest.syllabus import Chapter, Concept
+    from retrieval import embedder
+
+    conn = connect(url, allow_hosted)
+    try:
+        cur = conn.cursor()
+        cur.execute("set statement_timeout = '60s'")
+        ensure_schema(cur)
+        removed = purge_unreadable(cur)
+        print(f"removed unreadable passages: {removed}")
+
+        cur.execute(
+            "select chapter_id, title, coalesce(volume,''), coalesce(unit,''), coalesce(jee_unit,''),"
+            " coalesce(in_syllabus, true), coalesce(ord, 0), coalesce(subject, 'Physics')"
+            " from public.chapters"
+        )
+        chapters = [
+            Chapter(chapter_id=r[0], title=r[1], volume=r[2], unit=r[3], jee_unit=r[4],
+                    in_syllabus=bool(r[5]), order=int(r[6]), subject=r[7])
+            for r in cur.fetchall()
+        ]
+        lookup = {c.chapter_id: c for c in chapters}
+        notes = reference_items(lookup)
+        cur.execute("select content_id from public.content where source_book = %s", (REFERENCE_BOOK,))
+        have = {row[0] for row in cur.fetchall()}
+        fresh = [note for note in notes if note["content_id"] not in have]
+        embedder.snapshot_static_model()
+        if fresh:
+            vecs = embedder.encode([f"{n['heading']}\n{n['core_text'][:1200]}" for n in fresh])
+            written, _unchanged = upsert_content(cur, fresh, vecs, embedder.model_name())
+            print(f"reference notes inserted: {written}")
+        else:
+            print("reference notes inserted: 0")
+
+        subjects = [subject.capitalize()] if subject else ["Physics", "Chemistry", "Mathematics"]
+        from local_ingest import pg_syllabus_topics
+        from psycopg2.extras import execute_values
+
+        for subj in subjects:
+            cur.execute(
+                "select concept_id, concept_name, coalesce(definition,''), chapter_id, coalesce(chapter,''),"
+                " coalesce(unit,''), coalesce(in_syllabus, true), coalesce(ord, 0), aliases, coalesce(source,''),"
+                " subject from public.concepts where subject = %s and coalesce(source,'') <> 'syllabus'",
+                (subj,),
+            )
+            concepts = []
+            for row in cur.fetchall():
+                aliases = row[8] if isinstance(row[8], list) else json.loads(row[8] or "[]")
+                concepts.append(Concept(
+                    concept_id=row[0], name=row[1], definition=row[2], chapter_id=row[3], chapter=row[4],
+                    unit=row[5], in_syllabus=bool(row[6]), module_id="", order=int(row[7]),
+                    aliases=aliases, source=row[9] or "glossary", subject=row[10],
+                ))
+            cur.execute(
+                "select content_id, coalesce(primary_concept_id, '') from public.content where subject = %s",
+                (subj,),
+            )
+            content_rows = cur.fetchall()
+            ids = [r[0] for r in content_rows]
+            secondary: dict[str, list[str]] = {}
+            if ids:
+                cur.execute(
+                    "select content_id, concept_id from public.chunk_concepts"
+                    " where role = 'secondary' and content_id = any(%s)",
+                    (ids,),
+                )
+                for content_id, concept_id in cur.fetchall():
+                    secondary.setdefault(content_id, []).append(concept_id)
+            items = [
+                {"content_id": content_id, "concept_id": concept_id, "secondary_concepts": secondary.get(content_id, [])}
+                for content_id, concept_id in content_rows
+            ]
+            subj_chapters = [c for c in chapters if c.subject == subj]
+            res = pg_syllabus_topics.apply(
+                cur, concepts, subj_chapters, items, embedder.encode, subject=subj,
+            )
+            if res["chapters"]:
+                upsert_chapters(cur, [(c["chapter_id"], c["subject"], c["title"], c["volume"], c["unit"],
+                                       c["jee_unit"], c["in_syllabus"], c["ord"]) for c in res["chapters"]])
+            if res["concepts"]:
+                upsert_concepts(cur, [concept_tuple(c, c["embedding"], embedder.model_name()) for c in res["concepts"]])
+            if res["links"]:
+                execute_values(
+                    cur, "insert into public.chunk_concepts (content_id, concept_id, role) values %s"
+                    " on conflict (content_id, concept_id) do nothing",
+                    [(a, b, "syllabus") for a, b in res["links"]], page_size=1000,
+                )
+            execute_values(
+                cur, "insert into public.syllabus_topics (subject, unit, unit_ord, topic, topic_ord,"
+                " concept_id, chapter_id, created, material) values %s", res["topic_rows"],
+            )
+            thin = [f"{row[3]} ({row[8]})" for row in res["topic_rows"] if row[8] < 3]
+            print(f"  still under 3 passages: {thin or 'none'}")
+
+        if dry_run:
+            conn.rollback()
+            print("dry run: rolled back, nothing written")
+        else:
+            conn.commit()
+        return 0
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -288,6 +415,8 @@ def main() -> int:
     ap.add_argument("--allow-hosted", action="store_true")
     ap.add_argument("--subject")
     ap.add_argument("--skip-topics", action="store_true")
+    ap.add_argument("--relink", action="store_true",
+                    help="re-attach syllabus topics and add reference notes, without rebuilding the corpus")
     ap.add_argument("--fetch", action="store_true")
     args = ap.parse_args()
 
@@ -298,6 +427,9 @@ def main() -> int:
     from local_ingest import corpus as corpus_builder
     from local_ingest import syllabus as syllabus_builder
     from retrieval import embedder
+
+    if args.relink:
+        return relink_topics(url, allow_hosted=args.allow_hosted, subject=args.subject or "", dry_run=args.dry_run)
 
     if args.fetch:
         from local_ingest.fetch_openstax import fetch_all

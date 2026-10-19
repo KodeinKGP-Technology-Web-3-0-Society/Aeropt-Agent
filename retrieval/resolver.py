@@ -91,6 +91,10 @@ def _lexicon() -> dict[str, Any]:
             chapters.setdefault(_norm(c["chapter"]), []).append(c["concept_id"])
             if c["unit"]:
                 units.setdefault(_norm(c["unit"]), []).append(c["concept_id"])
+        linked = {
+            row["concept_id"]
+            for row in store.query("select distinct concept_id from public.chunk_concepts")
+        }
         _cache.update(
             {
                 "concepts": concepts,
@@ -98,6 +102,7 @@ def _lexicon() -> dict[str, Any]:
                 "alias_to_id": alias_to_id,
                 "chapters": chapters,
                 "units": units,
+                "linked": linked,
                 "rows": {c["concept_id"]: int(c["vec_row"]) for c in concepts},
                 "vectors": store.concept_vectors(),  # same generation as `rows`
                 "generation": generation,
@@ -164,6 +169,17 @@ def _chapter_hit(query: str, lex: dict[str, Any]) -> tuple[str, list[str]]:
             if len(name) >= 5 and f" {name} " in qn and len(name) > best_len:
                 best_name, best_ids, best_len = name, ids, len(name)
     return best_name, best_ids
+
+
+def _prefer_grounded(candidates: list[dict[str, Any]], linked: set[str]) -> dict[str, Any]:
+    """Nearest concept that has passages, when it is nearly as close as an empty one."""
+    best = candidates[0]
+    if best["concept_id"] in linked or not linked:
+        return best
+    alt = next((c for c in candidates if c["concept_id"] in linked), None)
+    if alt is not None and best["score"] - alt["score"] <= 0.08:
+        return alt
+    return best
 
 
 def resolve(
@@ -258,7 +274,9 @@ def resolve(
 
     # 4. Nothing matched the corpus. Fall back to the nearest concept by name only,
     #    and mark it weak — the tutor must not present this as course material.
-    best = candidates[0]
+    #    An unlinked glossary term ("baryon") must not win when a concept that
+    #    actually has passages is almost as close.
+    best = _prefer_grounded(candidates, lex.get("linked") or set())
     if best["score"] < MIN_DENSE:
         return Resolution(
             in_scope=False,
