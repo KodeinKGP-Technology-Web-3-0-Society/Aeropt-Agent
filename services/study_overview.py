@@ -186,6 +186,8 @@ def build_overview(user_id: str, *, tz_name: Optional[str] = None) -> Dict[str, 
         from retrieval import store
 
         for m in sorted(mastered, key=lambda r: str(r.get("last_practised") or ""), reverse=True):
+            if len(up_next) >= 3:
+                break  # each remaining concept would cost a database round trip for nothing
             for dep in store.dependents(m["concept_id"]):
                 if dep not in started_ids and dep in idx["concepts"]:
                     add(dep, "next", f"You mastered {m['name']} — {idx['concepts'][dep].get('name')} builds on it.")
