@@ -441,12 +441,19 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
     # The prompt tells the tutor to ground itself, but a fallback model can still
     # answer from memory. In general chat, the deterministic retrieval gate decides
     # when skipping is not allowed (greetings and follow-ups on the last answer are).
-    require_tool = None
-    if surface_for_state(working_state) == "chat" and "retrieve_content" in toolbelt:
-        from retrieval.gate import decide as gate_decide
+    from retrieval.gate import decide as gate_decide
 
-        if gate_decide(query, recent_turns=sections.recent_turns, state=working_state).action == "retrieve":
-            require_tool = "retrieve_content"
+    gate_decision = gate_decide(query, recent_turns=sections.recent_turns, state=working_state)
+    require_tool = None
+    if (
+        surface_for_state(working_state) == "chat"
+        and "retrieve_content" in toolbelt
+        and gate_decision.action == "retrieve"
+    ):
+        require_tool = "retrieve_content"
+    # Overlap a weak-pack fetch with the first model call. Strong packs do not open the web.
+    if gate_decision.action == "retrieve":
+        ctx.web_fallback.schedule_probe(query, working_state)
     result = run_agent_loop(
         system_prompt=sections.stable_system_prompt,
         user_message=query,

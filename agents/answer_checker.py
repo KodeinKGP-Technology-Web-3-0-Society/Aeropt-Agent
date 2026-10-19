@@ -67,6 +67,9 @@ Check it against these, in this order of importance:
 
 1. CORRECT — is the scientific/mathematical explanation right, and does the arithmetic hold? A wrong number \
 presented confidently is the worst failure here.
+   Do not trust a closed form just because it looks familiar. For any claimed value of an integral, sum or \
+limit, substitute the smallest case (n=1, n=2) and compute it yourself. Check that the identity really applies \
+to this integrand (cos versus cosh is the classic trap). If the small case disagrees, revise.
 2. RESPONSIVE — does it answer what this student actually asked, rather than a \
 nearby question?
 3. GROUNDED (FAIL-CLOSED FORMULAS) — If course material is provided below, formulas must be consistent with it. If no course material is in the corpus for this subject/concept, allow well-established, standard JEE textbook formulas, reaction mechanisms, and principles rather than rejecting the answer. Never rewrite a correct chemistry or math answer to claim that the tutor only teaches physics.
@@ -150,14 +153,22 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _format_evidence(chunks: List[Dict[str, Any]], limit: int = 3) -> str:
+def _format_evidence(
+    chunks: List[Dict[str, Any]],
+    web_passages: Optional[List[Dict[str, Any]]] = None,
+    limit: int = 3,
+) -> str:
+    from retrieval.official_web import format_for_checker
+
     if not chunks:
-        return "(no course material was retrieved for this turn)"
-    parts = []
-    for chunk in chunks[:limit]:
-        text = (chunk.get("core_text") or "").strip()
-        parts.append(f"[{chunk.get('content_id', '?')}] {text[:500]}")
-    return "\n\n".join(parts)
+        body = "(no course material was retrieved for this turn)"
+    else:
+        parts = []
+        for chunk in chunks[:limit]:
+            text = (chunk.get("core_text") or "").strip()
+            parts.append(f"[{chunk.get('content_id', '?')}] {text[:500]}")
+        body = "\n\n".join(parts)
+    return body + format_for_checker(web_passages)
 
 
 def _format_learner_context(state: Dict[str, Any]) -> str:
@@ -220,7 +231,10 @@ def check_answer(
     prompt = _CHECKER_PROMPT.format(
         query=(query or "")[:1500],
         learner_context=_format_learner_context(state),
-        evidence=_format_evidence(state.get("retrieved_chunks") or []),
+        evidence=_format_evidence(
+            state.get("retrieved_chunks") or [],
+            state.get("web_passages") or [],
+        ),
         known_issues=_format_known_issues(state),
         draft=draft,
     )
@@ -343,7 +357,10 @@ def check_answer_streaming(
     prompt = _CHECKER_PROMPT.format(
         query=(query or "")[:1500],
         learner_context=_format_learner_context(state),
-        evidence=_format_evidence(state.get("retrieved_chunks") or []),
+        evidence=_format_evidence(
+            state.get("retrieved_chunks") or [],
+            state.get("web_passages") or [],
+        ),
         known_issues=_format_known_issues(state),
         draft=draft,
     )
