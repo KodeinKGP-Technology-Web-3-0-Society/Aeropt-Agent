@@ -42,7 +42,7 @@ MAX_BODY_BYTES = int(os.getenv("AGENT_MAX_BODY_BYTES", str(1024 * 1024)))
 
 # No learner token: liveness probes, voice endpoints, diagram SVGs, and the admin
 # surface (which has its own AGENT_ADMIN_TOKEN gate, see services/admin_traces.py)
-_PUBLIC = re.compile(r"^/(health|api/v1/health|api/v1/voice/(?:transcribe|synthesize|tts|speakers)|api/v1/diagrams/[0-9a-f]{20}\.svg|admin/traces|api/v1/admin/.+)$")
+_PUBLIC = re.compile(r"^/(health|ready|api/v1/health|api/v1/voice/(?:transcribe|synthesize|tts|speakers)|api/v1/diagrams/[0-9a-f]{20}\.svg|admin/traces|api/v1/admin/.+)$")
 
 # Routes that name the learner in the path. `/plan/settings` is a literal route.
 _PATH_USER = re.compile(

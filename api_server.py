@@ -65,7 +65,7 @@ import config  # noqa: F401
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, Header, HTTPException, File, Form, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -77,6 +77,7 @@ from models.state import TutorState
 
 # ── Session-management helpers — imported from services.turn_service ───────────
 from services import admin_traces
+from services import capacity
 from services.auth import AgentAuthMiddleware, check_production_config
 from services.classroom_evidence import post_turn_evidence, resolve_learner_token
 from services.turn_service import (
@@ -174,6 +175,26 @@ app.add_middleware(
 def health() -> Dict[str, str]:
     """Liveness probe for local CI/CD. Does not touch Neo4j or Supabase."""
     return {"status": "ok", "service": "aeropt-agent"}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness probe: 503 when this instance cannot usefully take a turn.
+
+    /health says the process is up. This says it can serve: at least one LLM key
+    is still live and the turn gate is not saturated.
+    """
+    from utils.groq_pool import get_pool
+
+    try:
+        live_keys = get_pool().live_count
+    except Exception:  # noqa: BLE001
+        live_keys = 0
+    gate = capacity.gate.stats()
+    saturated = gate["active"] >= gate["max_active"] and capacity.gate.waiting >= capacity.gate.max_waiting
+    ok = live_keys > 0 and not saturated
+    body = {"status": "ok" if ok else "unavailable", "live_llm_keys": live_keys, "turns": gate}
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -841,6 +862,12 @@ async def chat_message(
     """Process one student message through the LangGraph pipeline with SSE streaming."""
     user_id = req.user_id
     learner_token = resolve_learner_token(req.classroom_token, authorization)
+    if not await capacity.gate.acquire():
+        raise HTTPException(
+            status_code=503,
+            detail="The tutor is busy right now. Please try again in a moment.",
+            headers={"Retry-After": str(capacity.gate.retry_after_s)},
+        )
     raw_input = req.query.strip()
     create_reason = "roadmap" if req.roadmap_node_id else "free"
     # _resolve_session and get_carry are DB calls but short, running in main thread for simplicity before stream starts
@@ -871,6 +898,7 @@ async def chat_message(
             clear_stale_practice_carry(carry)
             save_carry(session_id, carry)
     except Exception as exc:
+        capacity.gate.release()
         raise HTTPException(status_code=500, detail=str(exc))
 
     queue = asyncio.Queue()
@@ -1009,7 +1037,13 @@ async def chat_message(
             err = ChatMessageResponse(session_id=session_id, error=_student_facing_error(str(exc)))
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "result", "data": err.model_dump_json()})
 
-    asyncio.create_task(asyncio.to_thread(sync_worker))
+    async def _run_turn() -> None:
+        try:
+            await capacity.gate.run(sync_worker)
+        finally:
+            capacity.gate.release()
+
+    asyncio.create_task(_run_turn())
 
     return StreamingResponse(_sse_frames(queue), media_type="text/event-stream", headers=SSE_HEADERS)
 
