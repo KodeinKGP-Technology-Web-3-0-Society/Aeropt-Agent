@@ -1,8 +1,8 @@
 """Run the correctness set live, or rescore a saved run offline.
 
-Live mode calls the tutor. It does not call hosted Supabase: user-state goes
-through the in-memory eval database, and retrieval is forced empty because the
-local Postgres corpus is the only one this runner is allowed to use.
+Live mode calls the tutor. User-state stays in the in-memory eval database, so
+a run never writes to Supabase. Retrieval is allowed only when
+``RETRIEVAL_DATABASE_URL`` points at localhost; any other URL is refused.
 
     python -m evals.runner --suite correctness --mode live
     python -m evals.runner --suite correctness --mode replay
@@ -49,11 +49,24 @@ def percentile(values: list[float], p: float) -> float:
 
 
 class HostedRetrievalBlocked(RuntimeError):
-    """A correctness run tried to open the retrieval database."""
+    """A correctness run tried to open a non-local retrieval database."""
+
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def retrieval_is_local() -> bool:
+    """True only when the retrieval URL is this machine. An empty URL is not local."""
+    from urllib.parse import urlparse
+
+    from retrieval.store import database_url
+
+    host = (urlparse(database_url() or "").hostname or "").lower()
+    return host in _LOCAL_HOSTS
 
 
 def block_hosted():
-    """Context manager: in-memory user DB, and retrieval that cannot open a socket."""
+    """In-memory user DB. Retrieval opens a socket only for a localhost URL."""
     import sys
     from contextlib import contextmanager
     from unittest.mock import patch
@@ -98,6 +111,9 @@ def block_hosted():
             }
 
         try:
+            if retrieval_is_local():
+                yield fake
+                return
             with (
                 patch("retrieval.store._get_pool", _refuse),
                 patch("retrieval.store.query", _refuse),
@@ -292,13 +308,18 @@ def run_live(problems: list[Problem], out_path: Path) -> dict[str, Any]:
 def _write_run(path: Path, items: list[dict[str, Any]], partial: bool, primary_model: str) -> dict[str, Any]:
     summary = summarize_items(items)
     summary["errors"] = sum(1 for item in items if item.get("status") == "error")
+    local = retrieval_is_local()
     payload = {
         "partial": partial,
         "primary_model": primary_model,
-        "retrieval": "blocked",
+        "retrieval": "local" if local else "blocked",
         "retrieval_note": (
-            "Hosted retrieval was refused. Local Postgres was not the configured database, "
-            "so these turns solved with no corpus chunks."
+            "Retrieval used the local Postgres corpus. User-state stayed in memory."
+            if local
+            else (
+                "Hosted retrieval was refused. Local Postgres was not the configured database, "
+                "so these turns solved with no corpus chunks."
+            )
         ),
         "summary": summary,
         "items": items,

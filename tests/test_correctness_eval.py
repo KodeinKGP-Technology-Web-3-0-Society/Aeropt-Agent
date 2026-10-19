@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from evals.correctness.runner import HostedRetrievalBlocked, block_hosted, percentile, summarize_items
+from evals.correctness.runner import (
+    HostedRetrievalBlocked,
+    block_hosted,
+    percentile,
+    retrieval_is_local,
+    summarize_items,
+)
 from evals.correctness.score import Expectation, grade_response, load_problems, recompute
 from evals.correctness.traces import is_local_url, summarize_turns
 from evals.scenarios import load_all_scenarios
@@ -214,10 +220,27 @@ def test_replay_rescores_a_saved_reply(tmp_path):
     assert payload["items"][0]["status"] == "pass"
 
 
-def test_hosted_retrieval_cannot_be_queried():
+def test_hosted_retrieval_cannot_be_queried(monkeypatch):
     import retrieval.store as store
 
+    monkeypatch.setenv(
+        "RETRIEVAL_DATABASE_URL",
+        "postgresql://postgres@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres",
+    )
     with block_hosted():
         with pytest.raises(HostedRetrievalBlocked):
             store.query("select 1")
         assert store.index_exists() is False
+
+
+def test_localhost_retrieval_is_left_open(monkeypatch):
+    import retrieval.store as store
+
+    monkeypatch.setenv(
+        "RETRIEVAL_DATABASE_URL",
+        "postgresql://postgres@127.0.0.1:54322/postgres",
+    )
+    original = store.query
+    with block_hosted():
+        assert store.query is original
+        assert retrieval_is_local()
