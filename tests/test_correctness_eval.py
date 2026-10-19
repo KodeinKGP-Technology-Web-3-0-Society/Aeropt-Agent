@@ -69,6 +69,39 @@ def test_withheld_answer_is_unparsed_not_wrong():
     assert grade.status == "unparsed"
 
 
+def test_nested_fraction_closed_form_is_not_a_product():
+    expect = Expectation(kind="numeric", value=4.678982327128295, abs_tol=0.03, rel_tol=0.005)
+    text = r"### **Final Answer** $$f(1) = e^{\frac{e + e^{-1}}{2}}$$"
+    grade = grade_response(text, expect)
+    assert grade.status == "pass"
+    assert grade.numeric == pytest.approx(expect.value, abs=0.03)
+
+
+def test_unit_exponent_does_not_replace_the_answer():
+    expect = Expectation(kind="integer", value=40, abs_tol=0.05, rel_tol=0.0)
+    text = r"Final answer: the speed is **$40$** $\text{cm s}^{-1}$."
+    assert grade_response(text, expect).status == "pass"
+
+
+def test_bold_integer_without_the_word_answer():
+    expect = Expectation(kind="integer", value=6, abs_tol=0.05, rel_tol=0.0)
+    text = r"Given $T = (n\ \pi)$, we have $n = 5.833$. The integer closest to $n$ is **6**."
+    grade = grade_response(text, expect)
+    assert grade.status == "pass"
+    assert grade.numeric == pytest.approx(6)
+
+
+def test_later_wrong_decimal_beats_an_earlier_correct_formula():
+    expect = next(p.expect for p in load_problems() if p.id == "cosh_integral_n1")
+    text = (
+        r"$$I = -\frac{1}{2}\sinh(\pi)$$"
+        "\nFinal answer: approximately $\\mathbf{-11.548}$."
+    )
+    grade = grade_response(text, expect)
+    assert grade.status == "wrong"
+    assert grade.numeric == pytest.approx(-11.548, abs=1e-3)
+
+
 def test_answer_line_is_enough_when_nothing_is_boxed():
     expect = Expectation(kind="integer", value=6, abs_tol=0.05, rel_tol=0)
     grade = grade_response("After the algebra, the final answer is 6.", expect)

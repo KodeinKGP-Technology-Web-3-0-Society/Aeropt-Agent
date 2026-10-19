@@ -150,16 +150,93 @@ def _numbers(text: str) -> list[float]:
     return found
 
 
+def _brace_group(text: str, i: int) -> tuple[Optional[str], int]:
+    """``text[i]`` is ``{``. Return the inside and the index after the closing brace."""
+    if i >= len(text) or text[i] != "{":
+        return None, i
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i + 1 : j], j + 1
+    return None, i
+
+
+def _convert_latex(text: str) -> Optional[str]:
+    """LaTeX math to a sympy string. Nested ``\\frac`` stays a quotient."""
+    raw = (text or "").strip().strip("$").strip()
+    if not raw:
+        return None
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        frac = re.match(r"\\[dt]?frac\b", raw[i:])
+        if frac:
+            j = i + frac.end()
+            while j < len(raw) and raw[j].isspace():
+                j += 1
+            num, j = _brace_group(raw, j)
+            while j < len(raw) and raw[j].isspace():
+                j += 1
+            den, j = _brace_group(raw, j)
+            if num is None or den is None:
+                return None
+            num_s, den_s = _convert_latex(num), _convert_latex(den)
+            if num_s is None or den_s is None:
+                return None
+            out.append(f"(({num_s})/({den_s}))")
+            i = j
+            continue
+        out.append(raw[i])
+        i += 1
+    s = "".join(out)
+    s = re.sub(r"\\(left|right|mathbf|mathrm|text|displaystyle|,|;|:)\b", "", s)
+    s = re.sub(r"\\(sinh|cosh|sin|cos|tan|log|ln|exp)\b", lambda m: "log" if m.group(1) == "ln" else m.group(1), s)
+    s = re.sub(r"\\(pi|infty)\b", lambda m: "pi" if m.group(1) == "pi" else "oo", s)
+    s = s.replace("\\times", "*").replace("\\cdot", "*")
+    s = re.sub(r"\\[a-zA-Z]+", "", s)
+    s = s.replace("{", "(").replace("}", ")").replace("^", "**")
+    s = re.sub(r"\be\b", "E", s)
+    s = re.sub(r"\s+", "", s)
+    if not s or re.search(r"[^0-9A-Za-z_+\-*/().,]", s):
+        return None
+    return s
+
+
+def _finite(value: float) -> Optional[float]:
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
+
+
 def _try_eval(snippet: str) -> Optional[float]:
     """Evaluate a closed form. Returns None when the snippet is not a number."""
-    from utils.mathexpr import ExpressionError, evaluate, free_symbols, from_latex, parse
-
     raw = (snippet or "").strip().strip("$").strip()
     if not raw or len(raw) > 400:
         return None
-    plain = from_latex(raw)
-    plain = plain.replace("^", "**")
-    plain = re.sub(r"\s+", "", plain)
+    if "\\" in raw or "frac" in raw or "^" in raw:
+        plain = _convert_latex(raw)
+        if not plain:
+            return None
+        try:
+            import sympy as sp
+
+            expr = sp.sympify(plain, locals={"E": sp.E, "pi": sp.pi, "oo": sp.oo})
+        except (TypeError, ValueError, SyntaxError):
+            return None
+        if getattr(expr, "free_symbols", None):
+            return None
+        try:
+            return _finite(float(sp.N(expr)))
+        except (TypeError, ValueError):
+            return None
+
+    from utils.mathexpr import ExpressionError, evaluate, free_symbols, parse
+
+    plain = re.sub(r"\s+", "", raw)
     if not plain or re.search(r"[^0-9A-Za-z_+\-*/().,]", plain):
         return None
     try:
@@ -169,12 +246,9 @@ def _try_eval(snippet: str) -> Optional[float]:
     if free_symbols(tree):
         return None
     try:
-        value = float(evaluate(tree))
+        return _finite(float(evaluate(tree)))
     except (ExpressionError, OverflowError, ValueError, ZeroDivisionError):
         return None
-    if value != value or value in (float("inf"), float("-inf")):  # NaN
-        return None
-    return value
 
 
 def _option_letters(snippet: str) -> str:
@@ -194,32 +268,98 @@ def _option_letters(snippet: str) -> str:
     return ""
 
 
-def _math_spans(snippet: str) -> list[str]:
+def _math_spans(snippet: str) -> list[tuple[int, str]]:
+    """(end_index, body) for $...$, \\(...\\) and \\[...\\]."""
     text = snippet or ""
-    spans = re.findall(r"\$([^$]+)\$", text)
-    spans += re.findall(r"\\\((.+?)\\\)", text)
-    spans += re.findall(r"\\\[(.+?)\\\]", text, flags=re.S)
-    return [s.strip() for s in spans if s.strip()]
+    found: list[tuple[int, str]] = []
+    for pattern in (r"\$([^$]+)\$", r"\\\((.+?)\\\)", r"\\\[(.+?)\\\]"):
+        for match in re.finditer(pattern, text, flags=re.S):
+            body = match.group(1).strip()
+            if body:
+                found.append((match.end(), body))
+    found.sort(key=lambda item: item[0])
+    return found
+
+
+def _blank_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start, min(end, len(chars))):
+            chars[i] = " "
+    return "".join(chars)
+
+
+def _superscript_spans(text: str) -> list[tuple[int, int]]:
+    spans = []
+    i = 0
+    while i < len(text):
+        if text[i] == "^" and i + 1 < len(text) and text[i + 1] == "{":
+            _, after = _brace_group(text, i + 1)
+            if after > i + 1:
+                spans.append((i, after))
+                i = after
+                continue
+        i += 1
+    return spans
+
+
+def _rhs(body: str) -> str:
+    if body.count("=") == 1:
+        return body.split("=", 1)[1]
+    return body
+
+
+def _emphasized_numbers(text: str) -> list[float]:
+    """Numbers the reply stresses: markdown bold or ``\\mathbf``."""
+    found = []
+    for span in re.findall(r"\*\*([^*]+)\*\*", text or ""):
+        value = _try_eval(span)
+        if value is None:
+            nums = _plain_numbers(span)
+            value = nums[-1] if nums else None
+        if value is not None:
+            found.append(value)
+    for span in re.findall(r"\\mathbf\s*\{([^{}]*)\}", text or ""):
+        value = _try_eval(span)
+        if value is None:
+            nums = _plain_numbers(span)
+            value = nums[-1] if nums else None
+        if value is not None:
+            found.append(value)
+    return found
+
+
+def _plain_numbers(text: str) -> list[float]:
+    """Numbers that are not a superscript and not the 10 in ``10^{-1}``."""
+    raw = re.sub(r"\b[A-Za-z]\(([-+]?\d+(?:\.\d+)?)\)", " ", text or "")
+    # 10^{-1} is a unit scale, not the integer the student was asked to fill in.
+    raw = re.sub(r"10\s*\^\{[^{}]*\}", " ", raw)
+    raw = re.sub(r"10\s*\^[+-]?\d+", " ", raw)
+    blanked = _blank_spans(raw, _superscript_spans(raw))
+    return _numbers(blanked)
 
 
 def interpret(snippet: str) -> tuple[str, Any]:
     """('numeric', float) | ('letters', 'AC') | ('none', None)."""
-    letters = _option_letters(snippet)
-    candidates = [snippet, *_math_spans(snippet)]
-    tail = re.split(r"(?i)(?:answer\s+is|answer\s*[:=]|equals|=)", snippet or "")
-    if len(tail) > 1:
-        candidates.append(tail[-1])
-    value = None
-    for candidate in reversed(candidates):
-        value = _try_eval(candidate)
+    text = snippet or ""
+    letters = _option_letters(text)
+    # A boxed expression such as 1/3 or -\sinh(\pi)/2 is one claim. The digits
+    # inside it are not separate answers.
+    if len(text) <= 180 and not re.search(r"[A-Za-z]{4,}", re.sub(r"\\[a-zA-Z]+", "", text)):
+        value = _try_eval(_rhs(text))
         if value is not None:
-            break
-        nums = _numbers(candidate)
-        if nums and not (letters and not re.search(r"\d", candidate)):
-            value = nums[-1]
-            break
-    if value is not None:
-        return "numeric", value
+            return "numeric", value
+    emphasized = _emphasized_numbers(text)
+    if emphasized:
+        return "numeric", emphasized[-1]
+    plain = _plain_numbers(text)
+    if plain and not (letters and not re.search(r"\d", text)):
+        return "numeric", plain[-1]
+    spans = _math_spans(text)
+    if spans:
+        value = _try_eval(_rhs(spans[-1][1]))
+        if value is not None:
+            return "numeric", value
     if letters:
         return "letters", letters
     return "none", None
@@ -246,43 +386,62 @@ def _matches(expect: Expectation, kind: str, payload: Any) -> bool:
     return abs(value - expect.value) <= _tolerance(expect)
 
 
-def grade_response(response: str, expect: Expectation) -> Grade:
-    """Grade the final claim of one reply. Unparsed is not a wrong answer."""
-    want_numeric = expect.kind in {"numeric", "integer", "range"}
-    pools = (("boxed", boxed_snippets(response)), ("answer_line", answer_lines(response)))
-    for method, snippets in pools:
-        chosen: Optional[tuple[str, Any, str]] = None
-        for snippet in snippets:
-            kind, payload = interpret(snippet)
-            if want_numeric and kind == "numeric":
-                chosen = (kind, payload, snippet)
-            elif expect.kind == "letters" and kind == "letters":
-                chosen = (kind, payload, snippet)
-        if chosen:
-            kind, payload, snippet = chosen
-            ok = _matches(expect, kind, payload)
-            return Grade(
-                status="pass" if ok else "wrong",
-                method=method,
-                extracted=snippet[:240],
-                numeric=float(payload) if kind == "numeric" else None,
-                letters=payload if kind == "letters" else "",
-                detail="matched" if ok else "final claim disagrees with the key",
-            )
+def _closing_display(text: str) -> Optional[str]:
+    """The last ``$$...$$`` when the reply ends on it."""
+    matches = list(re.finditer(r"\$\$([\s\S]+?)\$\$", text or ""))
+    if not matches:
+        return None
+    last = matches[-1]
+    if len(text) - last.end() > 40:
+        return None
+    return last.group(1).strip()
 
-    tail = (response or "")[-600:]
-    if re.search(r"answer", tail, re.I):
-        kind, payload = interpret(tail)
+
+def _grade_from(method: str, kind: str, payload: Any, snippet: str, expect: Expectation) -> Grade:
+    ok = _matches(expect, kind, payload)
+    return Grade(
+        status="pass" if ok else "wrong",
+        method=method,
+        extracted=(snippet or "")[:240],
+        numeric=float(payload) if kind == "numeric" else None,
+        letters=payload if kind == "letters" else "",
+        detail="matched" if ok else "final claim disagrees with the key",
+    )
+
+
+def _last_line(response: str) -> str:
+    lines = [line for line in (response or "").splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+def grade_response(response: str, expect: Expectation) -> Grade:
+    """Grade the claim on the last line. Unparsed is not a wrong answer."""
+    text = response or ""
+    want_numeric = expect.kind in {"numeric", "integer", "range"}
+    boxed = boxed_snippets(text)
+    if boxed:
+        kind, payload = interpret(boxed[-1])
         if (want_numeric and kind == "numeric") or (expect.kind == "letters" and kind == "letters"):
-            ok = _matches(expect, kind, payload)
-            return Grade(
-                status="pass" if ok else "wrong",
-                method="tail",
-                extracted=tail.strip()[-240:],
-                numeric=float(payload) if kind == "numeric" else None,
-                letters=payload if kind == "letters" else "",
-                detail="matched from the closing lines" if ok else "closing claim disagrees with the key",
-            )
+            return _grade_from("boxed", kind, payload, boxed[-1], expect)
+
+    last = _last_line(text)
+    if want_numeric and last:
+        display = _closing_display(last)
+        if display and not re.search(r"\\approx|≈", last):
+            value = _try_eval(_rhs(display))
+            if value is not None:
+                return _grade_from("answer_line", "numeric", value, display, expect)
+        emphasized = _emphasized_numbers(last)
+        if emphasized:
+            return _grade_from("bold", "numeric", emphasized[-1], last[:240], expect)
+        if re.search(r"answer|\\approx|≈|=", last, re.IGNORECASE):
+            plain = _plain_numbers(last)
+            if plain:
+                return _grade_from("answer_line", "numeric", plain[-1], last[:240], expect)
+    elif expect.kind == "letters" and last:
+        kind, payload = interpret(last)
+        if kind == "letters":
+            return _grade_from("answer_line", kind, payload, last[:240], expect)
 
     return Grade(
         status="unparsed",
