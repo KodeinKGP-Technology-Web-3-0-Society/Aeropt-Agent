@@ -27,6 +27,7 @@ from openai import OpenAI
 import config
 from agents.runtime.toolbelt import SCOPE_READ, Toolbelt
 from agents.runtime.trace import AgentTrace, TraceStep
+from agents.runtime.web_fallback import attach_ready_passages
 from utils.llm import groq_chat
 
 logger = logging.getLogger("jee_tutor.loop")
@@ -238,6 +239,7 @@ def run_agent_loop(
 
     try:
         while steps < max_steps:
+            attach_ready_passages(toolbelt.ctx, messages)
             step_chars = sum(len(str(m.get("content") or "")) for m in messages)
             if step_chars > max_step_input_chars:
                 max_step_input_chars = step_chars
@@ -279,6 +281,7 @@ def run_agent_loop(
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                     lane=lane,
+                    web_ctx=toolbelt.ctx,
                 )
 
             tool_rounds_limit = max_tool_rounds if max_tool_rounds is not None else max_steps - 1
@@ -323,6 +326,7 @@ def run_agent_loop(
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                     lane=lane,
+                    web_ctx=toolbelt.ctx,
                 )
             except Exception as exc:  # noqa: BLE001 — the whole chain failed
                 logger.exception("[%s] LLM chain failed", label)
@@ -476,9 +480,13 @@ def run_agent_loop(
             stop_reason="time_budget" if budget.is_exhausted() or time.time() >= deadline else "max_steps",
             reserve_s=budget.close_reserve_s,
             lane=lane,
+            web_ctx=toolbelt.ctx,
         )
     finally:
         current_budget_var.reset(budget_token)
+        fallback = getattr(getattr(toolbelt, "ctx", None), "web_fallback", None)
+        if fallback is not None:
+            fallback.ignore_if_unattached()
 
 
 def _forced_close(
@@ -498,8 +506,11 @@ def _forced_close(
     stop_reason: str = "max_steps",
     reserve_s: float = 8.0,
     lane: str = "live",
+    web_ctx: Any = None,
 ) -> LoopResult:
     """One last tool-free call so a budget overrun still answers the student."""
+    if web_ctx is not None:
+        attach_ready_passages(web_ctx, messages)
     messages = messages + [{"role": "system", "content": _FORCED_CLOSE_NUDGE}]
     started = time.time()
     try:

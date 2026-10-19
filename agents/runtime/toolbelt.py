@@ -90,6 +90,10 @@ class ToolContext:
         self._read_cache: Dict[str, "ToolResult"] = {}
         #: Unshaped tool outputs kept for downstream grading and grounding.
         self.full_tool_results: List[Dict[str, Any]] = []
+        # Official-web fallback for a weak retrieval pack. Not persisted.
+        from agents.runtime.web_fallback import WebFallback
+
+        self.web_fallback = WebFallback()
 
     def stage(self, **updates: Any) -> None:
         """Record state changes for the loop to apply after the turn resolves."""
@@ -349,6 +353,10 @@ SURFACE_TOOL_SETS: Dict[str, frozenset[str]] = {
         "transition_phase",
         "complete_study_session",
         "complete_lesson_part",
+        # The teacher prompt calls these on Learn/Examples. Examples can finish
+        # and serve the first question in the same turn, before the phase flips.
+        "set_lesson_plan",
+        "serve_practice_question",
     }),
     "study_practice": frozenset({
         "serve_practice_question",
@@ -416,7 +424,12 @@ def surface_for_state(state: Dict[str, Any]) -> str:
     if classroom in ("lesson", "doubt", "assess"):
         return f"classroom_{classroom}"
     if state.get("study_session_id") or state.get("surface") == "study":
-        stage = (state.get("study_phase") or state.get("study_stage") or "").lower()
+        stage = (
+            state.get("study_phase")
+            or state.get("study_stage")
+            or state.get("current_phase")
+            or ""
+        ).lower()
         if "practice" in stage or "assess" in stage:
             return "study_practice"
         return "study_learn"

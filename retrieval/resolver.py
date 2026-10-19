@@ -161,6 +161,55 @@ def _lexical_hits(query: str, lex: dict[str, Any]) -> list[tuple[str, int]]:
     return [(cid, length) for cid, _rank, length in hits]
 
 
+_PHRASE_STOP = {
+    "give", "me", "a", "an", "the", "on", "of", "for", "to", "in", "and", "or",
+    "question", "questions", "problem", "problems", "please", "some", "jee",
+    "advanced", "mains", "main", "pyq", "past", "year", "previous",
+}
+
+
+def _contained_name(query: str, lex: dict[str, Any], sims: np.ndarray) -> str:
+    """Concept whose name contains a multi-word phrase from the query.
+
+    "circular motion" is not the concept's name — that is "Uniform circular
+    motion" — so an exact alias miss used to fall through to the nearest
+    meaning, which is simple harmonic motion.
+    """
+    words = [w for w in _norm(query).split() if w not in _PHRASE_STOP and len(w) > 1]
+    if len(words) < 2:
+        return ""
+    labels: list[tuple[str, str, int]] = []
+    for c in lex["concepts"]:
+        texts = [c["name"]]
+        try:
+            texts.extend(json.loads(c.get("aliases") or "[]"))
+        except json.JSONDecodeError:
+            pass
+        row = int(c["vec_row"])
+        for text in texts:
+            key = _norm(str(text))
+            if key:
+                labels.append((c["concept_id"], key, row))
+    for length in range(min(len(words), 6), 1, -1):
+        found: list[tuple[int, float, str]] = []
+        for start in range(len(words) - length + 1):
+            phrase = " ".join(words[start : start + length])
+            if len(phrase) < 8:
+                continue
+            pat = re.compile(rf"(^| ){re.escape(phrase)}( |$)")
+            for cid, name, row in labels:
+                if pat.search(name):
+                    # The tightest label wins. "Uniform and Nonuniform Circular
+                    # Motion" beats a long comparison title that merely mentions it.
+                    extra = len(name.split()) - length
+                    dense = float(sims[row]) if 0 <= row < len(sims) else 0.0
+                    found.append((extra, -dense, cid))
+        if found:
+            found.sort()
+            return found[0][2]
+    return ""
+
+
 def _chapter_hit(query: str, lex: dict[str, Any]) -> tuple[str, list[str]]:
     qn = " " + _norm(query) + " "
     best_name, best_ids, best_len = "", [], 0
@@ -262,6 +311,23 @@ def resolve(
         )
         res.chapter_concepts = ranked
         res.candidates = _promote(candidates, pick, concept, dense)
+        res.evidence = dense
+        return res
+
+    # 2b. The query uses the topic's words without its full name ("circular motion"
+    # inside "Uniform circular motion"). A name contains that phrase; meaning
+    # search must not override it.
+    contained = _contained_name(text, lex, sims)
+    if contained:
+        concept = lex["by_id"][contained]
+        dense = float(sims[lex["rows"][contained]])
+        res = _from_concept(
+            concept,
+            max(0.6, min(1.0, 0.55 + max(dense, 0.0))),
+            "the query names this concept",
+            lex,
+        )
+        res.candidates = _promote(candidates, contained, concept, dense)
         res.evidence = dense
         return res
 
