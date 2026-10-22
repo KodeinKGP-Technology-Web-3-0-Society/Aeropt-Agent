@@ -696,7 +696,11 @@ def _grounding_note(state: Dict[str, Any]) -> str:
             "values, formulae, or exam-specific claims with more confidence than you "
             "actually have."
         )
-    return "GROUNDING STATUS: OK — answer normally using the chunks below as your primary source."
+    return (
+        "GROUNDING STATUS: OK — the chunks below matched this concept. Use what in them applies "
+        "to this exact question; a chunk about a different situation is not evidence for this one, "
+        "so ignore it rather than bend the answer toward it."
+    )
 
 
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:

@@ -142,9 +142,19 @@ def _loads(raw: Any) -> list[str]:
         return [s.strip() for s in str(raw).split(",") if s.strip()]
 
 
+_LATEX_NOISE = re.compile(r"\\(?!(?:sin|cos|tan|cot|sec|csc|log|ln|lim|int|sum|exp)\b)[A-Za-z]+")
+
+
 def _fts_query(text: str) -> str:
-    """FTS5 MATCH string: content words OR-ed, quoted so operators can't leak in."""
-    words = re.findall(r"[A-Za-z][A-Za-z\-']{2,}|\d+(?:\.\d+)?", text or "")
+    """FTS5 MATCH string: content words OR-ed, quoted so operators can't leak in.
+
+    No bare numbers and no LaTeX command names. OR-ed, the "0", "2", "500" of a worked
+    problem matched NCERT's log and antilog tables (570 numeric lexemes each) ahead of any
+    real passage, and "\\text" read as the word "text"; together they filed integrals and
+    mechanics problems under chemical equilibrium. Function names keep their meaning.
+    """
+    text = _LATEX_NOISE.sub(" ", text or "")
+    words = re.findall(r"[A-Za-z][A-Za-z\-']{2,}", text)
     stop = {
         "the", "and", "for", "what", "why", "how", "does", "did", "can", "will",
         "with", "this", "that", "are", "was", "were", "explain", "please", "give",

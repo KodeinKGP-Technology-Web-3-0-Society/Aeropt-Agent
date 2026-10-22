@@ -161,6 +161,14 @@ def apply(cur, concepts, chapters, items, embed, *, subject: str = "Physics",
     for unit_ord, (unit, topics) in enumerate(topics_to_process, start=1):
         unit_chapters = by_unit.get(unit, [])
         if not unit_chapters:
+            # A unit no chapter is labelled with may still be a chapter by name: NCERT files
+            # "Linear Programming" under Algebra and "Straight Lines" under Coordinate Geometry,
+            # and a second, empty chapter of the same name is what a student would then see.
+            unit_words = f" {_norm(unit)} "
+            unit_chapters = [ch for ch in chapters if ch.in_syllabus and any(
+                _norm(t) and f" {_norm(t)} " in unit_words
+                for t in [ch.title, *getattr(ch, "former_titles", [])])]
+        if not unit_chapters:
             max_ord += 1
             ch = {"chapter_id": slug(f"{subject}_{unit}"), "subject": subject, "title": unit, "volume": "JEE syllabus",
                   "unit": unit, "jee_unit": unit, "in_syllabus": True, "ord": max_ord}

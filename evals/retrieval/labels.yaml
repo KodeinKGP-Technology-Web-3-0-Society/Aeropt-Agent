@@ -1,0 +1,40 @@
+version: 1
+description: >
+  Where retrieval should land for each correctness problem (evals/correctness/problems.yaml).
+  `chapters` lists every chapter a good answer may draw on; a resolution or chunk outside
+  them is off-topic material handed to the tutor. Chapter ids are the JEE-unit chapters
+  written by local_ingest/push_index.py.
+labels:
+  cosh_integral_n1: {subject: Mathematics, chapters: [integral_calculus, differential_equations]}
+  cosh_integral_n2: {subject: Mathematics, chapters: [integral_calculus]}
+  cos_integral_n2: {subject: Mathematics, chapters: [integral_calculus, trigonometry]}
+  ode_y_at_1: {subject: Mathematics, chapters: [differential_equations]}
+  f_at_1: {subject: Mathematics, chapters: [differential_equations]}
+  series_k_over_2k: {subject: Mathematics, chapters: [sequences_and_series]}
+  binomial_sum_n5: {subject: Mathematics, chapters: [binomial_theorem, sequences_and_series, permutations_and_combinations]}
+  limit_tan_minus_x: {subject: Mathematics, chapters: [limit_continuity_and_differentiability]}
+  cubic_root_in_unit_interval: {subject: Mathematics, chapters: [application_of_derivatives, limit_continuity_and_differentiability, complex_numbers_and_quadratic_equations]}
+  integral_ln_over_x: {subject: Mathematics, chapters: [integral_calculus, sequences_and_series]}
+  conditional_two_heads: {subject: Mathematics, chapters: [statistics_and_probability]}
+  jee_adv_2015_p2_phy_q03: {subject: Physics, chapters: [gravitation, rotational_motion, electrostatics]}
+  jee_adv_2015_p1_phy_q05: {subject: Physics, chapters: [properties_of_solids_and_liquids, thermodynamics, dual_nature_of_matter_and_radiation]}
+  jee_adv_2015_p2_phy_q02: {subject: Physics, chapters: [physics_and_measurement]}
+  jee_adv_2016_p1_phy_q16: {subject: Physics, chapters: [atoms_and_nuclei, dual_nature_of_matter_and_radiation]}
+  jee_adv_2017_p1_phy_q08: {subject: Physics, chapters: [properties_of_solids_and_liquids]}
+  jee_adv_2017_p1_phy_q11: {subject: Physics, chapters: [oscillations_and_waves]}
+  jee_adv_2022_p2_phy_q01: {subject: Physics, chapters: [laws_of_motion, kinematics, work_energy_and_power, rotational_motion]}
+  jee_adv_2022_p2_phy_q07: {subject: Physics, chapters: [oscillations_and_waves, laws_of_motion, work_energy_and_power, rotational_motion]}
+  jee_adv_2023_p1_phy_q11: {subject: Physics, chapters: [kinetic_theory_of_gases, thermodynamics]}
+  jee_adv_2023_p1_phy_q12: {subject: Physics, chapters: [kinematics]}
+  jee_adv_2024_p2_phy_q09: {subject: Physics, chapters: [kinematics]}
+  jee_adv_2025_p1_phy_q08: {subject: Physics, chapters: [laws_of_motion, kinematics]}
+  mathematics_jee_main_2026_apr_8th_shift_2_q22: {subject: Mathematics, chapters: [integral_calculus, trigonometry]}
+  mathematics_jee_main_2026_apr_6th_shift_1_q25: {subject: Mathematics, chapters: [differential_equations]}
+  mathematics_jee_main_2026_apr_2nd_shift_1_q22: {subject: Mathematics, chapters: [sequences_and_series]}
+  mathematics_jee_main_2026_apr_2nd_shift_2_q24: {subject: Mathematics, chapters: [integral_calculus, coordinate_geometry]}
+  mathematics_jee_main_2026_apr_2nd_shift_1_q25: {subject: Mathematics, chapters: [integral_calculus]}
+  mathematics_jee_main_2026_apr_5th_shift_2_q25: {subject: Mathematics, chapters: [differential_equations]}
+  chemistry_jee_main_2026_apr_5th_shift_2_q71: {subject: Chemistry, chapters: [coordination_compounds, d_and_f_block_elements]}
+  chemistry_jee_main_2026_apr_6th_shift_2_q73: {subject: Chemistry, chapters: [redox_reactions_and_electrochemistry, mole_concept_stoichiometry]}
+  chemistry_jee_main_2026_apr_6th_shift_2_q75: {subject: Chemistry, chapters: [chemical_kinetics]}
+  chemistry_jee_main_2026_apr_8th_shift_2_q75: {subject: Chemistry, chapters: [chemical_equilibrium]}

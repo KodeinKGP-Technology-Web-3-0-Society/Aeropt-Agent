@@ -72,7 +72,10 @@ limit, substitute the smallest case (n=1, n=2) and compute it yourself. Check th
 to this integrand (cos versus cosh is the classic trap). If the small case disagrees, revise.
 2. RESPONSIVE — does it answer what this student actually asked, rather than a \
 nearby question?
-3. GROUNDED (FAIL-CLOSED FORMULAS) — If course material is provided below, formulas must be consistent with it. If no course material is in the corpus for this subject/concept, allow well-established, standard JEE textbook formulas, reaction mechanisms, and principles rather than rejecting the answer. Never rewrite a correct chemistry or math answer to claim that the tutor only teaches physics.
+3. GROUNDED (FAIL-CLOSED FORMULAS) — Course material below was retrieved automatically and can be about a \
+different situation, chapter or even subject than the question. First decide whether it addresses this exact \
+problem. If it does, formulas must be consistent with it. If it does not, ignore it entirely: never revise a \
+correct answer to match material about something else. With no relevant material, allow well-established, standard JEE textbook formulas, reaction mechanisms, and principles rather than rejecting the answer. Never rewrite a correct chemistry or math answer to claim that the tutor only teaches physics.
 4. HONEST — is uncertainty stated plainly, rather than smoothed over?
 5. TEACHING — does it explain the reasoning rather than only stating a result?
 6. PITCHED — is the language right for this student's level?

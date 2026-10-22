@@ -475,13 +475,25 @@ class SupabaseClient:
     # ─────────────────────────── concepts ─────────────────────────────────────
 
     def read_concepts(self) -> List[Dict[str, Any]]:
-        """Return all 33 concepts as a flat list (concept_id, concept_name, chapter)."""
-        res = (
-            self.retrieval_client.table("concepts")
-            .select("concept_id, concept_name, chapter, subject")
-            .execute()
-        )
-        return res.data or []
+        """Every concept as a flat list (concept_id, concept_name, chapter, subject).
+
+        PostgREST returns at most 1,000 rows per request and there are ~1,900 concepts,
+        so a single call silently dropped half of them. Page until a short page.
+        """
+        rows: List[Dict[str, Any]] = []
+        page = 1000
+        while True:
+            res = (
+                self.retrieval_client.table("concepts")
+                .select("concept_id, concept_name, chapter, subject")
+                .order("concept_id")
+                .range(len(rows), len(rows) + page - 1)
+                .execute()
+            )
+            batch = res.data or []
+            rows.extend(batch)
+            if len(batch) < page:
+                return rows
 
     # ─────────────────────────── content ──────────────────────────────────────
 
@@ -492,10 +504,7 @@ class SupabaseClient:
             self.retrieval_client.table("content")
             .select(
                 "content_id, content_type, chapter, difficulty, core_text, solution, "
-                "latex_formulae_core, latex_formulae_solution, "
-                "has_image_core, has_image_solution, image_filename, "
-                "diagram_description_core, primary_concept_id, secondary_concepts, "
-                "prerequisite_concepts, question_type, target_exam"
+                "primary_concept_id, secondary_concepts, question_type, target_exam"
             )
             .in_("content_id", content_ids)
             .execute()

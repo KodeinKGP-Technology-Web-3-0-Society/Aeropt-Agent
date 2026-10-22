@@ -45,7 +45,7 @@ LEDGER_REFRESH_SECONDS = 120
 # keeps its stored label. Computed per query, so no data changes and it is reversible.
 EFFECTIVE_DIFFICULTY_SQL = """(case
     when c.target_exam = 'Jee Advanced' and c.content_type = 'PYQ' then greatest(coalesce(c.difficulty, 3),
-        case when c.question_type in ('MULTI_CORRECT', 'multiple_correct', 'COMPREHENSION', 'matching') then 5 else 4 end)
+        case when c.question_type in ('MULTI_CORRECT', 'multiple_correct', 'COMPREHENSION', 'comprehension', 'matching') then 5 else 4 end)
     when c.target_exam = 'Jee main' and c.content_type = 'PYQ' then greatest(coalesce(c.difficulty, 2), 3)
     else c.difficulty end)"""
 
@@ -63,7 +63,7 @@ CHUNK_COLUMNS = f"""
     c.source_book, c.source_ref, c.license, {EFFECTIVE_DIFFICULTY_SQL} AS difficulty, c.question_type, c.target_exam,
     coalesce(c.in_syllabus, true)::int AS in_syllabus, coalesce(c.has_solution, false)::int AS has_solution,
     coalesce(c.is_question, false)::int AS is_question, c.heading, c.core_text,
-    coalesce(c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
+    coalesce((select s.worked_solution from public.solutions s where s.question_id = c.content_id), c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
 """
 
 

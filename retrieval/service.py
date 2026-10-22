@@ -70,7 +70,7 @@ _NOTE_NEIGHBOURS = (
     "concepts in the same chapter. Tell the student that is what you are doing."
 )
 # Content-level caveats: true of the material itself, whatever the student asked.
-_OPTICS_CHAPTER = "Geometric Optics and Image Formation"
+_OPTICS_CHAPTER = "Optics"  # the JEE unit; ray and wave optics are one chapter since the merge
 _NOTE_OPTICS_CONVENTION = (
     "Sign convention: the OpenStax passages use the real-is-positive convention "
     "(1/d_o + 1/d_i = 1/f for mirrors and lenses, concave mirror f > 0). JEE uses the "

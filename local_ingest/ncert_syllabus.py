@@ -67,6 +67,82 @@ def _key(heading: str) -> str:
     return norm(m.group(4) if m else heading)
 
 
+def _skipped(title: str) -> bool:
+    key = norm(title)
+    return key in _SKIP or key.startswith("exercise")
+
+
+def _display_names(rows: list[dict]) -> dict[tuple[str, str], str]:
+    """(chapter_code, heading) -> concept name, qualified where the bare title repeats.
+
+    NCERT reuses sub-section titles: "9.2.3 Properties", "9.3.5 Properties" and "9.4.4
+    Properties" are alkanes, alkenes and alkynes. Named alike, they collapsed into one
+    concept and every row's name hint landed on the first. A repeated title is named after
+    its numbered parent; when extraction dropped that heading, after the part heading it sits
+    under ("II DIAZONIUM SALTS"); failing both, after its section number. Never after the
+    heading that merely came before it, which is how "Eccentricity" of an ellipse would read
+    as the parabola's.
+    """
+    by_code: dict[str, list[str]] = {}
+    for r in sorted((r for r in rows if r["kind"] == "theory"), key=lambda r: r["id"]):
+        heading = (r.get("section") or "").strip()
+        if heading and heading not in by_code.setdefault(r["chapter_code"], []):
+            by_code[r["chapter_code"]].append(heading)
+    subject_of = {r["chapter_code"]: r["subject"] for r in rows}
+    chapter_of = {r["chapter_code"]: r["chapter"] for r in rows}
+
+    count: dict[tuple[str, str], int] = {}
+    for code, headings in by_code.items():
+        for h in headings:
+            m = _NUMBERED.match(h)
+            if m and not _skipped(m.group(4)):
+                k = (subject_of[code], norm(m.group(4)))
+                count[k] = count.get(k, 0) + 1
+
+    names: dict[tuple[str, str], str] = {}
+    for code, headings in by_code.items():
+        numbered: dict[str, str] = {}
+        for m in map(_NUMBERED.match, headings):
+            if m and m.group(3) is None and not _skipped(m.group(4)):
+                numbered.setdefault(f"{m.group(1)}.{m.group(2)}", _pretty(m.group(4)))
+        part, last_xy, used = "", "", set()
+        for i, h in enumerate(headings):
+            m = _NUMBERED.match(h)
+            if not m:
+                # A part heading opens a new run of sections ("II DIAZONIUM SALTS", or
+                # "Carboxylic Acids" standing in for a dropped 8.6 heading). Ordinary
+                # unnumbered headings ("Solubility", "Mechanism") are not parts.
+                nxt = next((_NUMBERED.match(x) for x in headings[i + 1:] if _NUMBERED.match(x)), None)
+                roman = re.match(r"^(?:I{1,3}|IV)\s+", h)
+                words = h[roman.end():].split() if roman else h.split()
+                letters = [ch for ch in h if ch.isalpha()]
+                opens_orphan = (nxt is not None and nxt.group(3) == "1"
+                                and f"{nxt.group(1)}.{nxt.group(2)}" not in numbered)
+                if (nxt is not None and f"{nxt.group(1)}.{nxt.group(2)}" != last_xy and len(words) <= 4
+                        and not re.search(r"\d|[.:]$", h) and not _skipped(h)
+                        and norm(h) != norm(chapter_of[code])
+                        and (roman or all(ch.isupper() for ch in letters) or opens_orphan)):
+                    part = _pretty(" ".join(words))
+                continue
+            xy = f"{m.group(1)}.{m.group(2)}"
+            last_xy = xy
+            title = _pretty(m.group(4))
+            if _skipped(m.group(4)) or count.get((subject_of[code], norm(m.group(4))), 0) < 2:
+                names[(code, h)] = title
+                continue
+            section = f"{xy}.{m.group(3)}" if m.group(3) else xy
+            if m.group(3):
+                options = ([numbered[xy]] if xy in numbered else []) + [part]
+            else:
+                options = [re.sub(r"^\d+\s+", "", chapter_of[code]).strip(), part]
+            name = next((f"{title} ({q})" for q in options
+                         if q and norm(q) != norm(title) and f"{title} ({q})" not in used),
+                        f"{title} (§{section})")
+            used.add(name)
+            names[(code, h)] = name
+    return names
+
+
 @lru_cache(maxsize=1)
 def _derive() -> dict[str, Any]:
     rows: list[dict] = []
@@ -81,6 +157,7 @@ def _derive() -> dict[str, Any]:
     by_code: dict[str, list[dict]] = {}
     for r in rows:
         by_code.setdefault(r["chapter_code"], []).append(r)
+    display = _display_names(rows)
 
     # 1. Process chapters present in ncert.jsonl
     for ch_index, code in enumerate(sorted(by_code, key=lambda c: (c[0] != "k", c))):  # Class XI, then XII
@@ -101,13 +178,16 @@ def _derive() -> dict[str, Any]:
         for r in theory:
             heading = (r.get("section") or "").strip()
             m = _NUMBERED.match(heading)
-            if m and not norm(m.group(4)) in _SKIP:
-                name = _pretty(m.group(4))
+            if m and not _skipped(m.group(4)):
+                # The id keeps coming from the bare title so learner records keyed on it
+                # survive; only the display name is qualified.
+                bare = _pretty(m.group(4))
+                name = display.get((code, heading), bare)
                 prefix = subject.lower()[:4]
-                cid = f"{prefix}_{slug(name)}"
+                cid = f"{prefix}_{slug(bare)}"
                 n = 2
                 while cid in taken:
-                    cid = f"{prefix}_{slug(name)}_{n}"
+                    cid = f"{prefix}_{slug(bare)}_{n}"
                     n += 1
                 taken.add(cid)
                 unit = chapter.jee_unit or chapter.unit
@@ -118,14 +198,14 @@ def _derive() -> dict[str, Any]:
                     source="ncert_section", subject=subject,
                 )
                 concepts.append(current)
-            elif current is not None and heading and norm(heading) not in _SKIP and not _NUMBERED.match(heading):
+            elif current is not None and heading and not _skipped(heading) and not _NUMBERED.match(heading):
                 # An unnumbered heading names something taught in the current section.
                 alias = _pretty(re.sub(r"^(\(?[a-z0-9ivx]+[.)]?\s+)", "", heading, flags=re.I))
                 if len(alias) > 3 and alias not in current.aliases:
                     current.aliases.append(alias)
             if current is not None:
                 owner_of_key.setdefault(_key(heading), current)
-                if norm(heading) not in _SKIP:
+                if not _skipped(heading):
                     hints[r["id"]] = current.name
 
         for r in ch_rows:
