@@ -109,6 +109,33 @@ def test_compact_past_tool_messages():
     assert t2_data.get("compacted") is not True
 
 
+def test_long_reply_keeps_the_question_at_the_end(monkeypatch):
+    """A clipped assistant turn must still contain the check it just asked."""
+    context.clear_context_cache()
+    monkeypatch.setattr("services.progress_report.progress_digest", lambda _uid: "")
+    monkeypatch.setattr("services.cross_room.recent_activity", lambda _uid, _sid: "")
+
+    question = "Are mg and N an action-reaction pair?"
+    lesson = ("Newton's first law defines inertial frames. " * 80) + question
+    assert len(lesson) > context.TURN_CLIP_CHARS
+
+    sections = context.build(
+        {
+            "user_id": "u_test",
+            "session_id": "s_test",
+            "recent_turns": [
+                {"role": "user", "content": "Teach me Newton's laws"},
+                {"role": "assistant", "content": lesson},
+            ],
+        },
+        stable_system_prompt="Static Tutor Prompt",
+    )
+    stored = sections.recent_turns[-1]["content"]
+    assert stored.endswith(question)
+    assert len(stored) <= context.TURN_CLIP_CHARS
+    assert stored.startswith("… ")
+
+
 def test_context_builder_caching_and_budget_trimming(monkeypatch):
     """Phase 3.4 & 3.5: Sections priority trimming and cross-room / digest caching."""
     context.clear_context_cache()

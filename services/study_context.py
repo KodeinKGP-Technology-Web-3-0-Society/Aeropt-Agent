@@ -529,12 +529,14 @@ def session_runtime(study_session_id: str) -> Dict[str, Any]:
     except Exception:
         return out
     open_id: Optional[str] = None
+    open_instance: Optional[str] = None
     served: List[str] = []
     for e in events:
         et = e.get("event_type")
         pay = e.get("payload") or {}
         if et == "question_served" and e.get("content_id"):
             open_id = e["content_id"]
+            open_instance = (pay or {}).get("question_instance_id")
             served.append(open_id)
         elif et == "question_attempted":
             out["last_answered"] = {
@@ -543,6 +545,7 @@ def session_runtime(study_session_id: str) -> Dict[str, Any]:
                 "student_answer": pay.get("student_answer"),
             }
             open_id = None
+            open_instance = None
             if pay.get("is_correct"):
                 out["practice_streak"] += 1
                 out["wrong_streak"] = 0
@@ -572,7 +575,10 @@ def session_runtime(study_session_id: str) -> Dict[str, Any]:
             except Exception:
                 rows = []
         if rows:
-            out["current_question"] = rows[0]
+            current = dict(rows[0])
+            if open_instance:
+                current["question_instance_id"] = open_instance
+            out["current_question"] = current
             out["awaiting_answer"] = True
     return out
 

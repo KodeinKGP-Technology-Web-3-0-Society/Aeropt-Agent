@@ -1,6 +1,6 @@
 """Curriculum tools: find the concept, fetch the grounding material.
 
-These wrap `agents/concept_resolver.py` and `agents/graphrag_retriever.py`
+These wrap the concept-context adapter and `retrieval/bridge.py`
 unchanged. That is the point of the wrapper: retrieval order, the content-type
 cascade, the vector search and the prerequisite walk are deterministic
 engineering, and a model must not be able to improvise them. The agent decides
@@ -141,6 +141,9 @@ def _teaching_suggestion(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     ),
     args_model=ResolveConceptArgs,
     scopes=(SCOPE_READ,),
+    # A pool reconnect alone may wait up to ten seconds. Allow that recovery
+    # within the turn budget; cold model/index setup belongs at CLI/API startup.
+    timeout_s=20.0,
 )
 def resolve_concept(args: ResolveConceptArgs, ctx: ToolContext) -> Dict[str, Any]:
     from agents.concept_resolver import concept_resolver_node
@@ -192,7 +195,7 @@ def resolve_concept(args: ResolveConceptArgs, ctx: ToolContext) -> Dict[str, Any
     timeout_s=10.0,
 )
 def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, Any]:
-    from agents.graphrag_retriever import graphrag_retriever_node
+    from retrieval.bridge import retrieve_for_state
 
     concept_id = args.concept_id or ctx.state.get("primary_concept_id") or ""
     if not concept_id:
@@ -216,7 +219,7 @@ def retrieve_content(args: RetrieveContentArgs, ctx: ToolContext) -> Dict[str, A
     if args.exam and args.exam.upper() in {"JEE_ADVANCED", "JEE_MAINS"}:
         state["target_exam"] = args.exam.upper()
 
-    result = graphrag_retriever_node(state)  # type: ignore[arg-type]
+    result = retrieve_for_state(dict(state))
     if result.get("error"):
         return {"error": result["error"]}
 

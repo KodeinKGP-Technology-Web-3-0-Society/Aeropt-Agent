@@ -392,13 +392,6 @@ def _outcome_label(row: Dict[str, Any]) -> str:
     return "unknown"
 
 
-def _is_correct(state: Dict[str, Any], kind: str) -> bool:
-    if kind == "study":
-        grade = state.get("last_grade") or {}
-        return bool(grade.get("is_correct")) if isinstance(grade, dict) else False
-    return bool(state.get("is_correct"))
-
-
 def _proficiency(state: Dict[str, Any], kind: str) -> Tuple[Optional[float], Optional[float]]:
     source = state.get("last_grade") if kind == "study" and isinstance(state.get("last_grade"), dict) else state
     if not isinstance(source, dict):

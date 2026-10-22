@@ -31,11 +31,11 @@ def test_check_answer_skips_llm_for_prose_draft():
     ) * 3
     assert len(prose_draft) > 180
 
-    with patch("agents.answer_checker.groq_complete") as mock_complete:
+    with patch("agents.answer_checker.complete_text") as mock_complete:
         res = check_answer(query="How to study?", draft=prose_draft, state={})
         assert res.verdict == "skipped"
         assert "No analytical or exam claims" in res.issues[0]
-        # groq_complete was never called!
+        # complete_text was never called!
         mock_complete.assert_not_called()
 
 
@@ -61,8 +61,8 @@ def test_in_process_prefetch_cache():
         "session_id": "s1",
     }
     with patch("agents.concept_resolver.concept_resolver_node", return_value={"primary_concept_id": "c1"}), \
-         patch("agents.planner.planner_node", return_value={}), \
-         patch("agents.graphrag_retriever.graphrag_retriever_node", return_value={"retrieved_chunks": [{"id": "chk1"}]}):
+         patch("services.personalization.personalize_for_state", return_value={}), \
+         patch("retrieval.bridge.retrieve_for_state", return_value={"retrieved_chunks": [{"id": "chk1"}]}):
         _prefetch_next_query("s1", state)
 
     cache_key = "prefetch:s1:photoelectric effect"

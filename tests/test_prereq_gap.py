@@ -1,4 +1,4 @@
-from agents.prereq_gap import find_weak_direct_prereq
+from services.prerequisites import find_weak_direct_prereq
 
 def test_find_weak_direct_prereq_empty():
     assert find_weak_direct_prereq([]) is None

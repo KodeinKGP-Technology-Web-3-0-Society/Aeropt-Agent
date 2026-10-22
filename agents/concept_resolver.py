@@ -1,12 +1,11 @@
 """
-Concept Resolver Agent
+Concept-context adapter for tutor tools and API prefetch.
 
 Responsibilities:
   - Map the user's query to primary_concept_id + secondary_concept_ids + content_type
-  - Delegate the actual classification to mcp_tools.resolve_concept_id, which already
-    combines a fast lexical pre-check with an LLM fallback that outputs an explicit
-    in_scope flag — this used to be a second, independent, hand-rolled implementation
-    here that had no in_scope concept at all.
+  - Delegate matching to mcp_tools.resolve_concept_id, which combines the
+    Postgres concept cache, aliases, embeddings and material voting and returns
+    an explicit in_scope flag.
 
 Off-syllabus handling (fixed 2026-09-11 — was the #1 cause of hallucinated answers):
   When the query doesn't match any concept this tutor tracks (in_scope=False), or the
@@ -19,18 +18,18 @@ Off-syllabus handling (fixed 2026-09-11 — was the #1 cause of hallucinated ans
   Solver (see agents/solver.py's grounding_note) tell the student plainly that this is
   outside the syllabus this tutor covers, instead of guessing.
 
-Model: config.CONCEPT_RESOLVER_MODEL (Groq) — fast; 33-item closed-set fits trivially in context
-Design note (Section 6): no embeddings here.  A full 33-item list costs <500 tokens.
-Embeddings add a failure mode (nearest-neighbour error) without adding accuracy at this scale.
+The active resolver uses the retrieval Postgres concept cache, aliases and query
+embeddings. The CLI and HTTP server prepare that index and embedding model at
+startup so cold initialization does not consume the first tool call's deadline.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from db.supabase_client import db
 from mcp_tools.resolve_concept_id import ResolveConceptIdArgs, resolve_concept_id
 from models.state import TutorState
+from retrieval import store
 from services.classroom_rooms import prerequisite_ids
 
 
@@ -53,9 +52,12 @@ def concept_resolver_node(state: TutorState) -> Dict[str, Any]:
 
     # Fail loudly here (not silently) if the taxonomy itself is missing/empty — that's
     # a data/ingestion problem, distinct from "this one query is off-syllabus" below.
-    concepts = db.read_concepts()
+    # Use the same cached catalogue as resolve_concept_id. Fetching the complete
+    # REST catalogue here added a redundant network request on every resolution;
+    # those rows were never used by the actual Postgres-backed resolver.
+    concepts = store.all_concepts()
     if not concepts:
-        return {"error": "No concepts found in Supabase. Ingestion may not have run."}
+        return {"error": "No concepts found in the retrieval index. Ingestion may not have run."}
 
     result = resolve_concept_id(
         ResolveConceptIdArgs(

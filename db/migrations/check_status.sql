@@ -28,6 +28,9 @@ SELECT migration, applied FROM (VALUES
   ('020_agent_trace_metrics: metrics',             EXISTS (SELECT 1 FROM information_schema.columns
                                                      WHERE table_schema = 'public' AND table_name = 'agent_trace' AND column_name = 'metrics')),
   ('021_episodic_memory_evidence: assessment_status', EXISTS (SELECT 1 FROM information_schema.columns
-                                                     WHERE table_schema = 'public' AND table_name = 'episodic_memory' AND column_name = 'assessment_status'))
+                                                     WHERE table_schema = 'public' AND table_name = 'episodic_memory' AND column_name = 'assessment_status')),
+  ('022_grading_commit: submission_id',            EXISTS (SELECT 1 FROM information_schema.columns
+                                                     WHERE table_schema = 'public' AND table_name = 'user_attempts' AND column_name = 'submission_id')),
+  ('022_grading_commit: commit_graded_attempt',    to_regprocedure('public.commit_graded_attempt(jsonb)') IS NOT NULL)
 ) AS t(migration, applied)
 ORDER BY migration;

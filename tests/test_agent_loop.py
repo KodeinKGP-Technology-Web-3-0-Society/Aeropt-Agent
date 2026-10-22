@@ -5,20 +5,25 @@ here is a failure mode that would otherwise reach a student: a model that loops
 forever, a model that ends a turn silently, a tool error that derails the whole
 reply.
 
-`groq_chat` is patched rather than the Groq client, because with a multi-key
+`chat_completion` is patched rather than the Groq client, because with a multi-key
 pool configured the client argument is ignored in favour of a pooled one.
 """
 
 from __future__ import annotations
 
+import contextvars
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from pydantic import BaseModel, Field
 
+from agents.runtime.budget import TurnBudget, current_budget_var
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import SCOPE_READ, ToolContext, ToolSpec, Toolbelt
+from services import progress
+from utils.llm import UsageMeter, usage_meter
 
 
 class _Args(BaseModel):
@@ -71,7 +76,7 @@ def _run(belt, **kwargs):
 class HappyPathTests(unittest.TestCase):
     def test_a_direct_answer_costs_one_call_and_no_tools(self):
         with patch(
-            "agents.runtime.loop.groq_chat",
+            "agents.runtime.loop.chat_completion",
             return_value=(_msg("Force equals mass times acceleration."), "test-model"),
         ) as chat:
             belt, ctx = _belt()
@@ -87,7 +92,7 @@ class HappyPathTests(unittest.TestCase):
             (_msg(tool_calls=[("echo", '{"value": "hello"}')]), "test-model"),
             (_msg("Here is your answer."), "test-model"),
         ]
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies) as chat:
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies) as chat:
             belt, ctx = _belt()
             result = _run(belt)
 
@@ -111,11 +116,77 @@ class HappyPathTests(unittest.TestCase):
             ),
             (_msg("Done."), "test-model"),
         ]
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies):
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies):
             belt, ctx = _belt()
             result = _run(belt)
         self.assertEqual(result.tool_calls_made, ["echo", "echo"])
         self.assertEqual(ctx.trace.tool_calls, 2)
+
+    def test_parallel_reads_keep_turn_context_and_propagate_cancellation(self):
+        """Both worker hops preserve one turn and keep local context writes apart."""
+        barrier = threading.Barrier(2)
+        cancelled = threading.Event()
+        budget = TurnBudget.from_duration(10)
+        meter = UsageMeter()
+        marker = contextvars.ContextVar("parallel_read_marker", default="missing")
+        events = []
+
+        def read(args, ctx):
+            inherited_marker = marker.get()
+            marker.set(args.value)
+            # Both reads must start before cancellation is signalled, otherwise
+            # the toolbelt correctly refuses the second dispatch.
+            barrier.wait(timeout=2)
+            cancelled.set()
+            progress.report("stage", f"read:{args.value}", "done")
+            return {
+                "turn_marker": inherited_marker,
+                "worker_marker": marker.get(),
+                "same_budget": current_budget_var.get() is budget,
+                "same_usage_meter": usage_meter.get() is meter,
+                "cancelled": progress.is_cancelled(),
+            }
+
+        spec = ToolSpec("read", "Read turn context.", _Args, read, frozenset({SCOPE_READ}))
+        ctx = ToolContext(user_id="u1", session_id="s1", budget=budget)
+        belt = Toolbelt([spec], ctx)
+        marker_token = marker.set("turn-1")
+        usage_token = usage_meter.set(meter)
+        progress_token = progress.install(events.append)
+        cancel_token = progress.install_cancel(cancelled)
+        try:
+            with patch(
+                "agents.runtime.loop.chat_completion",
+                return_value=(
+                    _msg(tool_calls=[("read", '{"value": "a"}'), ("read", '{"value": "b"}')]),
+                    "test-model",
+                ),
+            ) as chat:
+                result = _run(belt, budget=budget)
+            self.assertEqual(marker.get(), "turn-1")
+        finally:
+            progress.reset_cancel(cancel_token)
+            progress.reset(progress_token)
+            usage_meter.reset(usage_token)
+            marker.reset(marker_token)
+
+        self.assertEqual(result.stop_reason, "cancelled")
+        self.assertEqual(chat.call_count, 1)
+        observations = {entry["args"]["value"]: entry["result"] for entry in ctx.full_tool_results}
+        self.assertEqual(set(observations), {"a", "b"})
+        for value, observation in observations.items():
+            self.assertTrue(observation.ok, observation.error)
+            self.assertEqual(observation.data, {
+                "turn_marker": "turn-1",
+                "worker_marker": value,
+                "same_budget": True,
+                "same_usage_meter": True,
+                "cancelled": True,
+            })
+        self.assertEqual(
+            {event["name"] for event in events if event["name"].startswith("read:")},
+            {"read:a", "read:b"},
+        )
 
 
 class RecoveryTests(unittest.TestCase):
@@ -124,7 +195,7 @@ class RecoveryTests(unittest.TestCase):
             (_msg(tool_calls=[("boom", "{}")]), "test-model"),
             (_msg("I could not look that up, but here is what I know."), "test-model"),
         ]
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies):
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies):
             belt, _ = _belt((ECHO, BOOM))
             result = _run(belt)
         self.assertTrue(result.ok)
@@ -135,7 +206,7 @@ class RecoveryTests(unittest.TestCase):
             (_msg(tool_calls=[("boom", "{}")]), "test-model"),
             (_msg("Recovered."), "test-model"),
         ]
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies) as chat:
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies) as chat:
             belt, _ = _belt((ECHO, BOOM))
             _run(belt)
         tool_msg = next(
@@ -145,7 +216,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_a_dead_model_chain_returns_an_error_not_an_exception(self):
         with patch(
-            "agents.runtime.loop.groq_chat", side_effect=RuntimeError("all models down")
+            "agents.runtime.loop.chat_completion", side_effect=RuntimeError("all models down")
         ):
             belt, _ = _belt()
             result = _run(belt)
@@ -170,7 +241,7 @@ class BudgetTests(unittest.TestCase):
                 return _msg(tool_calls=[("echo", "{}")]), "test-model"
             return _msg("Fine, here is the answer."), "test-model"
 
-        with patch("agents.runtime.loop.groq_chat", side_effect=_reply):
+        with patch("agents.runtime.loop.chat_completion", side_effect=_reply):
             belt, _ = _belt()
             result = _run(belt, max_steps=3)
 
@@ -183,7 +254,7 @@ class BudgetTests(unittest.TestCase):
     def test_a_closing_call_that_still_returns_nothing_is_reported(self):
         """The caller must be able to tell an empty turn from a real answer."""
         with patch(
-            "agents.runtime.loop.groq_chat",
+            "agents.runtime.loop.chat_completion",
             side_effect=lambda **kw: (_msg(tool_calls=[("echo", "{}")]), "test-model"),
         ):
             belt, _ = _belt()
@@ -195,7 +266,7 @@ class BudgetTests(unittest.TestCase):
             (_msg(tool_calls=[("echo", "{}")]), "test-model"),
             (_msg("Answer."), "test-model"),
         ]
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies) as chat:
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies) as chat:
             belt, _ = _belt()
             _run(belt, max_steps=2)
         self.assertIsNotNone(chat.call_args_list[0].kwargs["tools"])
@@ -203,7 +274,7 @@ class BudgetTests(unittest.TestCase):
 
     def test_an_exhausted_time_budget_still_produces_an_answer(self):
         with patch(
-            "agents.runtime.loop.groq_chat",
+            "agents.runtime.loop.chat_completion",
             return_value=(_msg("Short answer with what I have."), "test-model"),
         ):
             belt, _ = _belt()

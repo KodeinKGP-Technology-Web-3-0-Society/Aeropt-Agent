@@ -305,18 +305,3 @@ def alias_index(subject: str | None = None) -> dict[str, tuple[str, str]]:
         for name in [chapter, *row["aliases"]]:  # type: ignore[list-item]
             index[norm(str(name))] = (chapter, unit)
     return index
-
-
-def alias_index_with_subject() -> dict[str, tuple[str, str, str]]:
-    """Normalised alias -> (canonical chapter, unit, subject)."""
-    import re
-
-    def norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
-
-    index: dict[str, tuple[str, str, str]] = {}
-    for row in canonical_chapters():
-        chapter, unit, subj = str(row["chapter"]), str(row["unit"]), str(row["subject"])
-        for name in [chapter, *row["aliases"]]:  # type: ignore[list-item]
-            index[norm(str(name))] = (chapter, unit, subj)
-    return index

@@ -17,6 +17,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import config
 from pydantic import BaseModel, Field
 
 from agents.runtime.toolbelt import (
@@ -419,6 +420,9 @@ def serve_practice_question(args: ServePracticeArgs, ctx: ToolContext) -> Dict[s
         return {"error": "This concept has no questions in the index at all.", "exhausted": True}
 
     content_id = question.get("content_id", "")
+    import uuid as _uuid
+    question = dict(question)
+    question["question_instance_id"] = str(_uuid.uuid4())
     try:
         retrieval_service.mark_served(ctx.user_id, [question], purpose="study_practice")
     except Exception:
@@ -433,6 +437,7 @@ def serve_practice_question(args: ServePracticeArgs, ctx: ToolContext) -> Dict[s
                 "difficulty": question.get("difficulty"),
                 "content_type": question.get("content_type"),
                 "question_type": question.get("question_type"),
+                "question_instance_id": question["question_instance_id"],
             },
         )
 
@@ -566,6 +571,10 @@ class GradePracticeArgs(BaseModel):
     student_answer: Optional[str] = Field(
         default=None, description="What the student answered."
     )
+    submission_id: Optional[str] = Field(
+        default=None,
+        description="Stable id for this submission. Reuse it on retry. Omit to use the served question instance.",
+    )
     error_type: Optional[str] = Field(
         default=None,
         description=(
@@ -599,155 +608,90 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
             "error": "No practice question is open. Serve one before grading — "
             "an answer to your own check question is not a graded attempt."
         }
+    from agents.runtime.toolbelt import call_is_live
+
+    if not call_is_live(ctx):
+        return {
+            "graded": False,
+            "recorded": False,
+            "persistence_status": "not_attempted",
+            "failure_reason": "cancelled",
+            "student_message": "That check was stopped, so your progress was not changed.",
+        }
     content_id = question.get("content_id", "")
+    instance_id = question.get("question_instance_id") or ""
+    from services.answer_key import grade_free_answer
+    from services.grading import answer_fingerprint, commit_progress
 
-    # Update streaks
-    practice_streak = ctx.state.get("practice_streak", 0)
-    wrong_streak = ctx.state.get("wrong_streak", 0)
-    questions_served = ctx.state.get("questions_served", 0) + 1
-    questions_correct = ctx.state.get("questions_correct", 0)
-    difficulty = ctx.state.get("difficulty_level", 1)
-
-    if args.is_correct:
-        practice_streak += 1
-        wrong_streak = 0
-        questions_correct += 1
-    else:
-        practice_streak = 0
-        wrong_streak += 1
-
-    # Difficulty adjustment
-    difficulty_changed = False
-    if practice_streak >= 3 and difficulty < 5:
-        difficulty += 1
-        practice_streak = 0
-        difficulty_changed = True
-    elif wrong_streak >= 2 and difficulty > 1:
-        difficulty -= 1
-        wrong_streak = 0
-        difficulty_changed = True
-
-    # Log the attempt
-    db.insert_study_event(
-        ssid, ctx.user_id, "question_attempted",
-        concept_id=concept_id,
-        content_id=content_id,
-        payload={
-            "is_correct": args.is_correct,
-            "student_answer": args.student_answer,
-            "error_type": args.error_type,
-            "difficulty": question.get("difficulty"),
-        },
-    )
-
-    if difficulty_changed:
-        db.insert_study_event(
-            ssid, ctx.user_id, "difficulty_adjusted",
-            concept_id=concept_id,
-            payload={"new_difficulty": difficulty, "reason": (
-                "streak_up" if practice_streak == 0 and args.is_correct else "streak_down"
-            )},
-        )
-
-    # Update session stats
-    db.update_study_session_stats(ssid, questions_served, questions_correct, difficulty)
-
-    # Update proficiency through the same maths the Main Tutor uses, so the
-    # Study Room and chat agree on what this student knows. diagnostic_node
-    # also writes the user_attempts row. The error type is passed in so it does
-    # not spend a model call classifying it.
-    recorded = False
-    diag: Dict[str, Any] = {}
-    try:
-        from agents.diagnostic import diagnostic_node
-
-        diag = diagnostic_node({  # type: ignore[arg-type]
-            **ctx.state,
-            "primary_concept_id": concept_id,
-            "has_graded_outcome": True,
-            "is_correct": args.is_correct,
-            "student_answer": args.student_answer,
-            "error_type": None if args.is_correct else (
-                args.error_type or (None if ctx.state.get("deterministic_grade") else "conceptual")
+    decision = grade_free_answer(question, args.student_answer)
+    authoritative = decision["grade_status"] in {"correct", "incorrect"}
+    if not authoritative:
+        return {
+            "graded": False,
+            "recorded": False,
+            "grade_status": "ungradable" if decision["grade_status"] == "ungradable" else decision["grade_status"],
+            "evidence_source": "model_unverified" if decision["grade_status"] == "ungradable" else "none",
+            "persistence_status": "not_attempted",
+            "is_correct": None,
+            "model_claim": bool(args.is_correct),
+            "failure_reason": decision.get("failure_reason") or "no_authoritative_key",
+            "student_message": (
+                "This answer could not be checked against a key, so your progress was not changed."
+                if decision["grade_status"] == "ungradable"
+                else "That submission could not be read as an answer, so your progress was not changed."
             ),
-            "skip_error_classification": bool(ctx.state.get("deterministic_grade")),
-            "time_taken_sec": None,
-            "retrieved_chunks": [question] if question else [],
-        })
-        recorded = not diag.get("error")
-    except Exception:
-        logger.debug("diagnostic update failed", exc_info=True)
-        diag = {}
-
-    # Commit closes an older episode later. This tool only stages the grade.
-    last_grade: Optional[Dict[str, Any]] = None
-    if recorded:
-        last_grade = _last_grade(
-            is_correct=args.is_correct,
-            content_id=content_id or None,
-            concept_id=concept_id or None,
-            attempt_id=diag.get("attempt_id"),
-            proficiency_before=diag.get("proficiency_before"),
-            proficiency_after=diag.get("proficiency_after"),
-        )
-    else:
-        try:
-            attempt = db.insert_user_attempt(
-                user_id=ctx.user_id,
-                session_id=ctx.state.get("session_id", ""),
-                concept_id=concept_id,
-                content_id=content_id or None,
-                is_correct=args.is_correct,
-                error_type=args.error_type,
-                time_taken_sec=None,
-                student_answer=args.student_answer,
-                source="study",
-                study_session_id=ssid,
-            )
-            row = attempt if isinstance(attempt, dict) else {}
-            last_grade = _last_grade(
-                is_correct=args.is_correct,
+        }
+    submission_id = (args.submission_id or "").strip() or instance_id
+    saved = commit_progress(
+        user_id=ctx.user_id,
+        session_id=ctx.state.get("session_id") or "",
+        concept_id=concept_id,
+        content_id=content_id or None,
+        submission_id=submission_id or None,
+        question_instance_id=instance_id or None,
+        student_answer=args.student_answer or "",
+        fingerprint=answer_fingerprint({
+            "student_answer": args.student_answer or "",
+            "content_id": content_id,
+            "question_instance_id": instance_id,
+        }),
+        is_correct=bool(decision["is_correct"]),
+        grade_status=decision["grade_status"],
+        evidence_source="answer_key",
+        error_type=None if decision["is_correct"] else (
+            args.error_type if args.error_type in {"conceptual", "procedural", "calculation", "misread"} else None
+        ),
+        source="study",
+        study_session_id=ssid,
+        question_difficulty=question.get("difficulty"),
+        answer_text=decision.get("answer_text") or "",
+    )
+    public = saved.to_public()
+    if saved.recorded:
+        staged = {
+            "questions_served": saved.questions_served,
+            "questions_correct": saved.questions_correct,
+            "difficulty_level": saved.difficulty_level,
+            "awaiting_answer": False,
+            "current_question": None,
+            "last_grade": _last_grade(
+                is_correct=bool(saved.is_correct),
                 content_id=content_id or None,
                 concept_id=concept_id or None,
-                attempt_id=row.get("attempt_id"),
-                proficiency_before=row.get("proficiency_before"),
-                proficiency_after=row.get("proficiency_after"),
-            )
-        except Exception:
-            logger.debug("attempt insert failed", exc_info=True)
-
-    staged: Dict[str, Any] = {
-        "questions_served": questions_served,
-        "questions_correct": questions_correct,
-        "difficulty_level": difficulty,
-        "practice_streak": practice_streak,
-        "wrong_streak": wrong_streak,
-        "awaiting_answer": False,
-        "current_question": None,
-    }
-    if last_grade is not None:
-        staged["last_grade"] = last_grade
-    ctx.stage(**staged)
-    ctx.state["graded_this_turn"] = True  # turn-local: serve_practice_question waits for the student
-    ctx.state.update(ctx.updates)
-
-    result: Dict[str, Any] = {
-        "recorded": True,
-        "is_correct": args.is_correct,
-        "questions_served": questions_served,
-        "questions_correct": questions_correct,
-        "correct_rate": round(questions_correct / questions_served, 2) if questions_served else 0,
-        "difficulty_level": difficulty,
-    }
-    if difficulty_changed:
-        result["difficulty_changed"] = True
-        result["difficulty_reason"] = (
-            f"Difficulty {'increased' if args.is_correct else 'decreased'} to {difficulty}"
-        )
-    if not args.is_correct and question.get("solution"):
-        result["solution_available"] = True
-
-    return result
+                attempt_id=saved.attempt_id,
+                proficiency_before=saved.proficiency_before,
+                proficiency_after=saved.proficiency_after,
+            ),
+        }
+        if saved.questions_served is not None:
+            ctx.stage(**{key: value for key, value in staged.items() if value is not None or key in {"current_question", "awaiting_answer"}})
+        else:
+            ctx.stage(**staged)
+        ctx.state["graded_this_turn"] = True
+        ctx.state.update(ctx.updates)
+    public["student_message"] = saved.student_message
+    public["solution_available"] = bool(question.get("solution")) and saved.grade_status == "incorrect"
+    return public
 
 
 # ── Complete study session ────────────────────────────────────────────────────
@@ -785,7 +729,14 @@ def complete_study_session(args: CompleteSessionArgs, ctx: ToolContext) -> Dict[
     rate = questions_correct / questions_served if questions_served else 0.0
     if questions_served == 0:
         outcome = "incomplete"
-    elif (questions_served >= 4 and rate >= 0.75) or (questions_served >= 3 and rate >= 0.7 and difficulty >= 3):
+    elif (
+        (questions_served >= config.STUDY_MASTERED_MIN_QUESTIONS and rate >= config.STUDY_MASTERED_RATE)
+        or (
+            questions_served >= config.STUDY_MASTERED_HARD_QUESTIONS
+            and rate >= config.STUDY_MASTERED_HARD_RATE
+            and difficulty >= config.STUDY_MASTERED_HARD_DIFFICULTY
+        )
+    ):
         outcome = "mastered"
     else:
         outcome = "needs_review"
@@ -925,15 +876,21 @@ def compute_readiness_score(
     factors: Dict[str, Any] = {}
 
     # Proficiency from user_concept_state
-    proficiency = 0.5
+    from services.grading import measured_score
+
+    proficiency = None
     try:
         cs = db.read_user_concept_state(user_id, concept_id)
-        if cs:
-            proficiency = float(cs.get("proficiency_score") or 0.5)
+        proficiency = measured_score(cs)
+        if proficiency is not None:
             factors["proficiency"] = round(proficiency, 2)
             factors["total_attempts"] = cs.get("attempts", 0)
+            factors["cold_start"] = False
+        elif cs:
+            factors["cold_start"] = bool(cs.get("is_cold_start", True))
+            factors["total_attempts"] = cs.get("attempts", 0)
     except Exception:
-        pass
+        proficiency = None
 
     # Best study session on this concept
     max_difficulty = 1
@@ -960,8 +917,17 @@ def compute_readiness_score(
         factors["best_correct_rate"] = round(best_rate, 2)
         factors["days_since_last_study"] = round(days_since, 1)
 
-    # Formula
-    base = proficiency * 40
+    completed_questions = sum(int(s.get("questions_served") or 0) for s in completed)
+    if proficiency is None and completed_questions <= 0:
+        return {
+            "score": None,
+            "available": False,
+            "confidence": 0.0,
+            "factors": {**factors, "reason": "unmeasured"},
+        }
+
+    # Formula. A missing proficiency does not become the 0.5 prior.
+    base = (0.0 if proficiency is None else proficiency) * 40
     difficulty_bonus = (max_difficulty / 5) * 20
     recency_factor = math.exp(-days_since / 14) * 20
     accuracy_factor = best_rate * 20

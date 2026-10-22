@@ -1,6 +1,9 @@
 """Classroom Phase 3 specialists: plan, daily, revise, readiness.
 
-Pure functions over the JSON Django sends. No chat, no stream, no LLM.
+Structured responses over the JSON Django sends. Plan creation can load a user
+profile and call the study planner model, then filters its proposal or falls back
+to the catalogue. Daily scheduling can request a plan when none is supplied;
+revision and readiness use deterministic rules.
 `load_learner` is the student-agent: it normalizes the body and is not a route.
 """
 
@@ -46,7 +49,7 @@ def load_learner(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 def plan_specialist(learner: Dict[str, Any]) -> Dict[str, Any]:
     """Build the week plan using the LLM study planner agent."""
-    from agents.study_planner import generate_study_plan
+    from services.study_plan_generator import generate_study_plan
     from db.supabase_client import db
     
     catalog = learner["catalog"]

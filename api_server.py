@@ -120,7 +120,7 @@ async def _lifespan(_app: FastAPI):
             raise RuntimeError(f"Retrieval database unavailable: {exc}") from exc
     # Model drift check against provider availability (cached 1h)
     try:
-        from utils.groq_pool import check_model_drift
+        from utils.provider_pool import check_model_drift
         missing = check_model_drift()
         if missing:
             log.error("Model drift detected: %s missing from provider", ", ".join(missing))
@@ -288,6 +288,10 @@ class ChatMessageResponse(BaseModel):
     active_agent: Optional[str] = None
     agent_signals: Optional[Dict[str, Any]] = None
     steps: Optional[List[Dict[str, Any]]] = None
+    grade_status: Optional[str] = None
+    evidence_source: Optional[str] = None
+    persistence_status: Optional[str] = None
+    recorded: Optional[bool] = None
     error: Optional[str] = None
 
 
@@ -395,6 +399,9 @@ class ConceptProficiencyResponse(BaseModel):
     proficiency_pct: Optional[int] = None
     proficiency_score: Optional[float] = None
     flagged_weak: Optional[bool] = None
+    measured: bool = False
+    cold_start: bool = True
+    stored_score: Optional[float] = None
 
 
 class ProbeSpec(BaseModel):
@@ -411,6 +418,8 @@ class OnboardingDiagnosticRequest(BaseModel):
     probes: Optional[List[ProbeSpec]] = None
     concept_id: Optional[str] = None
     content_id: Optional[str] = None
+    answer: Optional[str] = None
+    submission_id: Optional[str] = None
     is_correct: Optional[bool] = None
 
 
@@ -432,7 +441,9 @@ class OnboardingDiagnosticStartResponse(BaseModel):
 
 class OnboardingDiagnosticGradeResponse(BaseModel):
     concept_scores: Dict[str, float]
-    overall: float
+    overall: Optional[float] = None
+    measured: bool = False
+    grade: Optional[Dict[str, Any]] = None
 
 
 def _resolve_session(
@@ -603,15 +614,15 @@ def _prefetch_next_query(session_id: str, result: TutorState) -> None:
         return
     try:
         from agents.concept_resolver import concept_resolver_node
-        from agents.planner import planner_node
-        from agents.graphrag_retriever import graphrag_retriever_node
+        from services.personalization import personalize_for_state
+        from retrieval.bridge import retrieve_for_state
 
         p_state = dict(result)
         p_state["query"] = next_query
         p_state["content_type_requested"] = "theory"
         p_state.update(concept_resolver_node(p_state))
-        p_state.update(planner_node(p_state))
-        p_state.update(graphrag_retriever_node(p_state))
+        p_state.update(personalize_for_state(p_state))
+        p_state.update(retrieve_for_state(dict(p_state)))
         cache_key = f"prefetch:{session_id}:{next_query}"
         cache_val = {
             "retrieved_chunks": p_state.get("retrieved_chunks", []),
@@ -721,6 +732,10 @@ def _to_chat_response(session_id: str, result: TutorState) -> ChatMessageRespons
         active_agent=result.get("active_agent") or payload.get("active_agent"),
         agent_signals=result.get("agent_signals") or payload.get("agent_signals"),
         steps=steps,
+        grade_status=payload.get("grade_status"),
+        evidence_source=payload.get("evidence_source"),
+        persistence_status=payload.get("persistence_status"),
+        recorded=payload.get("recorded"),
         error=_student_facing_error(payload.get("error")),
     )
 
@@ -752,17 +767,18 @@ def onboarding_diagnostic(req: OnboardingDiagnosticRequest):
     if action == "grade":
         if not req.concept_id:
             raise HTTPException(status_code=422, detail="concept_id is required for grade.")
-        if req.is_correct is None:
-            raise HTTPException(status_code=422, detail="is_correct is required for grade.")
         result = grade_placement_answer(
             user_id=req.user_id,
             concept_id=req.concept_id,
             content_id=req.content_id or "",
-            is_correct=bool(req.is_correct),
+            answer=req.answer,
+            submission_id=req.submission_id,
         )
         return OnboardingDiagnosticGradeResponse(
             concept_scores=result.get("concept_scores", {}),
-            overall=result.get("overall", 0.5),
+            overall=result.get("overall"),
+            measured=bool(result.get("measured")),
+            grade=result.get("grade"),
         )
     raise HTTPException(status_code=422, detail="action must be 'start' or 'grade'.")
 
@@ -944,6 +960,12 @@ async def chat_message(
             final_session_id = result.get("session_id") or session_id
 
             result = _attach_agent_signals(result, user_id, req.focus_chapters)
+            if result.get("cancelled"):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {"type": "result", "data": json.dumps({"cancelled": True, "session_id": final_session_id})},
+                )
+                return
 
             # If the solver streamed tokens but the state response is None,
             # inject the accumulated stream so the frontend always gets real text.
@@ -1077,12 +1099,18 @@ def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiency
     if not row:
         return ConceptProficiencyResponse(concept_id=concept_id)
 
-    score = float(row.get("proficiency_score") or 0.5)
+    from services.grading import display_percent, measured_score, stored_score
+
+    measured = measured_score(row)
+    raw = stored_score(row.get("proficiency_score"))
     return ConceptProficiencyResponse(
         concept_id=concept_id,
-        proficiency_pct=int(round(score * 100)),
-        proficiency_score=score,
-        flagged_weak=bool(row.get("flagged_weak")),
+        proficiency_pct=display_percent(measured),
+        proficiency_score=measured,
+        flagged_weak=bool(row.get("flagged_weak")) if measured is not None else None,
+        measured=measured is not None,
+        cold_start=bool(row.get("is_cold_start")) or int(row.get("attempts") or 0) == 0,
+        stored_score=raw,
     )
 
 
@@ -1141,6 +1169,8 @@ def get_chat_session(session_id: str, user_id: str) -> ChatSessionDetailResponse
     for t in turns:
         turn_index = t.get("turn_index") or 0
         presentation = None
+        if t.get("agent_used") == "diagnostic" or not (t.get("content") or "").strip():
+            continue
         if (t.get("role") or "") == "assistant":
             # Prefer durable Supabase presentation; fall back to live carry.
             raw_pres = t.get("presentation")
@@ -1231,6 +1261,7 @@ def end_session(req: EndSessionRequest) -> EndSessionResponse:
     (tab close, crash, network drop), the summary flush does not happen for
     that session.  See module docstring, note 3.
     """
+    _owned_session(req.session_id, req.user_id)
     _flush_session_summary(session_id=req.session_id, user_id=req.user_id)
     release_carry(req.session_id)
 
@@ -1415,8 +1446,17 @@ def _starting_difficulty(user_id: str, concept_id: str) -> int:
         cs = db.read_user_concept_state(user_id, concept_id) or {}
         if int(cs.get("attempts") or 0) == 0:
             return 1
-        prof = float(cs.get("proficiency_score") or 0)
-        return 1 if prof < 0.4 else 2 if prof < 0.65 else 3 if prof < 0.8 else 4
+        from services.grading import measured_score
+
+        prof = measured_score(cs)
+        if prof is None:
+            return 1
+        return (
+            1 if prof < config.WEAK_THRESHOLD
+            else 2 if prof < config.CLEAR_WEAK_THRESHOLD
+            else 3 if prof < config.MASTERY_THRESHOLD
+            else 4
+        )
     except Exception:
         return 1
 
@@ -1636,6 +1676,10 @@ async def study_message(body: StudyMessageRequest) -> StreamingResponse:
     if session.get("user_id") != user_id:
         raise HTTPException(status_code=403, detail="Not your study session")
 
+    if session.get("agent_session_id") != session_id:
+        raise HTTPException(status_code=403, detail="Chat session does not belong to this study session")
+    _owned_session(session_id, user_id)
+
     carry = get_carry(session_id)
 
     # Load initial state
@@ -1847,6 +1891,8 @@ class StudyAnswerRequest(BaseModel):
     choice: List[str] = []
     # … or a numerical answer as typed ("2.35", "5 x 10^3"), graded against the official range.
     value: Optional[str] = None
+    # Reuse this on a retry or double-click. A new attempt uses a new id.
+    submission_id: Optional[str] = None
 
 
 @app.post("/api/v1/study/answer")
@@ -1858,7 +1904,6 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
     from agents.runtime.toolbelt import ToolContext
     from agents.runtime.trace import AgentTrace
     from mcp_tools.study_tools import GradePracticeArgs, grade_practice_answer
-    from services.answer_key import grade_choice
     from services.study_context import session_runtime
 
     user_id = body.user_id.strip()
@@ -1868,17 +1913,16 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
     ssid = session["study_session_id"]
     runtime = session_runtime(ssid)
     question = runtime.get("current_question")
-    if not question:
+    if not question and not (body.submission_id or "").strip():
         raise HTTPException(status_code=409, detail="No question is open")
-    # The structured official answer first (letters or a numeric range); the old text key only
-    # for choice questions ingested before structure existed.
-    from services.answer_key import grade_structured
-
-    result = grade_structured(question, body.choice, body.value)
-    if result is None and body.choice:
-        result = grade_choice(question.get("solution") or "", body.choice)
-    if result is None:
-        return {"graded": False}
+    if not question:
+        return {
+            "graded": False,
+            "recorded": False,
+            "persistence_status": "not_attempted",
+            "failure_reason": "question_closed_no_replay_context",
+            "student_message": "That question is already closed. Resend the saved submission id with the same answer to recover it.",
+        }
 
     labels = (", ".join(f"({c.strip().strip('()')})" for c in body.choice) if body.choice
               else (body.value or "").strip())
@@ -1898,31 +1942,38 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
     }
     ctx = ToolContext(user_id=user_id, session_id=agent_session, state=state,
                       trace=AgentTrace(user_id=user_id, session_id=agent_session))
-    grade_practice_answer(GradePracticeArgs(is_correct=result["correct"], student_answer=labels), ctx)
-
-    # Put the exchange in the conversation, so "explain it" on the next turn
-    # finds it in the tutor's history as well as in its open-question context.
-    try:
-        sess = db.read_session(agent_session) or {}
-        n = int(sess.get("interaction_count") or 0) + 1
-        db.update_session_interaction_count(agent_session, n)
-        db.insert_chat_turn(session_id=agent_session, role="user", content=f"My answer: {labels}",
-                            turn_index=n * 2 - 1, agent_used="student")
-        key_text = result.get("answer_text") or ", ".join(f"({k})" for k in result["key"])
-        db.insert_chat_turn(
-            session_id=agent_session, role="assistant", agent_used="tutor", turn_index=n * 2,
-            content=(f"✓ Correct — the answer is {key_text}." if result["correct"]
-                     else f"✗ Not quite — you chose {labels}; the correct answer is {key_text}."),
-        )
-    except Exception:
-        logging.debug("could not record the graded answer in the transcript", exc_info=True)
+    graded = grade_practice_answer(
+        GradePracticeArgs(
+            is_correct=False,
+            student_answer=labels,
+            submission_id=(body.submission_id or "").strip() or None,
+        ),
+        ctx,
+    )
+    message = graded.get("student_message") or ""
+    if graded.get("recorded") and not graded.get("replayed") and message:
+        try:
+            sess = db.read_session(agent_session) or {}
+            n = int(sess.get("interaction_count") or 0) + 1
+            db.update_session_interaction_count(agent_session, n)
+            db.insert_chat_turn(session_id=agent_session, role="user", content=f"My answer: {labels}",
+                                turn_index=n * 2 - 1, agent_used="student")
+            db.insert_chat_turn(
+                session_id=agent_session, role="assistant", agent_used="tutor", turn_index=n * 2,
+                content=message,
+            )
+        except Exception:
+            logging.debug("could not record the graded answer in the transcript", exc_info=True)
 
     fresh = db.read_study_session(ssid) or session
-    # The stored solution goes back with the grade, so the pane can show it at once instead of
-    # waiting ~20 s for the tutor to write one. Every stored solution is verified (official
-    # answer, or a worked solution checked against it, or the book's own).
-    return {"graded": True, **result, "solution": question.get("solution") or "",
-            "study": _study_state_payload(fresh)}
+    solution = ""
+    if graded.get("graded"):
+        solution = question.get("solution") or ""
+    return {
+        **graded,
+        "solution": solution,
+        "study": _study_state_payload(fresh, session_runtime(ssid)),
+    }
 
 
 class StudyNextRequest(BaseModel):
@@ -2251,8 +2302,21 @@ async def voice_transcribe(
     language_code: Optional[str] = Form(None),
 ) -> VoiceTranscribeResponse:
     """Transcribe spoken JEE doubt audio using Sarvam Saaras STT."""
+    if not config.VOICE_SPENDING_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Voice transcription is disabled for this release. Set VOICE_SPENDING_ENABLED=true to turn it on.",
+        )
     try:
-        content = await file.read()
+        content = bytearray()
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            if len(content) + len(chunk) > config.MAX_VOICE_BYTES:
+                raise HTTPException(status_code=413, detail="Audio upload is too large.")
+            content.extend(chunk)
+        content = bytes(content)
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file received.")
         filename = file.filename or "doubt_audio.webm"
@@ -2274,6 +2338,11 @@ async def voice_transcribe(
 @app.post("/api/v1/voice/synthesize", response_model=VoiceSynthesisResponse)
 def voice_synthesize(req: VoiceSynthesisRequest) -> VoiceSynthesisResponse:
     """Read aloud tutor explanation or doubt answer using Sarvam Bulbul TTS."""
+    if not config.VOICE_SPENDING_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Voice synthesis is disabled for this release. Set VOICE_SPENDING_ENABLED=true to turn it on.",
+        )
     try:
         if not req.text or not req.text.strip():
             return VoiceSynthesisResponse(

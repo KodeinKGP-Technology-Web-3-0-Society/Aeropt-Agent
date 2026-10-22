@@ -1,5 +1,5 @@
 """
-Fault-tolerant Groq completion wrapper.
+Fault-tolerant completion, tool-calling, and streaming transport.
 
 Behaviour:
   1. Try the primary model up to MAX_RETRIES times with exponential backoff
@@ -9,10 +9,10 @@ Behaviour:
   4. Raise only when ALL models in the chain have failed.
 
 Usage:
-    from utils.llm import groq_complete
+    from utils.llm import complete_text
 
-    text, model_used = groq_complete(
-        client=_groq,
+    text, model_used = complete_text(
+        client=_llm_client,
         model=config.SOLVER_MODEL,
         messages=[{"role": "user", "content": prompt}],
         fallback_models=config.SOLVER_FALLBACK_MODELS,
@@ -147,12 +147,6 @@ def _retry_seconds(exc: Exception) -> Optional[float]:
     return None
 
 
-def is_quota_exhausted(exc: Exception) -> bool:
-    """A spent daily quota (not a per-minute burst)."""
-    secs = _retry_seconds(exc)
-    return "quota" in str(exc).lower() and (secs or 0) > 600
-
-
 def _note_key_failure(pool, key_idx: Optional[int], kind: str, exc: Exception, model: str = "") -> None:
     if pool is None or key_idx is None:
         return
@@ -192,7 +186,7 @@ def _run_chain(
     Returns:
         (message, model_that_succeeded)
 
-    Key rotation: if utils/groq_pool has a multi-key pool configured
+    Key rotation: if utils/provider_pool has a multi-key pool configured
     (GROQ_API_KEYS / GROQ_API_KEY_2..7), each attempt is made against a client
     picked from that pool (round-robin, skipping cooled-down/RPM-hot keys) —
     `client` is only used directly when no multi-key pool is configured, so
@@ -203,7 +197,7 @@ def _run_chain(
     just retrying the same (still-limited) key or downgrading model quality.
     """
     try:
-        from utils.groq_pool import get_pool, get_pruned_models
+        from utils.provider_pool import get_pool, get_pruned_models
 
         pool = get_pool()
         pruned = get_pruned_models()
@@ -446,7 +440,7 @@ def _run_chain(
     )
 
 
-def groq_complete(
+def complete_text(
     client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
@@ -463,7 +457,7 @@ def groq_complete(
     `min_chars` rejects a suspiciously short reply (a think-only response) as a
     soft failure, retrying and then falling back rather than returning nothing.
 
-    Key rotation: if utils/groq_pool has a multi-key pool configured
+    Key rotation: if utils/provider_pool has a multi-key pool configured
     (GROQ_API_KEYS / GROQ_API_KEY_2..7), each attempt is made against a client
     picked from that pool (round-robin, skipping cooled-down/RPM-hot keys) —
     `client` is only used directly when no multi-key pool is configured, so
@@ -493,7 +487,7 @@ def groq_complete(
     return (getattr(message, "content", None) or ""), model_used
 
 
-def groq_chat(
+def chat_completion(
     client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
@@ -503,12 +497,12 @@ def groq_chat(
     **kwargs: Any,
 ) -> Tuple[Any, str]:
     """
-    Tool-calling counterpart of `groq_complete`: returns the raw assistant
+    Tool-calling counterpart of `complete_text`: returns the raw assistant
     message so the caller can read `.tool_calls` as well as `.content`.
 
     Used by the autonomous agent loop (`agents/runtime/loop.py`), which needs to
     see tool calls, not just text. Shares the same retry, key-rotation, TPM
-    clamping and model-fallback behaviour as `groq_complete`.
+    clamping and model-fallback behaviour as `complete_text`.
 
     A reply carrying tool calls but no text is valid here (that is the normal
     shape of a tool-calling turn), so the only soft failure is a reply with
@@ -540,7 +534,7 @@ def groq_chat(
     )
 
 
-def groq_stream(
+def stream_completion(
     client: OpenAI,
     model: str,
     messages: List[Dict[str, Any]],
@@ -553,7 +547,7 @@ def groq_stream(
     Returns the model_used when the generator finishes.
     """
     try:
-        from utils.groq_pool import get_pool, get_pruned_models
+        from utils.provider_pool import get_pool, get_pruned_models
 
         pool = get_pool()
         pruned = get_pruned_models()

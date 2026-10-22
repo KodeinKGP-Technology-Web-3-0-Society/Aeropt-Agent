@@ -447,10 +447,6 @@ def served_fingerprints(user_id: str, concept_ids: Sequence[str] | None = None) 
     }
 
 
-def served_count(user_id: str) -> int:
-    return len(_user_rows(user_id)) if user_id else 0
-
-
 def forget_served(user_id: str, concept_id: str | None = None) -> int:
     from services import durable_state
 

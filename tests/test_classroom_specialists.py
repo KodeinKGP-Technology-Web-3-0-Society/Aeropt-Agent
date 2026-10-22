@@ -1,8 +1,9 @@
-"""Classroom Phase 3 specialists are pure functions over Django's JSON body."""
+"""Classroom scheduling rules with model proposals stubbed at the planner boundary."""
 
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from services.classroom_specialists import (
     daily_specialist,
@@ -40,7 +41,16 @@ def _body(**overrides):
     return base
 
 
-class DailySpecialistTests(unittest.TestCase):
+class _OfflinePlannerTests(unittest.TestCase):
+    def setUp(self):
+        # Empty proposals exercise the deterministic fallback without calling a
+        # provider. Individual tests can supply a model proposal explicitly.
+        planner_patch = patch("services.study_plan_generator.generate_study_plan", return_value=[])
+        self.planner = planner_patch.start()
+        self.addCleanup(planner_patch.stop)
+
+
+class DailySpecialistTests(_OfflinePlannerTests):
     def test_prefers_due_revision_over_plan_concept(self):
         learner = load_learner(
             _body(
@@ -194,7 +204,7 @@ class DailySpecialistTests(unittest.TestCase):
         self.assertEqual(today["action"], "lesson")
 
 
-class PlanSpecialistTests(unittest.TestCase):
+class PlanSpecialistTests(_OfflinePlannerTests):
     def test_does_not_emit_concept_absent_from_catalog(self):
         learner = load_learner(
             _body(
@@ -262,8 +272,38 @@ class PlanSpecialistTests(unittest.TestCase):
         self.assertEqual(plan[0]["status"], "in_progress")
         self.assertEqual(plan[0]["when"], "today")
 
+    def test_filters_model_proposal_and_preserves_valid_order_and_actions(self):
+        learner = load_learner(_body(
+            catalog=[
+                {"concept_id": "done", "title": "Done"},
+                {"concept_id": "torque", "title": "Torque"},
+                {"concept_id": "energy", "title": "Energy"},
+            ],
+            trackers=[{"concept_id": "done", "mastery": 80, "attempts": 3}],
+        ))
+        self.planner.return_value = [
+            {"concept_id": "ghost", "title": "Ghost", "action": "LEARN"},
+            {"concept_id": "done", "title": "Done", "action": "PRACTICE"},
+            {"concept_id": "energy", "title": "Energy", "action": "REVISE",
+             "estimated_minutes": 15, "reason": "Review the work-energy theorem."},
+            {"concept_id": "torque", "title": "Torque", "action": "LEARN",
+             "status": "pending", "when": "this_week"},
+        ]
 
-class ReadinessSpecialistTests(unittest.TestCase):
+        plan = plan_specialist(learner)["plan"]
+
+        self.planner.assert_called_once_with({}, learner["trackers"], learner["catalog"])
+        self.assertEqual([row["concept_id"] for row in plan], ["energy", "torque"])
+        self.assertEqual(plan[0]["action"], "REVISE")
+        self.assertEqual(plan[0]["estimated_minutes"], 15)
+        self.assertEqual(plan[0]["status"], "in_progress")
+        self.assertEqual(plan[0]["when"], "today")
+        self.assertEqual(plan[1]["action"], "LEARN")
+        self.assertEqual(plan[1]["status"], "pending")
+        self.assertEqual(plan[1]["when"], "this_week")
+
+
+class ReadinessSpecialistTests(_OfflinePlannerTests):
     def test_mean_of_two_attempted_trackers(self):
         learner = load_learner(
             _body(
@@ -300,7 +340,7 @@ class ReadinessSpecialistTests(unittest.TestCase):
         self.assertEqual(readiness["label"], "building")
 
 
-class ReviseSpecialistTests(unittest.TestCase):
+class ReviseSpecialistTests(_OfflinePlannerTests):
     def test_flags_weak_trackers_first_due_today(self):
         learner = load_learner(
             _body(

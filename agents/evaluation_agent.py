@@ -13,7 +13,7 @@ import config
 from db.supabase_client import db
 from models.study_state import StudyRoomState
 from mcp_tools.study_tools import compute_readiness_score
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
 logger = logging.getLogger("jee_tutor.evaluation_agent")
 
@@ -66,15 +66,17 @@ def evaluation_agent_node(state: StudyRoomState) -> Dict[str, Any]:
     old_score = float(old_readiness.get("score", 0)) if old_readiness else 0.0
 
     new_readiness = compute_readiness_score(user_id, concept_id)
-    new_score = new_readiness["score"]
-    
-    db.upsert_readiness_score(
-        user_id=user_id,
-        concept_id=concept_id,
-        score=new_score,
-        confidence=new_readiness["confidence"],
-        factors=new_readiness["factors"],
-    )
+    new_score = new_readiness.get("score")
+    if new_score is None:
+        new_score = None
+    else:
+        db.upsert_readiness_score(
+            user_id=user_id,
+            concept_id=concept_id,
+            score=new_score,
+            confidence=new_readiness["confidence"],
+            factors=new_readiness["factors"],
+        )
 
     # 4. Generate LLM summary if there was practice
     summary = "You completed the lesson, but haven't answered any practice questions yet."
@@ -105,10 +107,10 @@ def evaluation_agent_node(state: StudyRoomState) -> Dict[str, Any]:
         )
         
         try:
-            # This used to call groq_chat(system_prompt=…, user_message=…), which
+            # This used to call chat_completion(system_prompt=…, user_message=…), which
             # is not its signature — it raised every time, so every student got
             # the one-line fallback instead of a summary.
-            summary, _ = groq_complete(
+            summary, _ = complete_text(
                 client=None,  # the key pool supplies the client
                 model=config.ORCHESTRATOR_MODEL,
                 messages=[
@@ -132,7 +134,8 @@ def evaluation_agent_node(state: StudyRoomState) -> Dict[str, Any]:
     return {
         "evaluation_summary": summary,
         "readiness_score": new_score,
-        "readiness_delta": new_score - old_score,
+        "readiness_available": new_score is not None,
+        "readiness_delta": None if new_score is None else new_score - old_score,
         # The teacher's reply for this turn (feedback on the last answer) stays
         # the chat message; the summary is shown on the results card.
         "response": state.get("response") or summary,

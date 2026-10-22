@@ -24,6 +24,20 @@ def clear_context_cache() -> None:
     _SECTION_CACHE.clear()
 
 
+# A long lesson puts the question at the end. Keeping the start of the turn
+# drops that question, so a short reply such as "Yes" is answered as a new topic.
+TURN_CLIP_CHARS = 1500
+
+
+def clip_turn_text(content: str, limit: int = TURN_CLIP_CHARS) -> str:
+    """Keep a turn that fits. When it does not, keep the ending."""
+    text = (content or "").strip()
+    if len(text) <= limit:
+        return text
+    marker = "… "
+    return marker + text[-(limit - len(marker)) :]
+
+
 @dataclass
 class Sections:
     """Structured sections ready to hand to the agent loop."""
@@ -196,7 +210,7 @@ def build(
         role = "assistant" if turn.get("role") == "assistant" else "user"
         content = (turn.get("content") or "").strip()
         if content:
-            recent_turns.append({"role": role, "content": content[:1500]})
+            recent_turns.append({"role": role, "content": clip_turn_text(content)})
 
     section_chars = {
         "core": len(core_block),

@@ -4,16 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-_ACTION_INTENTS = {
-    "LEARN": "doubt",
-    "REVISE": "doubt",
-    "PREREQ": "doubt",
-    "PRACTICE": "practice_request",
-    "PYQ": "practice_request",
-    "QUIZ": "quiz_request",
-    "MOCK_SLICE": "quiz_request",
-}
-
 _CONTENT_TYPES = {
     "LEARN": "theory",
     "REVISE": "theory",

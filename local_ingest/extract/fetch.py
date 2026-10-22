@@ -8,11 +8,6 @@ import time
 from pathlib import Path
 
 
-def archived(url: str, timestamp: str) -> str:
-    """The Internet Archive's original-bytes URL for an official document it captured."""
-    return f"https://web.archive.org/web/{timestamp}id_/{url}"
-
-
 def fetch(url: str, target: Path, *, attempts: int = 4) -> str:
     """Download `url` to `target` unless it is already there. Returns the sha256."""
     if not target.exists() or target.stat().st_size < 1000:

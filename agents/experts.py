@@ -331,13 +331,21 @@ def run_expert(
 
 def _run_composer(expert: Expert, task: str, ctx: ToolContext) -> Dict[str, Any]:
     """Run a generator node and stage its draft for verbatim use."""
+    from utils.stream import stream_callback_var
+
     state = dict(ctx.state)
     state["query"] = task or state.get("query", "")
     if expert.content_type:
         state.setdefault("content_type_requested", expert.content_type)
 
     assert expert.node is not None
-    out = expert.node(state)
+    # Composer output is a private draft. Propagate cancellation, budgets and
+    # usage context to the worker, but never expose raw tokens before review.
+    stream_token = stream_callback_var.set(None)
+    try:
+        out = expert.node(state)
+    finally:
+        stream_callback_var.reset(stream_token)
 
     if out.get("error"):
         return {"error": out["error"]}

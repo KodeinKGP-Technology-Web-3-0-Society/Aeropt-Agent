@@ -23,11 +23,11 @@ Chemistry (NCERT) is in the corpus beside physics.
   - The resolver rebuilds its lexicon via `store.cache_generation()`. That design fixed a deadlock.
   - The novelty ledger lives in the user DB `served_items` (`services/durable_state.load_served/save_served`).
     In tests it stays in memory (`AEROPT_LEDGER=memory`, `tests/conftest.py`).
-- `retrieval/search.py`, `retrieval/local_graph.py`, `mcp_tools/study_tools.py`, `services/study_overview.py`
+- `retrieval/search.py`, `retrieval/curriculum_graph.py`, `mcp_tools/study_tools.py`, `services/study_overview.py`
   and the ingest tools now query Postgres. Dense scoring uses pgvector, lexical scoring uses `ts_rank_cd`.
 - One retrieval path:
   - `RETRIEVAL_BACKEND` and the Neo4j config are removed from `config.py`.
-  - `graphrag_retriever` and `resolve_concept_id` always use `retrieval/bridge.py` and `retrieval/resolver.py`.
+  - The curriculum tools use `retrieval/bridge.py`; concept matching uses `retrieval/resolver.py`.
   - `api_server` verifies the embedding contract at startup.
 - Deleted (still recoverable from git):
   - the old storage and retrieval paths: `retrieval/supabase_retriever.py`, `local_ingest/{build_index,syllabus_topics,run,guard}.py`,
@@ -35,7 +35,7 @@ Chemistry (NCERT) is in the corpus beside physics.
   - the old deploy uploaders: `deploy/{public_index,upload_to_supabase}.py`;
   - legacy scripts with fake 768-d vectors: `scripts/{ingest_content,ingest_real_pyqs,test_local_retrieval}.py`.
 - Dockerfile, deploy staging, `requirements.txt` (`psycopg2-binary` added, `neo4j` removed), `Makefile` and `ci/run.sh` are updated.
-- New tests: `tests/test_embedding_contract.py`. Ported to Postgres: `tests/test_retrieval_local.py`,
+- New tests: `tests/test_embedding_contract.py`. Ported to Postgres: `tests/test_retrieval_postgres.py`,
   `tests/test_latex_contract.py`, `tests/test_durable_state.py`, `tests/test_push_index.py`.
 
 Verified against the LOCAL Supabase Docker Postgres:

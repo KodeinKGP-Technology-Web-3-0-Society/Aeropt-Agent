@@ -31,7 +31,7 @@ def judge_turn(
     model: Optional[str] = None,
 ) -> JudgeResult:
     """Evaluate a single turn using the pedagogy rubric."""
-    from utils.llm import groq_complete
+    from utils.llm import complete_text
     import config
 
     prompt = PEDAGOGY_RUBRIC_PROMPT.format(
@@ -41,7 +41,7 @@ def judge_turn(
     )
 
     judge_model = model or getattr(config, "JUDGE_MODEL", config.SOCRATIC_MODEL)
-    raw, _ = groq_complete(
+    raw, _ = complete_text(
         client=None,
         model=judge_model,
         messages=[{"role": "user", "content": prompt}],

@@ -1,7 +1,8 @@
-"""Adapter: the retrieval service, shaped exactly like the GraphRAG node's output.
+"""Adapt retrieval packs into tutor state and attach learner personalization.
 
-`graphrag_retriever_node` returns a specific dict of state updates that the Solver,
-the experts and the Answer Checker all read — same keys, same meanings as ever.
+`retrieve_for_state` returns the state updates that the tutor, composing experts,
+and Answer Checker consume. Tools, classroom assessment, and API prefetch call
+this adapter directly.
 
 What is genuinely new is added, not substituted: `retrieval_citations`,
 `retrieval_novelty` and `retrieval_notes` carry the grounding trail and the
@@ -61,7 +62,7 @@ def _learner_states(user_id: str, concept_id: str, prereqs: list[dict[str, Any]]
 
 
 def retrieve_for_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Run retrieval for one turn and return GraphRAG-shaped state updates."""
+    """Run retrieval for one turn and return tutor state updates."""
     from retrieval import service, store
 
     if not store.index_exists():
@@ -134,7 +135,7 @@ def retrieve_for_state(state: dict[str, Any]) -> dict[str, Any]:
         logger.warning("learning profile unavailable (%s)", str(exc)[:120])
         learning_profile = None
 
-    from agents.planner import compute_personalization_strategy
+    from services.personalization import compute_personalization_strategy
 
     strategy = compute_personalization_strategy(
         target_state=learner["target"] or {},

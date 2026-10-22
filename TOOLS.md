@@ -1,5 +1,10 @@
 # Agent tools
 
+The complete current catalog is [docs/AGENT_TOOLS.md](docs/AGENT_TOOLS.md), with
+all 24 registered tools, four Python helpers, schemas, scope/surface availability,
+side effects and examples. This file explains selected math/physics tools.
+The package name `mcp_tools` does not mean an MCP protocol server is implemented.
+
 What the Main Tutor can actually do, and why each tool exists. Registered with `@tool`
 in `mcp_tools/*.py`, imported from `agents/learning_agent.py::_import_tools` — a tool
 module nothing imports is a tool the agent silently cannot use.
@@ -16,6 +21,7 @@ module nothing imports is a tool the agent silently cannot use.
 | **`verify_result`** | does my answer satisfy the equation, and behave in the limits? |
 | **`check_student_work`** | which line of their working broke, with proof |
 | **`convert_units`** | convert between units, refusing nonsense conversions |
+| `draw_diagram` | compile TikZ/circuitikz to a cached SVG |
 | `get_learner_context` | who am I teaching |
 | `record_attempt` | record a question they attempted |
 | `remember_about_learner` | save something durable |
@@ -133,8 +139,8 @@ change a student's equation.
   stack, so `check_student_work` needs the steps transcribed. This is the biggest
   remaining gap for the "why is my answer wrong" case, since students photograph their
   page rather than typing it.
-- **Diagrams.** Free-body, circuit and ray diagrams. The agent can describe one but not
-  draw it.
+- **A photo/PDF material reader.** Diagrams are connected through `draw_diagram`,
+  but interpreting uploaded student pages is still missing from the tutor graph.
 - **Plotting a relation** (v–t, U(x), a phase plot). The cheapest of the three: the
   evaluator here already produces the numbers, so it needs only SVG output.
 - **Numeric solving** for equations with no closed form. `solve_symbolically` returns

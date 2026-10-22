@@ -672,7 +672,7 @@ def test_tutor_graph_recalls_only_free_text_and_commits_both_paths(monkeypatch):
 
     assert _targets(app, "bootstrap") == {"graded_fast_path", "memory_recall", "__end__"}
     assert _targets(app, "memory_recall") == {"learning_agent"}
-    assert _targets(app, "learning_agent") == {"memory_commit"}
+    assert _targets(app, "learning_agent") == {"memory_commit", "__end__"}
     assert _targets(app, "graded_fast_path") == {"memory_commit"}
     assert "learning_agent" not in _reachable(app, "graded_fast_path")
     assert "memory_recall" not in _reachable(app, "graded_fast_path")
@@ -747,7 +747,9 @@ def test_study_graph_commits_after_a_live_teacher_turn(monkeypatch):
 
 def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
     _patch_progress(monkeypatch)
-    from agents.learning_agent import _build_system_prompt
+    from agents.runtime import context
+
+    context.clear_context_cache()
 
     memories = [{"kind": "preference", "fact": "likes diagrams", "confidence": 0.9}]
     base = {
@@ -759,7 +761,9 @@ def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
     }
 
     def prompt(state):
-        return _build_system_prompt(state, memories, "Probe.", 0)
+        return context.build(
+            state, memories=memories, scaffolding_move="Probe.", scaffolding_reveal=0
+        ).dynamic_context_text
 
     empty = prompt(base)
     assert prompt({**base, "episode_context": ""}) == empty
@@ -775,7 +779,7 @@ def test_learning_agent_appends_episode_context_without_fetching(monkeypatch):
     assert filled.count(_EPISODE_BLOCK) == 1
     assert filled.replace("\n\n" + _EPISODE_BLOCK, "", 1) == empty
 
-    source = inspect.getsource(__import__("agents.learning_agent", fromlist=["_build_system_prompt"]))
+    source = inspect.getsource(context.build)
     for name in ("fetch_episode_candidates", "upsert_episode", "close_pending_episode"):
         assert name not in source
 
@@ -893,21 +897,37 @@ def test_diagnostic_returns_attempt_id_without_closing(monkeypatch):
         def close_pending_episode(self, **kwargs):
             self.calls.append("close")
 
-    fake = _DiagDB()
-    monkeypatch.setattr(diagnostic, "db", fake)
+    class _Commit:
+        def commit_graded_attempt(self, request):
+            self.request = request
+            return {
+                "status": "committed",
+                "attempt_id": "attempt-77",
+                "is_correct": True,
+                "grade_status": "self_reported",
+                "evidence_source": "student_self_report",
+                "proficiency_before": 0.5,
+                "proficiency_after": 0.65,
+                "was_cold_start": True,
+            }
+
+    commit = _Commit()
+    monkeypatch.setattr("services.grading.db", commit)
     result = diagnostic.diagnostic_node({
         "user_id": "user-a",
         "session_id": "sess-1",
         "primary_concept_id": "concept-a",
         "has_graded_outcome": True,
+        "evidence_source": "student_self_report",
+        "question_instance_id": "q-1",
+        "graded_content_id": "item-1",
         "is_correct": True,
-        "student_answer": "5",
+        "student_answer": "1",
     })
     assert result.get("error") is None
     assert result["attempt_id"] == "attempt-77"
     assert result["proficiency_before"] == 0.5
-    assert result["proficiency_after"] == fake.written["proficiency_score"]
-    assert "close" not in fake.calls
+    assert result["proficiency_after"] == 0.65
     source = inspect.getsource(diagnostic)
     assert "memory_agent" not in source
     assert "close_pending_episode" not in source
@@ -978,7 +998,12 @@ def test_study_grade_stages_last_grade_and_only_commit_closes(monkeypatch):
                 "study_session_id": "study-1",
                 "session_id": "sess-1",
                 "concept_id": "torque",
-                "current_question": {"content_id": "item-1", "difficulty": 2},
+                "current_question": {
+                    "content_id": "item-1",
+                    "difficulty": 2,
+                    "question_instance_id": "inst-1",
+                    "structured": {"answer": {"kind": "integer", "value": 5}},
+                },
                 "questions_served": 0,
                 "questions_correct": 0,
                 "difficulty_level": 1,
@@ -988,16 +1013,22 @@ def test_study_grade_stages_last_grade_and_only_commit_closes(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "agents.diagnostic.diagnostic_node",
-        lambda state: {
-            "error": None,
+        "services.grading.db.commit_graded_attempt",
+        lambda request: {
+            "status": "committed",
             "attempt_id": "attempt-9",
+            "is_correct": True,
+            "grade_status": "correct",
+            "evidence_source": "answer_key",
             "proficiency_before": 0.4,
             "proficiency_after": 0.55,
+            "questions_served": 1,
+            "questions_correct": 1,
+            "difficulty_level": 1,
         },
     )
     ctx = _ctx()
-    grade_practice_answer(GradePracticeArgs(is_correct=True, student_answer="5"), ctx)
+    grade_practice_answer(GradePracticeArgs(is_correct=False, student_answer="5"), ctx)
     assert "insert" not in store.calls
     assert "close" not in store.calls
     grade = ctx.updates["last_grade"]
@@ -1031,16 +1062,18 @@ def test_study_grade_stages_last_grade_and_only_commit_closes(monkeypatch):
     assert saved["feedback_attempt_id"] == "attempt-9"
 
     monkeypatch.setattr(
-        "agents.diagnostic.diagnostic_node",
-        lambda state: {"error": "No concept state"},
+        "services.grading.db.commit_graded_attempt",
+        lambda request: (_ for _ in ()).throw(RuntimeError("could not find the function commit_graded_attempt")),
     )
     fallback_ctx = _ctx()
-    grade_practice_answer(GradePracticeArgs(is_correct=False, student_answer="2"), fallback_ctx)
-    assert store.calls.count("insert") == 1
+    failed = grade_practice_answer(GradePracticeArgs(is_correct=False, student_answer="5"), fallback_ctx)
+    assert store.calls.count("insert") == 0
     assert "close" not in store.calls
-    assert fallback_ctx.updates["last_grade"]["attempt_id"] == "attempt-fb"
-    assert fallback_ctx.updates["last_grade"]["proficiency_before"] == 0.2
-    assert fallback_ctx.updates["last_grade"]["is_correct"] is False
+    assert "last_grade" not in fallback_ctx.updates
+    assert failed["graded"] is True
+    assert failed["recorded"] is False
+    assert failed["persistence_status"] == "failed"
+    assert failed["failure_reason"] == "persistence_unavailable"
 
     source = inspect.getsource(study_tools)
     assert "close_pending_episode" not in source

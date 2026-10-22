@@ -1153,8 +1153,13 @@ def build_chat_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     quiz_assessment = build_quiz_assessment(result)
     card = build_proactive_card(result)
     target = result.get("target_concept_state") or {}
-    proficiency_pct = _proficiency_pct_from_state(target) if target else None
-    if proficiency_pct is None:
+    if result.get("persistence_status") == "committed" and isinstance(result.get("mastery_pct"), int):
+        proficiency_pct = result.get("mastery_pct")
+    elif result.get("persistence_status") == "committed" and isinstance(result.get("proficiency_pct"), int):
+        proficiency_pct = result.get("proficiency_pct")
+    else:
+        proficiency_pct = _proficiency_pct_from_state(target) if target else None
+    if proficiency_pct is None and result.get("persistence_status") == "committed":
         # Diagnostic / sandbox may stash a direct pct on the result
         raw_pct = result.get("proficiency_pct")
         if isinstance(raw_pct, (int, float)):
@@ -1167,6 +1172,12 @@ def build_chat_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     quiz_steps = result.get("quiz_steps") or None
     if quiz_steps is not None and len(quiz_steps) == 0:
         quiz_steps = None
+    elif isinstance(quiz_steps, list):
+        quiz_steps = [
+            {key: value for key, value in step.items() if key != "answer"}
+            for step in quiz_steps
+            if isinstance(step, dict)
+        ]
 
     payload: Dict[str, Any] = {
         "response": brief or response,
@@ -1184,7 +1195,11 @@ def build_chat_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "structured": structured,
         "mistake_brief": result.get("mistake_brief"),
         "proficiency_pct": proficiency_pct,
-        "error": result.get("error"),
+        "grade_status": result.get("grade_status"),
+        "evidence_source": result.get("evidence_source"),
+        "persistence_status": result.get("persistence_status"),
+        "recorded": result.get("recorded"),
+        "error": result.get("error") if result.get("persistence_status") not in {"failed", "unknown", "not_attempted"} else None,
         "primary_concept_id": result.get("primary_concept_id"),
         "content_type_requested": result.get("content_type_requested"),
     }

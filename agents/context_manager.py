@@ -1,9 +1,8 @@
 """
-Context Manager Agent
+Rolling conversation summarization stage.
 
-Fires ASYNCHRONOUSLY when interaction_count % CONTEXT_MANAGER_EVERY_N == 0,
-checked by Orchestrator at the start of each turn.  NEVER blocks the current
-turn's main response.
+Runs synchronously when the graph routes a turn here after bootstrap marks
+run_context_manager, or when the shared session-summary flush calls it.
 
 Responsibilities:
   1. Read all unsummarized chat_turns for the session (ordered by turn_index)
@@ -15,7 +14,7 @@ Responsibilities:
 The running summary is cumulative — it captures all turns up to now,
 not just the latest window.  This keeps long sessions within token budget.
 
-Model: config.CONTEXT_MANAGER_MODEL (Groq) — speed matters; summary quality > cost here
+Model: config.CONTEXT_MANAGER_MODEL through the shared model transport.
 """
 
 from __future__ import annotations
@@ -27,9 +26,9 @@ from openai import OpenAI
 import config
 from db.supabase_client import db
 from models.state import TutorState
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _SUMMARY_PROMPT = """\
 You are a session summariser for a JEE Physics tutoring system.
@@ -79,8 +78,8 @@ def context_manager_node(state: TutorState) -> Dict[str, Any]:
             turns_text=_format_turns(unsummarized),
         )
 
-        raw, _ = groq_complete(
-            client=_groq,
+        raw, _ = complete_text(
+            client=_llm_client,
             model=config.CONTEXT_MANAGER_MODEL,
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SMALL_MODEL_FALLBACK,
@@ -99,4 +98,5 @@ def context_manager_node(state: TutorState) -> Dict[str, Any]:
         return {"error": None}
 
     except Exception as exc:
-        return {"error": f"Context Manager failed: {exc}"}
+        logger.warning("Context manager failed; the reply still stands: %s", exc)
+        return {}

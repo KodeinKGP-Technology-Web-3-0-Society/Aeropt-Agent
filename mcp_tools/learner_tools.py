@@ -250,8 +250,6 @@ class RecordAttemptArgs(BaseModel):
     scopes=(SCOPE_WRITE_PROGRESS,),
 )
 def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
-    from agents.diagnostic import diagnostic_node
-
     concept_id = args.concept_id or ctx.state.get("primary_concept_id") or ""
     if not concept_id:
         return {
@@ -261,26 +259,71 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
             )
         }
 
-    state = dict(ctx.state)
-    state.update(
-        {
-            "primary_concept_id": concept_id,
-            "has_graded_outcome": True,
-            "is_correct": args.is_correct,
-            "student_answer": args.student_answer,
-            "error_type": args.error_type,
-            "time_taken_sec": args.time_taken_sec,
-        }
-    )
+    from services.answer_key import grade_free_answer
+    from services.grading import answer_fingerprint, commit_progress
 
-    result = diagnostic_node(state)  # type: ignore[arg-type]
-    if result.get("error") or not result.get("attempt_id"):
-        ctx.stage(
-            attempt_record_failed=True,
-            has_graded_outcome=False,
-            assessment_status="persistence_failed" if not result.get("error") else "failed",
-        )
-        return {"error": result.get("error") or "attempt_not_persisted", "recorded": False}
+    question = ctx.state.get("current_question") if isinstance(ctx.state.get("current_question"), dict) else None
+    if question is None:
+        pending = ctx.state.get("pending_question") if isinstance(ctx.state.get("pending_question"), dict) else {}
+        chunks = ctx.state.get("retrieved_chunks") or []
+        if len(chunks) == 1 and isinstance(chunks[0], dict) and chunks[0].get("content_id") == pending.get("content_id"):
+            question = chunks[0]
+    decision = grade_free_answer(question or {}, args.student_answer) if question else {
+        "grade_status": "ungradable", "failure_reason": "no_served_question",
+    }
+    if decision.get("grade_status") not in {"correct", "incorrect"}:
+        return {
+            "recorded": False,
+            "graded": False,
+            "grade_status": decision.get("grade_status") or "ungradable",
+            "evidence_source": "model_unverified",
+            "persistence_status": "not_attempted",
+            "is_correct": None,
+            "model_claim": bool(args.is_correct),
+            "failure_reason": decision.get("failure_reason") or "no_authoritative_key",
+            "student_message": "There is no stored answer key for this question, so it was not saved as a grade.",
+        }
+    instance_id = (question or {}).get("question_instance_id") or (
+        (ctx.state.get("pending_question") or {}).get("question_instance_id")
+        if isinstance(ctx.state.get("pending_question"), dict) else None
+    )
+    saved = commit_progress(
+        user_id=ctx.user_id,
+        session_id=ctx.session_id,
+        concept_id=concept_id,
+        content_id=(question or {}).get("content_id"),
+        submission_id=instance_id,
+        question_instance_id=instance_id,
+        student_answer=args.student_answer or "",
+        fingerprint=answer_fingerprint({
+            "student_answer": args.student_answer or "",
+            "content_id": (question or {}).get("content_id"),
+            "question_instance_id": instance_id,
+        }),
+        is_correct=bool(decision["is_correct"]),
+        grade_status=decision["grade_status"],
+        evidence_source="answer_key",
+        error_type=None if decision["is_correct"] else (
+            args.error_type if args.error_type in {"conceptual", "procedural", "calculation", "misread"} else None
+        ),
+        time_taken_sec=args.time_taken_sec,
+        source="chat",
+        answer_text=decision.get("answer_text") or "",
+    )
+    if not saved.recorded:
+        ctx.stage(attempt_record_failed=True, has_graded_outcome=False, assessment_status="persistence_failed")
+        payload = saved.to_public()
+        payload["error"] = saved.failure_reason or "attempt_not_persisted"
+        payload["student_message"] = saved.student_message
+        return payload
+    result = {
+        "attempt_id": saved.attempt_id,
+        "proficiency_before": saved.proficiency_before,
+        "proficiency_after": saved.proficiency_after,
+        "mastery_pct": saved.proficiency_pct,
+        "trigger_quiz": False,
+        "score_summary": saved.student_message if not saved.is_correct else None,
+    }
 
     prob_state = dict(
         ctx.state.get("problem_state")
@@ -297,11 +340,11 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
 
     ctx.stage(
         has_graded_outcome=True,
-        is_correct=args.is_correct,
+        is_correct=saved.is_correct,
         attempt_id=result.get("attempt_id"),
         proficiency_before=result.get("proficiency_before"),
         proficiency_after=result.get("proficiency_after"),
-        evidence_source="student_self_report",
+        evidence_source="answer_key",
         assessment_status="completed",
         trigger_quiz=bool(result.get("trigger_quiz")),
         mistake_brief=result.get("mistake_brief"),
@@ -318,7 +361,11 @@ def record_attempt(args: RecordAttemptArgs, ctx: ToolContext) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "recorded": True,
         "concept_id": concept_id,
-        "is_correct": args.is_correct,
+        "is_correct": saved.is_correct,
+        "grade_status": saved.grade_status,
+        "evidence_source": "answer_key",
+        "persistence_status": saved.persistence_status,
+        "student_message": saved.student_message,
         "score_summary": result.get("score_summary"),
         "mistake_brief": result.get("mistake_brief"),
     }
@@ -492,7 +539,7 @@ def suggest_next_material(args: SuggestNextArgs, ctx: ToolContext) -> Dict[str, 
     target = ctx.state.get("target_concept_state") or {}
     proficiency = float(target.get("proficiency_score") or 0.5)
 
-    result = generate_suggestions(
+    suggestions = generate_suggestions(
         GenerateSuggestionsArgs(
             user_id=ctx.user_id,
             primary_concept_id=concept_id,
@@ -500,7 +547,6 @@ def suggest_next_material(args: SuggestNextArgs, ctx: ToolContext) -> Dict[str, 
             seen_follow_up_ids=list(ctx.state.get("seen_follow_up_ids") or []),
         )
     )
-    suggestions: List[Dict[str, Any]] = result.get("suggestions") or []
     if suggestions:
         ctx.stage(follow_up_suggestions=suggestions)
         ctx.state.update(ctx.updates)

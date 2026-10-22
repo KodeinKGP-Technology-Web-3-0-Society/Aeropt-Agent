@@ -36,9 +36,16 @@ def test_grading_uses_the_structured_official_answer():
     assert answer_key.grade_structured(multi, ["C", "A"])["correct"]
     assert not answer_key.grade_structured(multi, ["A"])["correct"]  # partial is not full marks
     numeric = {"structured": {"answer": {"kind": "range", "low": 1.15, "high": 1.25}}}
-    assert answer_key.grade_structured(numeric, value="1.2 m/s")["correct"]
-    assert not answer_key.grade_structured(numeric, value="1.3")["correct"]
-    assert answer_key.grade_structured(numeric, value="about ten") is None  # not a number: tutor grades
+    assert answer_key.grade_structured(numeric, value="1.2")["correct"] is True
+    assert answer_key.grade_structured(numeric, value="1.3")["correct"] is False
+    trailing = answer_key.grade_structured(numeric, value="1.2 m/s")
+    assert trailing["grade_status"] == "invalid_submission"
+    assert trailing["correct"] is None
+    with_unit = {"structured": {"answer": {"kind": "range", "low": 1.15, "high": 1.25, "unit": "m/s"}}}
+    assert answer_key.grade_structured(with_unit, value="1.2 m/s")["correct"] is True
+    prose = answer_key.grade_structured(numeric, value="about ten")
+    assert prose["grade_status"] == "invalid_submission"
+    assert prose["correct"] is None
 
 
 def test_the_old_text_key_reads_every_letter_and_prefers_the_official_line():

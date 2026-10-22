@@ -14,8 +14,9 @@ import json
 import logging
 import os
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+
+from utils.chat_messages import assistant_message_from_dict, serialize_assistant_message
 
 logger = logging.getLogger("jee_tutor.evals.cassette")
 
@@ -42,56 +43,15 @@ def compute_request_hash(
 
 
 def serialize_message(message: Any, model: str = "") -> Dict[str, Any]:
-    """Serialize an assistant message object or namespace into JSON-compatible dict."""
-    content = getattr(message, "content", None) or ""
-    tool_calls_raw = getattr(message, "tool_calls", None) or []
-    tool_calls = []
-    for i, c in enumerate(tool_calls_raw):
-        fn = getattr(c, "function", None)
-        fn_name = getattr(fn, "name", "") if fn else ""
-        fn_args = getattr(fn, "arguments", "") if fn else ""
-        call_id = getattr(c, "id", f"call_{i}")
-        tool_calls.append(
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": fn_name,
-                    "arguments": fn_args,
-                },
-            }
-        )
-
-    return {
-        "role": getattr(message, "role", "assistant") or "assistant",
-        "content": content,
-        "tool_calls": tool_calls if tool_calls else None,
-        "model": model,
-    }
+    """Serialize complete assistant tool calls for deterministic replay."""
+    payload = serialize_assistant_message(message)
+    payload.setdefault("tool_calls", None)
+    return {**payload, "model": model}
 
 
 def deserialize_message(data: Dict[str, Any]) -> Any:
-    """Reconstruct a message object compatible with loop.py and answer_checker.py."""
-    content = data.get("content") or ""
-    raw_calls = data.get("tool_calls")
-    calls = None
-    if raw_calls:
-        calls = [
-            SimpleNamespace(
-                id=c.get("id", f"call_{i}"),
-                type=c.get("type", "function"),
-                function=SimpleNamespace(
-                    name=c["function"]["name"],
-                    arguments=c["function"]["arguments"],
-                ),
-            )
-            for i, c in enumerate(raw_calls)
-        ]
-    return SimpleNamespace(
-        role=data.get("role", "assistant"),
-        content=content,
-        tool_calls=calls,
-    )
+    """Reconstruct replay attribute access while retaining provider extensions."""
+    return assistant_message_from_dict(data)
 
 
 class Cassette:

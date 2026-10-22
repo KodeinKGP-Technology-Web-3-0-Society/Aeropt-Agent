@@ -26,7 +26,7 @@ from typing import Any, Dict, List
 
 from openai import OpenAI
 
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
 # ── Think-block removal (same model as Solver) ────────────────────────────────
 _THINK_RE = re.compile(
@@ -39,12 +39,12 @@ def _clean_output(raw: str) -> str:
 
 import config
 from db.supabase_client import db
-from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
+from retrieval.curriculum_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
 from models.state import TutorState
 # Reuse Solver's image + formulae helpers so quiz content renders identically.
 from agents.solver import _image_urls, _formulae_block, _render_math_text
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 # ── On-demand quiz batch (intent=quiz_request) ────────────────────────────────
 
@@ -116,14 +116,6 @@ def _quiz_batch_node(state: TutorState) -> Dict[str, Any]:
             "I couldn't find quiz questions for that topic right now. "
             "Try asking for a specific concept, e.g. \"quiz me on torque\"."
         )
-        db.insert_chat_turn(
-            session_id=session_id,
-            role="assistant",
-            content=msg,
-            turn_index=state.get("interaction_count", 1) * 2,
-            agent_used="quiz",
-            concepts_referenced=[primary_id] if primary_id else None,
-        )
         return {
             "response": msg,
             "agent_used": "quiz",
@@ -133,15 +125,6 @@ def _quiz_batch_node(state: TutorState) -> Dict[str, Any]:
         }
 
     response = _format_quiz_batch(chunks)
-    db.insert_chat_turn(
-        session_id=session_id,
-        role="assistant",
-        content=response,
-        turn_index=state.get("interaction_count", 1) * 2,
-        agent_used="quiz",
-        concepts_referenced=[primary_id] if primary_id else None,
-    )
-
     return {
         "response": response,
         "agent_used": "quiz",
@@ -249,8 +232,8 @@ def quiz_node(state: TutorState) -> Dict[str, Any]:
             struggle_streak=cs.get("struggle_streak", 0),
         )
 
-        raw_text, _ = groq_complete(
-            client=_groq,
+        raw_text, _ = complete_text(
+            client=_llm_client,
             model=config.QUIZ_MODEL,
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.QUIZ_FALLBACK_MODELS,
@@ -261,8 +244,8 @@ def quiz_node(state: TutorState) -> Dict[str, Any]:
 
         # Same empty-think-block guard as Solver
         if len(raw) < 20:
-            raw_text, _ = groq_complete(
-                client=_groq,
+            raw_text, _ = complete_text(
+                client=_llm_client,
                 model=config.QUIZ_FALLBACK_MODELS[0],
                 messages=[{"role": "user", "content": prompt}],
                 fallback_models=config.QUIZ_FALLBACK_MODELS[1:],
@@ -282,16 +265,6 @@ def quiz_node(state: TutorState) -> Dict[str, Any]:
 
         # 4. Mark session as having active quiz
         db.update_session_active_quiz(session_id, active=True)
-
-        # 5. Insert quiz start turn
-        db.insert_chat_turn(
-            session_id=session_id,
-            role="assistant",
-            content=f"[Quiz started — {len(quiz_steps)} steps on {primary_id}]",
-            turn_index=state.get("interaction_count", 1) * 2,
-            agent_used="quiz",
-            concepts_referenced=[primary_id],
-        )
 
         return {
             "quiz_steps": quiz_steps,

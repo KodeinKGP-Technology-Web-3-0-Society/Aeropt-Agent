@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 from openai import RateLimitError
 
-from utils.groq_pool import GeminiKeyPool, load_gemini_api_keys, reset_pool_for_tests
-from utils.llm import groq_complete
+from utils.provider_pool import GeminiKeyPool, load_gemini_api_keys, reset_pool_for_tests
+from utils.llm import complete_text
 
 
 def _rate_limit() -> RateLimitError:
@@ -70,7 +70,7 @@ class TestLoadKeys(unittest.TestCase):
         self.assertEqual(load_gemini_api_keys({}), [])
 
     def test_sarvam_keys_loading(self):
-        from utils.groq_pool import load_sarvam_api_keys
+        from utils.provider_pool import load_sarvam_api_keys
 
         self.assertEqual(load_sarvam_api_keys({"SARVAM_API_KEY": "sk_test"}), ["sk_test"])
         self.assertEqual(load_sarvam_api_keys({"SARVAM_KEYS": "sk1, sk2 ; sk3"}), ["sk1", "sk2", "sk3"])
@@ -86,7 +86,7 @@ class TestKeyRotation(unittest.TestCase):
 
         pool = GeminiKeyPool(["k1", "k2"], client_factory=factory)
         reset_pool_for_tests(pool)
-        text, model = groq_complete(
+        text, model = complete_text(
             client=MagicMock(),
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": "hi"}],
@@ -102,7 +102,7 @@ class TestKeyRotation(unittest.TestCase):
             client_factory=lambda k: FakeGroq(k, fail_keys=hot),
         )
         reset_pool_for_tests(pool)
-        text, _ = groq_complete(
+        text, _ = complete_text(
             client=MagicMock(), model="m", messages=[{"role": "user", "content": "hi"}]
         )
         self.assertEqual(text, "ok:k6")
@@ -111,7 +111,7 @@ class TestKeyRotation(unittest.TestCase):
         pool = GeminiKeyPool(["bad1", "good"], client_factory=FakeGroq)
         reset_pool_for_tests(pool)
         for _ in range(3):
-            text, _ = groq_complete(
+            text, _ = complete_text(
                 client=MagicMock(), model="m", messages=[{"role": "user", "content": "hi"}]
             )
             self.assertEqual(text, "ok:good")
@@ -126,7 +126,7 @@ class TestKeyRotation(unittest.TestCase):
 
         pool = GeminiKeyPool(["k1", "k2"], client_factory=factory)
         reset_pool_for_tests(pool)
-        text, model = groq_complete(
+        text, model = complete_text(
             client=MagicMock(),
             model="hot-model",
             messages=[{"role": "user", "content": "hi"}],
@@ -150,7 +150,7 @@ class TestKeyRotation(unittest.TestCase):
 
         pool = GeminiKeyPool(["k1", "k2"], client_factory=TpmFake)
         reset_pool_for_tests(pool)
-        text, model = groq_complete(
+        text, model = complete_text(
             client=MagicMock(),
             model="qwen/qwen3.8-27b",
             messages=[{"role": "user", "content": "hi"}],
@@ -172,7 +172,7 @@ class TestKeyRotation(unittest.TestCase):
 
         pool = GeminiKeyPool(["k1", "k2"], client_factory=Always413ThenOk)
         reset_pool_for_tests(pool)
-        text, model = groq_complete(
+        text, model = complete_text(
             client=MagicMock(),
             model="qwen/qwen3.8-27b",
             messages=[{"role": "user", "content": "hi"}],

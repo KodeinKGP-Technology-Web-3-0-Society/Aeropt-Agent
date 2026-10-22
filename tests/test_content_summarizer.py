@@ -51,7 +51,7 @@ def _mock_groq_four_cards(*_args, **_kwargs):
 
 
 class TestContentSummarizer(unittest.TestCase):
-    @patch("agents.content_summarizer.groq_complete", side_effect=_mock_groq_four_cards)
+    @patch("agents.content_summarizer.complete_text", side_effect=_mock_groq_four_cards)
     def test_summarize_returns_at_most_four_cards(self, _mock_llm) -> None:
         cards = summarize_to_slide_cards(
             core_text=LONG_CORE_TEXT,
@@ -66,7 +66,7 @@ class TestContentSummarizer(unittest.TestCase):
         _mock_llm.assert_called_once()
 
     @patch(
-        "agents.content_summarizer.groq_complete",
+        "agents.content_summarizer.complete_text",
         side_effect=lambda *_a, **_k: (
             json.dumps(MOCK_FOUR_CARDS + [{"title": "Extra", "body": "Should trim.", "card_type": "concept"}]),
             "mock-model",

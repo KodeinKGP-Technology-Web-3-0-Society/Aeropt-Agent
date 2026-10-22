@@ -1,48 +1,19 @@
-"""
-Follow-Up Agent
+"""Graded follow-up: prerequisite suggestions, quiz advancement, and next-material cards.
 
-Fires in three distinct situations:
-
-1. Normal follow-up (after Solver/Socratic resolved a doubt):
-   Pure filtering/selection — NO LLM.  Surfaces 2-3 unseen, appropriately
-   difficult next problems from Neo4j + Supabase.
-
-2. Incorrect graded response (student typed "0" after practice/PYQ):
-   Identifies the weakest prerequisite from prereq_concept_states
-   (sorted by hop_count ASC, proficiency_score ASC).
-   Surfaces it to the student and sets pending_prereq_concept_id in state.
-
-3. follow_up_response intent (student selected a suggestion):
-   Fetches the selected content from Supabase and returns it as a response.
-   If the selected content is practice/PYQ, attaches the graded-reply prompt.
+Selection of a suggested item belongs to the Main Tutor and its open_material
+tool. These helpers do not route free text through an intent classifier.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional
 
-import config
 from db.supabase_client import db
-from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
+from retrieval.curriculum_graph import graph_client
 from models.state import TutorState
-# Image-URL construction (incl. comma-separated image_filename handling) lives
-# in solver.py so Solver, Follow-Up and Quiz stay in lock-step.
-from agents.solver import _render_math_text, _image_urls, prepare_student_markdown
 from utils.presentation import filter_picker_suggestions
 
-# Reuse the same separator / reply prompt that Solver uses
-_SEPARATOR = (
-    "\n\n"
-    "─────────────── ATTEMPT THE QUESTION ABOVE BEFORE SCROLLING ───────────────"
-    "\n\n"
-)
-_GRADED_REPLY_PROMPT = ""
 
-# ── Content-type normaliser ────────────────────────────────────────────────────
-# Supabase stores content_type in its raw ingested form ("PYQ", "Practice
-# Question", "Solved Example", etc.).  All internal logic uses lowercase
-# canonical names: "pyq" | "practice" | "example" | "theory".
 _CTYPE_ALIASES: Dict[str, str] = {
     "pyq": "pyq",
     "past year question": "pyq",
@@ -55,66 +26,12 @@ _CTYPE_ALIASES: Dict[str, str] = {
     "theory": "theory",
 }
 
+
 def _normalize_ctype(raw: str) -> str:
     """Return a canonical lowercase content_type from any raw DB value."""
     key = (raw or "").lower().strip()
     return _CTYPE_ALIASES.get(key, key)
 
-
-# ── Helper: format a practice/PYQ content item ────────────────────────────────
-
-def _extract_chunk_formulae(c: Dict[str, Any]) -> Optional[str]:
-    """
-    Return KaTeX-ready block-math string for formulae in a single chunk,
-    or None if the chunk has no formulae.
-
-    Uses solver._split_formula_text so separators like literal ``\\n`` do not
-    destroy macros such as ``\\nu`` / ``\\neq``.
-    """
-    from agents.solver import _sanitize_latex_expr, _split_formula_text
-
-    exprs: List[str] = []
-    seen: set = set()
-    for field in ("latex_formulae_core", "latex_formulae_solution"):
-        raw = (c.get(field) or "").strip()
-        if not raw:
-            continue
-        for piece in _split_formula_text(raw):
-            e = _sanitize_latex_expr(piece)
-            if e and e not in seen:
-                seen.add(e)
-                exprs.append(e)
-    if not exprs:
-        return None
-    return "\n\n".join(f"$$\n{e}\n$$" for e in exprs)
-
-
-def _format_practice_item(c: Dict[str, Any]) -> str:
-    question = (c.get("core_text") or "").strip()
-    solution = (c.get("solution") or "").strip()
-    diff = c.get("difficulty")
-    diff_tag = f" (difficulty {diff}/5)" if diff else ""
-    imgs = _image_urls(c)
-    formulae_block = _extract_chunk_formulae(c)
-
-    parts: List[str] = []
-    parts.append(question if question else "*(Question text not available.)*")
-    if imgs["core"]:
-        parts.append(f"\n\n![Diagram]({imgs['core']})")
-    parts.append(_SEPARATOR)
-    if solution:
-        parts.append(f"**Solution{diff_tag}:**\n\n{_render_math_text(solution)}")
-    else:
-        parts.append("*(Solution not available.)*")
-    if imgs["solution"]:
-        parts.append(f"\n\n![Solution diagram]({imgs['solution']})")
-    if formulae_block:
-        parts.append(f"\n\n**Key Formulae:**\n\n{formulae_block}")
-    parts.append(_GRADED_REPLY_PROMPT)
-    return "".join(parts)
-
-
-# ── Helper: surface the weakest prerequisite ─────────────────────────────────
 
 def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
     """
@@ -125,7 +42,7 @@ def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
     """
     prereqs: List[Dict[str, Any]] = state.get("prereq_concept_states") or []
     
-    from agents.prereq_gap import find_weak_direct_prereq
+    from services.prerequisites import find_weak_direct_prereq
     top = find_weak_direct_prereq(prereqs)
     if not top:
         return None
@@ -140,15 +57,6 @@ def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
         f"Reply **yes** to start, or just ask your next question to continue."
     )
 
-    db.insert_chat_turn(
-        session_id=state["session_id"],
-        role="assistant",
-        content=message,
-        turn_index=(state.get("interaction_count", 1)) * 2,
-        agent_used="follow_up",
-        concepts_referenced=[concept_id] if concept_id else None,
-    )
-
     return {
         "response": message,
         "agent_used": "follow_up",
@@ -158,185 +66,8 @@ def _surface_weak_prereq(state: TutorState) -> Optional[Dict[str, Any]]:
     }
 
 
-# ── Helper: handle follow_up_response (student selected a suggestion) ─────────
+# ── Advance a recorded quiz attempt ──────────────────────────────────────────
 
-def _parse_content_id(query: str) -> Optional[str]:
-    match = re.search(r"content_id[=:\s]+([a-zA-Z0-9_-]+)", query or "", flags=re.IGNORECASE)
-    return match.group(1) if match else None
-
-
-def _parse_selection_index(query: str) -> int:
-    """Return 0-based index of the student's suggestion choice (default 0)."""
-    q = query.lower()
-    if any(w in q for w in ["2", "second", "two"]):
-        return 1
-    if any(w in q for w in ["3", "third", "three"]):
-        return 2
-    return 0  # default / "1" / "first" / "yes" / "okay"
-
-
-def _handle_followup_selection(state: TutorState) -> Dict[str, Any]:
-    """
-    The student replied to the follow-up suggestions.  Fetch and return the
-    selected content item so they actually see it.
-    """
-    suggestions: List[Dict[str, Any]] = state.get("follow_up_suggestions") or []
-    query = state.get("query", "")
-
-    # "skip", "next", "no" → just acknowledge
-    skip_words = {"skip", "next", "no", "later", "pass", "nevermind"}
-    if any(w in query.lower() for w in skip_words) or not suggestions:
-        ack = "No problem! Ask me your next question whenever you're ready."
-        db.insert_chat_turn(
-            session_id=state["session_id"],
-            role="assistant",
-            content=ack,
-            turn_index=(state.get("interaction_count", 1)) * 2,
-            agent_used="follow_up",
-        )
-        return {
-            "response": ack,
-            "agent_used": "follow_up",
-            "follow_up_suggestions": [],
-            "awaiting_graded_response": False,
-            "error": None,
-        }
-
-    content_id_hint = _parse_content_id(query)
-    if content_id_hint:
-        selected = next(
-            (item for item in suggestions if item.get("content_id") == content_id_hint),
-            None,
-        )
-        if not selected:
-            selected = suggestions[0] if suggestions else {}
-    else:
-        idx = _parse_selection_index(query)
-        idx = min(idx, len(suggestions) - 1)
-        selected = suggestions[idx]
-
-    content_id = selected.get("content_id")
-    primary_concept_id = ""
-
-    # Proficiency states for the chunk's prereq and secondary concepts.
-    # These are returned so main.py can carry them into the next graded turn,
-    # giving Diagnostic the same data it would have after a GraphRAG retrieval.
-    chunk_prereq_states: List[Dict[str, Any]] = []
-    chunk_secondary_states: List[Dict[str, Any]] = []
-    chunk_target_state: Optional[Dict[str, Any]] = None
-
-    if content_id:
-        rows = db.read_content_by_ids([content_id])
-        if rows:
-            c = rows[0]
-            primary_concept_id = c.get("primary_concept_id", "")
-
-            # The suggestion's content_type was already normalised at generation
-            # time from the same Supabase row.  Use it as the authoritative
-            # source so a DB label mismatch ("Solved Example" vs "Practice
-            # Question") doesn't silently skip the practice format.
-            suggestion_ctype = _normalize_ctype(selected.get("content_type", ""))
-            row_ctype = _normalize_ctype(c.get("content_type", ""))
-            # Prefer the suggestion label when it explicitly says practice/pyq;
-            # otherwise fall back to the row label.
-            ctype = suggestion_ctype if suggestion_ctype in {"practice", "pyq"} else row_ctype
-
-            if ctype in {"practice", "pyq"}:
-                response = _format_practice_item(c)
-            else:
-                text = (c.get("core_text") or "").strip()
-                body = text if text else (selected.get("preview") or "")
-                response = f"Here's what we found:\n\n{prepare_student_markdown(body)}" if body else "Here's what we found."
-                imgs = _image_urls(c)
-                if imgs["core"]:
-                    response += f"\n\n![Diagram]({imgs['core']})"
-
-            # ── Build proficiency states from chunk metadata ───────────────
-            # This mirrors what GraphRAG Retriever does, so Diagnostic has
-            # full data even when no retrieval pass ran for this concept.
-            user_id = state.get("user_id", "")
-            all_states = db.read_all_user_concept_states(user_id)
-            state_map = {s["concept_id"]: s for s in all_states}
-            concepts_rows = db.read_concepts()
-            name_map = {row["concept_id"]: row["concept_name"] for row in concepts_rows}
-
-            # Target concept state
-            if primary_concept_id:
-                chunk_target_state = state_map.get(primary_concept_id)
-
-            # Prereq concepts from chunk
-            prereq_ids = c.get("prerequisite_concepts") or []
-            if isinstance(prereq_ids, list):
-                for cid in prereq_ids:
-                    s = state_map.get(cid)
-                    chunk_prereq_states.append({
-                        "concept_id": cid,
-                        "concept_name": name_map.get(cid, cid),
-                        "proficiency_score": s.get("proficiency_score", 0.5) if s else 0.5,
-                        "flagged_weak":      s.get("flagged_weak",      False) if s else False,
-                        "is_cold_start":     s.get("is_cold_start",     True)  if s else True,
-                        "hop_count": 1,
-                    })
-
-            # Secondary concepts from chunk
-            secondary_ids = c.get("secondary_concepts") or []
-            if isinstance(secondary_ids, list):
-                for cid in secondary_ids:
-                    s = state_map.get(cid)
-                    chunk_secondary_states.append({
-                        "concept_id": cid,
-                        "concept_name": name_map.get(cid, cid),
-                        "proficiency_score": s.get("proficiency_score", 0.5) if s else 0.5,
-                        "flagged_weak":      s.get("flagged_weak",      False) if s else False,
-                        "is_cold_start":     s.get("is_cold_start",     True)  if s else True,
-                    })
-        else:
-            response = "The selected content could not be loaded. Ask me another question!"
-            ctype = ""
-    else:
-        response = "Got it! Ask me your next question."
-        ctype = ""
-
-    db.insert_chat_turn(
-        session_id=state["session_id"],
-        role="assistant",
-        content=response,
-        turn_index=(state.get("interaction_count", 1)) * 2,
-        agent_used="follow_up",
-        concepts_referenced=[primary_concept_id] if primary_concept_id else None,
-    )
-
-    # Determine whether the served content needs a graded response
-    served_practice = ctype in {"practice", "pyq"}
-
-    # Only the actually-opened item is excluded from future rounds.
-    session_seen: List[str] = state.get("seen_follow_up_ids") or []
-    new_seen: List[str] = list(set(session_seen) | {content_id}) if content_id else list(session_seen)
-
-    result: Dict[str, Any] = {
-        "response": response,
-        "agent_used": "follow_up",
-        "follow_up_suggestions": [],
-        # Signal to main.py whether an unanswered practice/PYQ is now pending
-        "awaiting_graded_response": served_practice,
-        # Append only the clicked content_id, not all three suggestions
-        "seen_follow_up_ids": new_seen,
-        # Proficiency data so Diagnostic has context on the next graded turn
-        "prereq_concept_states":    chunk_prereq_states,
-        "secondary_concept_states": chunk_secondary_states,
-        "error": None,
-    }
-    # Carry forward so main.py can set up carry state for the next graded turn
-    if primary_concept_id:
-        result["primary_concept_id"] = primary_concept_id
-    if ctype:
-        result["content_type_requested"] = ctype
-    if chunk_target_state is not None:
-        result["target_concept_state"] = chunk_target_state
-    return result
-
-
-# ── Helper: advance an on-demand quiz batch after each graded answer ──────────
 
 def _handle_quiz_advance(state: TutorState) -> Dict[str, Any]:
     """
@@ -354,13 +85,6 @@ def _handle_quiz_advance(state: TutorState) -> Dict[str, Any]:
             f"Recorded. Use the **Correct** or **Incorrect** buttons for "
             f"**Question {next_index + 1}**."
         )
-        db.insert_chat_turn(
-            session_id=state["session_id"],
-            role="assistant",
-            content=msg,
-            turn_index=(state.get("interaction_count", 1)) * 2,
-            agent_used="quiz",
-        )
         return {
             "response": msg,
             "agent_used": "quiz",
@@ -374,13 +98,6 @@ def _handle_quiz_advance(state: TutorState) -> Dict[str, Any]:
     msg = (
         "That completes the quiz — your proficiency scores have been updated for "
         "each question. Ask me anything next, or request another quiz!"
-    )
-    db.insert_chat_turn(
-        session_id=state["session_id"],
-        role="assistant",
-        content=msg,
-        turn_index=(state.get("interaction_count", 1)) * 2,
-        agent_used="quiz",
     )
     return {
         "response": msg,
@@ -397,23 +114,14 @@ def _handle_quiz_advance(state: TutorState) -> Dict[str, Any]:
 # ── Main node ─────────────────────────────────────────────────────────────────
 
 def follow_up_node(state: TutorState) -> Dict[str, Any]:
-    intent = state.get("intent", "")
-
-    # ── Case 0: on-demand quiz batch in progress → advance to next question ────
+    # ── On-demand quiz batch in progress → advance to next question ───────────
     if state.get("quiz_batch_mode") and state.get("has_graded_outcome"):
         try:
             return _handle_quiz_advance(state)
         except Exception as exc:
             return {"error": f"Follow-Up Agent failed (quiz advance): {exc}"}
 
-    # ── Case 1: student selected a follow-up suggestion ───────────────────────
-    if intent == "follow_up_response":
-        try:
-            return _handle_followup_selection(state)
-        except Exception as exc:
-            return {"error": f"Follow-Up Agent failed (selection): {exc}"}
-
-    # ── Case 2: incorrect graded attempt → surface weak prereq ───────────────
+    # ── Incorrect graded attempt → surface weak prerequisite ─────────────────
     if state.get("has_graded_outcome") and not state.get("is_correct", True):
         try:
             result = _surface_weak_prereq(state)
@@ -423,7 +131,7 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
         except Exception as exc:
             return {"error": f"Follow-Up Agent failed (prereq surfacing): {exc}"}
 
-    # ── Case 3: normal follow-up suggestions ─────────────────────────────────
+    # ── Normal follow-up suggestions ─────────────────────────────────────────
     user_id = state["user_id"]
     primary_id = state.get("primary_concept_id", "")
     target_exam = state.get("target_exam", "JEE_ADVANCED")
@@ -492,9 +200,7 @@ def follow_up_node(state: TutorState) -> Dict[str, Any]:
 
         suggestions = filter_picker_suggestions(suggestions)
 
-        # Do NOT add suggestion IDs to seen_follow_up_ids yet — only the item
-        # the student actually clicks should be excluded from future rounds.
-        # seen_follow_up_ids is updated in _handle_followup_selection instead.
+        # The turn service retains the IDs of suggestions shown in this session.
         result: Dict[str, Any] = {
             "follow_up_suggestions": suggestions,
             # The graded cycle is complete — clear the awaiting flag so the

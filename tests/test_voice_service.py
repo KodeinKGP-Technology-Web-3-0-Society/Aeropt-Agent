@@ -50,7 +50,21 @@ def test_api_speakers_endpoint():
     assert "ritu" in speaker_ids
 
 
-def test_api_synthesize_endpoint():
+def test_voice_spending_is_off_unless_enabled(monkeypatch):
+    monkeypatch.setattr("api_server.config.VOICE_SPENDING_ENABLED", False)
+    client = TestClient(app)
+    speak = client.post("/api/v1/voice/synthesize", json={"text": "What is torque?"})
+    hear = client.post(
+        "/api/v1/voice/transcribe",
+        files={"file": ("doubt.webm", b"fake_audio_bytes", "audio/webm")},
+    )
+    assert speak.status_code == 503
+    assert hear.status_code == 503
+    assert "disabled" in speak.json()["detail"].lower()
+
+
+def test_api_synthesize_endpoint(monkeypatch):
+    monkeypatch.setattr("api_server.config.VOICE_SPENDING_ENABLED", True)
     client = TestClient(app)
     # Empty text returns empty audio without error
     res_empty = client.post("/api/v1/voice/synthesize", json={"text": ""})
@@ -77,7 +91,8 @@ def test_api_synthesize_endpoint():
         assert payload["format"] == "wav"
 
 
-def test_api_transcribe_endpoint():
+def test_api_transcribe_endpoint(monkeypatch):
+    monkeypatch.setattr("api_server.config.VOICE_SPENDING_ENABLED", True)
     client = TestClient(app)
     mock_response = MagicMock()
     mock_response.transcript = "Explain rotational inertia"

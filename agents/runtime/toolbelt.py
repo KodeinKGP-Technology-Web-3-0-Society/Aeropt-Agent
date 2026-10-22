@@ -25,9 +25,11 @@ Design rules, in priority order:
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Type
 
@@ -37,6 +39,15 @@ from agents.runtime.trace import AgentTrace, TraceStep
 
 logger = logging.getLogger("jee_tutor.toolbelt")
 _TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="tool_worker")
+_CALL_TOKEN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("tool_call_token", default=None)
+
+
+def call_is_live(ctx: "ToolContext") -> bool:
+    """False after this call's timeout or cancellation. A running thread cannot be killed."""
+    token = _CALL_TOKEN.get()
+    if token is None:
+        return True
+    return token in getattr(ctx, "_live_tokens", set())
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
 SCOPE_READ = "read"                     # read learner/content data
@@ -90,10 +101,22 @@ class ToolContext:
         self._read_cache: Dict[str, "ToolResult"] = {}
         #: Unshaped tool outputs kept for downstream grading and grounding.
         self.full_tool_results: List[Dict[str, Any]] = []
+        self._live_tokens: set = set()
 
     def stage(self, **updates: Any) -> None:
         """Record state changes for the loop to apply after the turn resolves."""
+        token = _CALL_TOKEN.get()
+        if token is not None and token not in self._live_tokens:
+            return
         self.updates.update(updates)
+
+    def open_call(self) -> str:
+        token = uuid.uuid4().hex
+        self._live_tokens.add(token)
+        return token
+
+    def seal_call(self, token: str) -> None:
+        self._live_tokens.discard(token)
 
     def child(self, *, depth: Optional[int] = None) -> "ToolContext":
         """A restricted context for a subagent. Shares the trace, not the updates."""
@@ -328,6 +351,8 @@ SURFACE_TOOL_SETS: Dict[str, frozenset[str]] = {
         "verify_result",
         "draw_diagram",
         "remember_about_learner",
+        "schedule_review",
+        "set_lesson_plan",
         "transition_phase",
         "complete_study_session",
         "complete_lesson_part",
@@ -342,6 +367,7 @@ SURFACE_TOOL_SETS: Dict[str, frozenset[str]] = {
         "check_student_work",
         "convert_units",
         "remember_about_learner",
+        "schedule_review",
         "transition_phase",
         "complete_study_session",
     }),
@@ -371,14 +397,11 @@ SURFACE_TOOL_SETS: Dict[str, frozenset[str]] = {
     }),
     "classroom_assess": frozenset({
         "retrieve_content",
-        "grade_practice_answer",
-        "serve_practice_question",
         "check_student_work",
         "calculate",
         "solve_symbolically",
         "verify_result",
         "check_dimensions",
-        "record_attempt",
         "remember_about_learner",
     }),
     "coach": frozenset({
@@ -398,7 +421,7 @@ def surface_for_state(state: Dict[str, Any]) -> str:
     if classroom in ("lesson", "doubt", "assess"):
         return f"classroom_{classroom}"
     if state.get("study_session_id") or state.get("surface") == "study":
-        stage = (state.get("study_phase") or state.get("study_stage") or "").lower()
+        stage = (state.get("current_phase") or state.get("study_phase") or state.get("study_stage") or "").lower()
         if "practice" in stage or "assess" in stage:
             return "study_practice"
         return "study_learn"
@@ -427,18 +450,22 @@ class Toolbelt:
             self.surface = "coach"
         else:
             self.surface = surface_for_state(ctx.state)
-        self.surface = self.surface
         self._specs: Dict[str, ToolSpec] = {}
         self._failures: Dict[str, int] = {}
-        all_specs = list(specs)
+        self._candidates = list(specs)
+        self._bind_specs()
+
+    def _bind_specs(self) -> None:
+        self.surface = surface_for_state(self.ctx.state) if self.ctx.state.get("study_session_id") or self.ctx.state.get("current_phase") else self.surface
+        all_specs = self._candidates
         filter_surface = self.surface in SURFACE_TOOL_SETS and len(all_specs) > 15
         allowed_names = SURFACE_TOOL_SETS.get(self.surface) if filter_surface else None
-
+        specs: Dict[str, ToolSpec] = {}
         for spec in all_specs:
             if allowed_names is not None and spec.name not in allowed_names:
                 continue
             if spec.scopes <= self.allowed_scopes:
-                self._specs[spec.name] = spec
+                specs[spec.name] = spec
             else:
                 logger.debug(
                     "Tool %s withheld: needs %s, caller has %s",
@@ -446,6 +473,11 @@ class Toolbelt:
                     sorted(spec.scopes - self.allowed_scopes),
                     sorted(self.allowed_scopes),
                 )
+        self._specs = specs
+
+    def refresh(self) -> None:
+        """Rebuild the offered tools after a phase change in this same turn."""
+        self._bind_specs()
 
     def get_max_result_chars(self, name: str) -> int:
         spec = self._specs.get(name)
@@ -573,11 +605,36 @@ class Toolbelt:
             return result
 
         timeout_s = getattr(spec, "timeout_s", 8.0)
+        if self.ctx.budget is not None:
+            timeout_s = min(timeout_s, self.ctx.budget.remaining())
+        if timeout_s <= 0:
+            result = ToolResult(ok=False, error=f"Tool '{name}' could not run: turn budget exhausted.")
+            self._record(name, parsed_args, result, started)
+            return result
         try:
-            future = _TOOL_POOL.submit(spec.handler, args, self.ctx)
-            data = future.result(timeout=timeout_s)
-            result = ToolResult(ok=True, data=data)
+            # ThreadPoolExecutor does not carry ContextVars automatically. Keep
+            # cancellation, model budgets, usage accounting and SSE reporters
+            # attached to this turn when a tool delegates or calls a model.
+            token = self.ctx.open_call()
+            context = contextvars.copy_context()
+
+            def _invoke() -> Any:
+                _CALL_TOKEN.set(token)
+                return spec.handler(args, self.ctx)
+
+            future = _TOOL_POOL.submit(context.run, _invoke)
+            try:
+                data = future.result(timeout=timeout_s)
+            finally:
+                self.ctx.seal_call(token)
+            if isinstance(data, ToolResult):
+                result = data
+            elif isinstance(data, dict) and data.get("error"):
+                result = ToolResult(ok=False, data=data, error=str(data["error"]))
+            else:
+                result = ToolResult(ok=True, data=data)
         except concurrent.futures.TimeoutError:
+            self.ctx.seal_call(token)
             logger.warning("Tool %s timed out after %.1fs", name, timeout_s)
             result = ToolResult(
                 ok=False,

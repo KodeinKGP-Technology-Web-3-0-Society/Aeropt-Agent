@@ -694,3 +694,87 @@ def test_consolidation_mark_and_list_stay_on_one_user():
     assert _stored(fake, "ep-a")["consolidation_memory_id"] == "mem-1"
     assert _stored(fake, "ep-b").get("consolidated_at") is None
     assert client.list_unconsolidated_episodes("user-a") == []
+
+
+def _consolidation_client(fake: FakeSupabase) -> SupabaseClient:
+    client = _client(fake)
+    client._episodes_enabled = True
+    client._memory_enabled = True
+    client._consolidated_at_enabled = True
+    client._consolidation_table_enabled = True
+    client._evidence_enabled = True
+    return client
+
+
+def test_unconsolidated_list_keeps_fields_a_cluster_needs():
+    from agents.memory_consolidate import eligible_clusters
+
+    fake = FakeSupabase()
+    mistake = "torque sign flips when the force is into the page"
+    _seed(
+        fake,
+        _row(
+            episode_id="e1",
+            assistant_turn_index=1,
+            attempt_id="a1",
+            feedback_outcome="incorrect",
+            observed_outcome="incorrect",
+            student_response=mistake,
+            evidence_source="dialogue",
+            assessment_status="completed",
+            consolidated_at=None,
+        ),
+        _row(
+            episode_id="e2",
+            session_id="sess-2",
+            assistant_turn_index=2,
+            attempt_id="a2",
+            feedback_outcome="incorrect",
+            observed_outcome="incorrect",
+            student_response=mistake,
+            evidence_source="dialogue",
+            assessment_status="completed",
+            consolidated_at=None,
+        ),
+    )
+    client = _consolidation_client(fake)
+    listed = client.list_unconsolidated_episodes("user-a")
+    assert {row["episode_id"] for row in listed} == {"e1", "e2"}
+    assert all(row["student_response"] == mistake for row in listed)
+    assert all(row["evidence_source"] == "dialogue" for row in listed)
+    assert {row["attempt_id"] for row in listed} == {"a1", "a2"}
+    clusters = eligible_clusters(listed, "user-a")
+    assert len(clusters) == 1
+    assert clusters[0]["kind"] == "misconception"
+
+
+def test_record_consolidation_updates_the_claim_instead_of_inserting_again():
+    fake = FakeSupabase()
+    client = _consolidation_client(fake)
+    claimed = client.record_consolidation(
+        user_id="user-a",
+        cluster_key="cluster-1",
+        episode_ids=["e1", "e2"],
+        result="claimed",
+        fact="Flips the sign of torque.",
+    )
+    assert claimed is True
+    saved = client.record_consolidation(
+        user_id="user-a",
+        cluster_key="cluster-1",
+        episode_ids=["e1", "e2"],
+        result="saved",
+        memory_id="mem-1",
+        fact="Flips the sign of torque.",
+    )
+    assert saved is True
+    rows = fake.tables["episodic_consolidation"]
+    assert len(rows) == 1
+    assert rows[0]["result"] == "saved"
+    assert rows[0]["memory_id"] == "mem-1"
+    assert client.record_consolidation(
+        user_id="user-a",
+        cluster_key="cluster-1",
+        episode_ids=["e1", "e2"],
+        result="claimed",
+    ) is False

@@ -24,9 +24,9 @@ import config
 from db.supabase_client import db
 from models.state import TutorState
 from utils.latex_guidelines import LATEX_OUTPUT_RULES, sanitize_chunk_text_for_prompt
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _SOCRATIC_PROMPT = """\
 You are an elite, world-class Socratic tutor for JEE Physics, modeled after the best educators in the world. Your ultimate goal is to lead the student to their own "aha!" moment, NEVER to simply hand them the answer.
@@ -132,8 +132,8 @@ def socratic_node(state: TutorState) -> Dict[str, Any]:
         
         prompt = f"{prompt}\n\n{LATEX_OUTPUT_RULES}"
 
-        raw, model_used = groq_complete(
-            client=_groq,
+        raw, model_used = complete_text(
+            client=_llm_client,
             model=skill.get("model", config.SOCRATIC_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SOCRATIC_FALLBACK_MODELS,
@@ -142,16 +142,6 @@ def socratic_node(state: TutorState) -> Dict[str, Any]:
             stream=True,
         )
         response = prepare_student_markdown(raw.strip())
-
-        # Persist the assistant turn tagged as "socratic"
-        db.insert_chat_turn(
-            session_id=state["session_id"],
-            role="assistant",
-            content=response,
-            turn_index=state.get("interaction_count", 1) * 2,
-            agent_used="socratic",
-            concepts_referenced=[primary_id] if primary_id else None,
-        )
 
         return {
             "response": response,

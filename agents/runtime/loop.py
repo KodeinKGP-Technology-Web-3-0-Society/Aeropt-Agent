@@ -17,6 +17,7 @@ The loop's job is not to make decisions — it is to make the agent's decisions
 from __future__ import annotations
 
 import json
+import contextvars
 import logging
 import time
 from dataclasses import dataclass, field
@@ -27,7 +28,8 @@ from openai import OpenAI
 import config
 from agents.runtime.toolbelt import SCOPE_READ, Toolbelt
 from agents.runtime.trace import AgentTrace, TraceStep
-from utils.llm import groq_chat
+from utils.chat_messages import serialize_assistant_message
+from utils.llm import chat_completion
 
 logger = logging.getLogger("jee_tutor.loop")
 
@@ -63,25 +65,8 @@ class LoopResult:
 
 
 def _serialise_assistant(message: Any) -> Dict[str, Any]:
-    """Convert an SDK assistant message or namespace back into request-shaped JSON."""
-    payload: Dict[str, Any] = {
-        "role": getattr(message, "role", "assistant") or "assistant",
-        "content": getattr(message, "content", None) or "",
-    }
-    calls = getattr(message, "tool_calls", None)
-    if calls:
-        payload["tool_calls"] = [
-            {
-                "id": getattr(c, "id", f"call_{i}"),
-                "type": getattr(c, "type", "function") or "function",
-                "function": {
-                    "name": getattr(c.function, "name", ""),
-                    "arguments": getattr(c.function, "arguments", ""),
-                },
-            }
-            for i, c in enumerate(calls)
-        ]
-    return payload
+    """Keep provider metadata when feeding assistant tool calls back to the model."""
+    return serialize_assistant_message(message)
 
 
 from agents.runtime.budget import (
@@ -273,7 +258,7 @@ def run_agent_loop(
             messages_to_send = _compact_past_tool_messages(messages)
             progress.report("stage", "thinking", "start", step=steps)
             try:
-                message, model_used = groq_chat(
+                message, model_used = chat_completion(
                     client=llm_client,
                     model=model,
                     messages=messages_to_send,
@@ -388,7 +373,7 @@ def run_agent_loop(
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(calls))) as executor:
                     futures = [
-                        executor.submit(toolbelt.call, c.function.name, c.function.arguments)
+                        executor.submit(contextvars.copy_context().run, toolbelt.call, c.function.name, c.function.arguments)
                         for c in calls
                     ]
                     results = [f.result() for f in futures]
@@ -426,6 +411,9 @@ def run_agent_loop(
                             "content": result.to_json(max_chars=max_chars),
                         }
                     )
+
+            if hasattr(toolbelt, "refresh"):
+                toolbelt.refresh()
 
             if time.time() >= deadline:
                 messages.append({"role": "system", "content": _FORCED_CLOSE_NUDGE})
@@ -474,7 +462,7 @@ def _forced_close(
     messages = messages + [{"role": "system", "content": _FORCED_CLOSE_NUDGE}]
     started = time.time()
     try:
-        message, model_used = groq_chat(
+        message, model_used = chat_completion(
             client=client,
             model=model,
             messages=messages,

@@ -28,11 +28,11 @@ from openai import OpenAI
 
 import config
 from agents.runtime.trace import AgentTrace, TraceStep
-from utils.llm import groq_complete, groq_stream
+from utils.llm import complete_text, stream_completion
 
 logger = logging.getLogger("jee_tutor.answer_checker")
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 #: Below this length a reply is an acknowledgement, not an explanation worth
 #: paying a second model call to review.
@@ -231,8 +231,8 @@ def check_answer(
 
     step = TraceStep(kind="check", name="answer_checker")
     try:
-        raw, model_used = groq_complete(
-            client=_groq,
+        raw, model_used = complete_text(
+            client=_llm_client,
             model=getattr(config, "ANSWER_CHECKER_MODEL", config.SOCRATIC_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SMALL_MODEL_FALLBACK,
@@ -354,8 +354,8 @@ def check_answer_streaming(
 
     step = TraceStep(kind="check", name="answer_checker")
     try:
-        stream = groq_stream(
-            client=_groq,
+        stream = stream_completion(
+            client=_llm_client,
             model=getattr(config, "ANSWER_CHECKER_MODEL", config.SOCRATIC_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SMALL_MODEL_FALLBACK,

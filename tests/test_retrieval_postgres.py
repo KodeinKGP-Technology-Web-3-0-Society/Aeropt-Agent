@@ -1,4 +1,4 @@
-"""Behaviour tests for the local retrieval pipeline.
+"""Behaviour tests for the Postgres retrieval pipeline.
 
 These assert the four properties the pipeline exists to guarantee:
 
@@ -371,7 +371,7 @@ def test_retrieval_is_fast():
 
 # ── the Neo4j-shaped shim the other call sites use ────────────────────────────
 def test_local_graph_client_answers_the_neo4j_surface():
-    from retrieval.local_graph import graph
+    from retrieval.curriculum_graph import graph
 
     concept = _one("select concept_id from public.concept_edges order by 1 limit 1")["concept_id"]
     assert graph.ping()
@@ -386,14 +386,14 @@ def test_local_graph_client_answers_the_neo4j_surface():
 def test_local_graph_client_refuses_foreign_vectors():
     """A 3072-d (Gemini-sized) vector against the 256-d corpus must fail loudly, not rank noise."""
     from retrieval import embedder
-    from retrieval.local_graph import graph
+    from retrieval.curriculum_graph import graph
 
     with pytest.raises(embedder.EmbeddingMismatch, match="256-d"):
         graph.vector_search(query_vector=[0.1] * 3072, top_k=3)
 
 
 def test_follow_up_candidates_exclude_seen_ids():
-    from retrieval.local_graph import graph
+    from retrieval.curriculum_graph import graph
 
     concept = _one(
         "select concept_id from public.chunk_concepts group by 1 having count(*) > 4 order by 1 limit 1"

@@ -26,7 +26,8 @@ warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarnin
 import argparse
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -40,11 +41,9 @@ from graph.workflow import tutor_graph
 from models.state import TutorState
 from services.turn_service import (
     build_initial_state as _build_initial_state,
-    clear_stale_practice_carry,
     flush_session_summary as _flush_session_summary,
-    normalize_content_type as _normalize_content_type,
-    parse_legacy_answer as _parse_graded_input,
     parse_turn_input,
+    persist_assistant_reply as _persist_assistant_reply,
     resolve_session,
     update_carry as _update_carry,
 )
@@ -91,19 +90,6 @@ def _print_response(result: TutorState) -> None:
         print()
 
 
-def _flush_session_summary(session_id: str, user_id: str) -> None:
-    """Force a final Context Manager run on session exit (Improvement 4)."""
-    try:
-        # Build a minimal state with only the fields context_manager_node needs
-        flush_state: TutorState = {   # type: ignore[typeddict-item]
-            "session_id": session_id,
-            "user_id": user_id,
-        }
-        context_manager_node(flush_state)
-    except Exception:
-        pass  # best-effort; never crash on exit
-
-
 def _register_interactive() -> str:
     print("\n── New User Registration ────────────────────────────────────")
     name = input("Your name: ").strip() or "Student"
@@ -124,6 +110,25 @@ def _register_interactive() -> str:
     return uid
 
 
+def _prepare_retrieval() -> bool:
+    """Pay database/model cold-start costs before any learner turn is timed."""
+    from retrieval import service, store
+
+    print("\nPreparing course retrieval and the embedding model (first start may take a moment)...", flush=True)
+    started = time.monotonic()
+    try:
+        store.verify_embedding_contract()
+        result = service.warm()
+        if not result.get("warmed"):
+            raise RuntimeError(result.get("reason") or "The retrieval index is not ready.")
+    except Exception as exc:
+        logging.getLogger("jee_tutor.cli").error("Retrieval initialization failed: %s", exc)
+        print("[ERROR] Check RETRIEVAL_DATABASE_URL, the populated course index, and the embedding model, then restart.")
+        return False
+    print(f"Course retrieval ready ({time.monotonic() - started:.1f}s).")
+    return True
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -132,6 +137,9 @@ def main() -> None:
     parser.add_argument("--session-id", help="Existing session UUID to resume")
     parser.add_argument("--register", action="store_true", help="Register a new user")
     args = parser.parse_args()
+
+    if not _prepare_retrieval():
+        sys.exit(1)
 
     # ── User setup ────────────────────────────────────────────────────────────
     if args.register:
@@ -194,6 +202,7 @@ def main() -> None:
                 result: TutorState = tutor_graph.invoke(initial_state)
                 _print_response(result)
                 _update_carry(carry, result, was_graded=was_graded)
+                _persist_assistant_reply(session_id, result)
             except Exception as exc:
                 print(f"\n[SYSTEM ERROR] {exc}")
                 print("Check your .env and DB connections.")

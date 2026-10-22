@@ -6,6 +6,7 @@ Used by both CLI (`main.py`) and HTTP API (`api_server.py`) to eliminate logic d
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents.context_manager import context_manager_node
@@ -79,6 +80,73 @@ def clear_stale_practice_carry(carry: Dict[str, Any]) -> None:
         carry.pop("content_type_requested", None)
 
 
+def persist_assistant_reply(session_id: str, result: TutorState) -> None:
+    """Save the tutor reply so the next turn can see the question it asked.
+
+    Bootstrap already stores the student message. Graded paths store their own
+    assistant row; this writes the reply only when that exact text is not there.
+    A failed write leaves the printed turn intact.
+    """
+    response = str(result.get("response") or "").strip()
+    interaction = result.get("interaction_count")
+    if not session_id or not response or not interaction:
+        return
+    turn_index = int(interaction) * 2
+    try:
+        existing = db.assistant_turn_contents(session_id, turn_index)
+        if response in existing:
+            return
+        primary = result.get("primary_concept_id")
+        db.insert_chat_turn(
+            session_id=session_id,
+            role="assistant",
+            content=response,
+            turn_index=turn_index,
+            agent_used=result.get("agent_used") or "learning_agent",
+            concepts_referenced=[primary] if primary else None,
+        )
+    except Exception:
+        logger.warning(
+            "could not store assistant reply session=%s turn_index=%s",
+            session_id,
+            turn_index,
+            exc_info=True,
+        )
+
+
+def _served_chunk(chunks: Any) -> Optional[Dict[str, Any]]:
+    """The one question this turn put in front of the student, if that is unambiguous."""
+    if not isinstance(chunks, list):
+        return None
+    rows = [row for row in chunks if isinstance(row, dict)]
+    practice = [
+        row for row in rows
+        if normalize_content_type(str(row.get("content_type") or "")) in {"practice", "pyq"}
+    ]
+    if len(practice) == 1:
+        return practice[0]
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def _sync_pending_question(carry: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Mint one stable question instance when a question starts waiting for an answer."""
+    if not carry.get("awaiting_graded_response"):
+        return
+    chunk = _served_chunk(carry.get("retrieved_chunks"))
+    if not chunk or not chunk.get("content_id"):
+        return
+    pending = carry.get("pending_question") if isinstance(carry.get("pending_question"), dict) else {}
+    if pending.get("content_id") == chunk.get("content_id") and pending.get("question_instance_id"):
+        return
+    carry["pending_question"] = {
+        "question_instance_id": str(uuid.uuid4()),
+        "content_id": chunk.get("content_id"),
+        "concept_id": result.get("primary_concept_id") or carry.get("primary_concept_id"),
+    }
+
+
 def update_carry(
     carry: Dict[str, Any],
     result: TutorState,
@@ -100,10 +168,13 @@ def update_carry(
 
     # ── awaiting_graded_response lifecycle ────────────────────────────────────
     new_awaiting = result.get("awaiting_graded_response")  # type: ignore[call-overload]
+    persisted = result.get("persistence_status")  # type: ignore[call-overload]
     if new_awaiting is True:
         carry["awaiting_graded_response"] = True
-    elif was_graded or new_awaiting is False:
+    elif new_awaiting is False or (was_graded and persisted in {None, "committed"}):
         carry.pop("awaiting_graded_response", None)
+        if persisted == "committed":
+            carry.pop("pending_question", None)
 
     # ── retrieved_chunks / prereq / target_state — only while awaiting ────────
     if carry.get("awaiting_graded_response"):
@@ -116,6 +187,7 @@ def update_carry(
             v = result.get(k)  # type: ignore[call-overload]
             if v is not None:
                 carry[k] = v
+        _sync_pending_question(carry, result)
     else:
         carry.pop("retrieved_chunks", None)
         carry.pop("prereq_concept_states", None)
@@ -136,6 +208,7 @@ def update_carry(
         q_idx = carry.get("quiz_batch_index", 0)
         if 0 <= q_idx < len(q_chunks):
             carry["retrieved_chunks"] = [q_chunks[q_idx]]
+            _sync_pending_question(carry, result)
     elif new_quiz_mode is False:
         carry.pop("quiz_batch_mode", None)
         carry.pop("quiz_batch_index", None)
@@ -294,19 +367,28 @@ def parse_turn_input(
     was_graded = False
 
     outcome = (graded_outcome or "").lower().strip()
-    # Explicit Correct/Incorrect from the UI is authoritative. Prefer it over the
-    # raw query so clients never depend on sending "1"/"0" in `query`.
+    # A Correct/Incorrect button is a self-report for the pending served question.
+    # An empty message or a stale click is not enough.
+    pending = carry.get("pending_question") if isinstance(carry.get("pending_question"), dict) else {}
     if outcome in {"correct", "incorrect"}:
-        awaiting = bool(carry.get("awaiting_graded_response"))
-        ctype = normalize_content_type(carry.get("content_type_requested") or "")
-        if awaiting or ctype in {"practice", "pyq"} or not raw_input.strip():
+        if (
+            carry.get("awaiting_graded_response")
+            and pending.get("question_instance_id")
+            and pending.get("content_id")
+        ):
             graded_overrides = {
                 "has_graded_outcome": True,
+                "evidence_source": "student_self_report",
                 "student_answer": "1" if outcome == "correct" else "0",
                 "is_correct": outcome == "correct",
                 "error_type": None,
                 "time_taken_sec": None,
+                "question_instance_id": pending["question_instance_id"],
+                "graded_content_id": pending["content_id"],
+                "submission_id": pending["question_instance_id"],
             }
+            if pending.get("concept_id"):
+                graded_overrides["primary_concept_id"] = pending["concept_id"]
             query = graded_overrides["student_answer"]
             was_graded = True
             return query, graded_overrides, was_graded
@@ -316,20 +398,34 @@ def parse_turn_input(
         stripped in {"1", "0"}
         and normalize_content_type(carry.get("content_type_requested") or "") in {"practice", "pyq"}
         and carry.get("awaiting_graded_response")
+        and pending.get("question_instance_id")
+        and pending.get("content_id")
     ):
         is_correct = stripped == "1"
         graded_overrides = {
             "has_graded_outcome": True,
+            "evidence_source": "student_self_report",
             "student_answer": stripped,
             "is_correct": is_correct,
             "error_type": None,
             "time_taken_sec": None,
+            "question_instance_id": pending["question_instance_id"],
+            "graded_content_id": pending["content_id"],
+            "submission_id": pending["question_instance_id"],
         }
+        if pending.get("concept_id"):
+            graded_overrides["primary_concept_id"] = pending["concept_id"]
         was_graded = True
         return query, graded_overrides, was_graded
 
-    if raw_input.upper().startswith("ANSWER::"):
+    if raw_input.upper().startswith("ANSWER::") and pending.get("question_instance_id") and pending.get("content_id"):
         graded_overrides = parse_legacy_answer(raw_input)
+        graded_overrides["evidence_source"] = "student_self_report"
+        graded_overrides["question_instance_id"] = pending["question_instance_id"]
+        graded_overrides["graded_content_id"] = pending["content_id"]
+        graded_overrides["submission_id"] = pending["question_instance_id"]
+        if pending.get("concept_id"):
+            graded_overrides["primary_concept_id"] = pending["concept_id"]
         query = graded_overrides.get("student_answer", raw_input)
         was_graded = True
 

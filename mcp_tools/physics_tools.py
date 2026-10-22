@@ -377,6 +377,9 @@ def verify_result(args: VerifyResultArgs, ctx: ToolContext) -> Dict[str, Any]:
             f"dimensions are {dim_check['dimension']}, not {args.expect_quantity}"
         )
     sat = payload["checks"].get("satisfies_relation") or {}
+    incomplete = []
+    if args.relation and sat.get("satisfies") is None:
+        incomplete.append("the relation could not be checked")
     if sat.get("satisfies") is False:
         failures.append("the answer does not satisfy the governing equation")
     broken_limits = [
@@ -386,14 +389,21 @@ def verify_result(args: VerifyResultArgs, ctx: ToolContext) -> Dict[str, Any]:
     if broken_limits:
         failures.append("limiting case(s) disagree: " + ", ".join(broken_limits))
 
-    payload["verdict"] = (
-        "Every check passed. Dimensions are right, it satisfies the relation where one "
-        "was given, and the limits behave. Safe to show, with the usual caveat that "
-        "these checks cannot catch a wrong problem setup."
-        if not failures
-        else "DO NOT show this yet — " + "; ".join(failures) + "."
-    )
-    payload["passed"] = not failures
+    if failures:
+        payload["verdict"] = "DO NOT show this yet — " + "; ".join(failures) + "."
+        payload["passed"] = False
+    elif incomplete:
+        payload["verdict"] = (
+            "Cannot determine whether this is correct — " + "; ".join(incomplete) + "."
+        )
+        payload["passed"] = None
+    else:
+        payload["verdict"] = (
+            "Every check passed. Dimensions are right, it satisfies the relation where one "
+            "was given, and the limits behave. Safe to show, with the usual caveat that "
+            "these checks cannot catch a wrong problem setup."
+        )
+        payload["passed"] = True
     return payload
 
 
@@ -652,8 +662,15 @@ def check_student_work(args: CheckStudentWorkArgs, ctx: ToolContext) -> Dict[str
             f"{first_break['to_step']}. Everything before that is sound — say so, then "
             "work on that one line."
         )
+    elif payload.get("unparsed_steps"):
+        payload["first_problem_at_step"] = None
+        payload["passed"] = None
+        payload["verdict"] = (
+            "Cannot determine whether every step follows. At least one step could not be parsed."
+        )
     else:
         payload["first_problem_at_step"] = None
+        payload["passed"] = True
         payload["verdict"] = (
             "Every step follows from the one before it, and each is dimensionally "
             "consistent. If their final answer is still wrong, the error is in the "

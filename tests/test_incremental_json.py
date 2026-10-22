@@ -8,7 +8,7 @@ def test_incremental_json_scanner():
     same logic as check_answer_streaming in a small mock setup.
     """
     
-    # We will just write a small stream generator to mock groq_stream
+    # We will just write a small stream generator to mock stream_completion
     chunks = [
         (r'{"verdict": "revise", ', False),
         (r'"issues": ["foo"], "rev', False),
@@ -28,16 +28,16 @@ def test_incremental_json_scanner():
     def on_token(token: str):
         emitted_tokens.append(token)
         
-    # We mock groq_stream to return our stream, and test check_answer_streaming
+    # We mock stream_completion to return our stream, and test check_answer_streaming
     import agents.answer_checker as checker
     import utils.llm
     
-    original_stream = checker.groq_stream
+    original_stream = checker.stream_completion
     
     def fake_stream(*args, **kwargs):
         return mock_stream()
         
-    checker.groq_stream = fake_stream
+    checker.stream_completion = fake_stream
     checker.MIN_LENGTH_TO_CHECK = 0
     try:
         # call check_answer_streaming
@@ -56,4 +56,4 @@ def test_incremental_json_scanner():
         assert result.verdict == "revised"
         assert result.answer in ('Hello\nWorld! é "ok"', 'Hello \nWorld! é "ok"')
     finally:
-        checker.groq_stream = original_stream
+        checker.stream_completion = original_stream

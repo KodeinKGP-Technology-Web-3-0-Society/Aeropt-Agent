@@ -1,4 +1,4 @@
-"""The graph client: the Neo4j-shaped method surface, answered from the retrieval Postgres.
+"""Curriculum relationships and content lookup over the retrieval Postgres.
 
 Four call sites outside the retriever talk to the graph directly — follow-up
 suggestions, `generate_suggestions`, `search_knowledge_graph` and quiz step
@@ -8,7 +8,7 @@ retrieval database through retrieval/store.py (the Aura graph is no longer used)
 `vector_search` embeds with retrieval.embedder (the corpus's model). Pass `query_text`;
 a vector of another width is refused instead of returning silent nonsense.
 
-    from retrieval.local_graph import graph
+    from retrieval.curriculum_graph import graph
     graph.get_content_ids_for_concept("torque", content_type="practice")
 """
 
@@ -23,8 +23,8 @@ from retrieval import embedder, search, store
 _CONTENT_TYPES = search.TYPE_FAMILIES
 
 
-class LocalGraphClient:
-    """Read-only, in-process, same method names as `db.neo4j_client.Neo4jClient`."""
+class CurriculumGraphClient:
+    """Postgres-backed curriculum graph with the historical graph-client interface."""
 
     # ── Concept / REQUIRES ────────────────────────────────────────────────────
     def get_prerequisite_concepts(self, concept_id: str, max_depth: int = 2) -> List[Dict[str, Any]]:
@@ -125,7 +125,7 @@ class LocalGraphClient:
         return None
 
 
-graph = LocalGraphClient()
+graph = CurriculumGraphClient()
 
 
 def graph_client():

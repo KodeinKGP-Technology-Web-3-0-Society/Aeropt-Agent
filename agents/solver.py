@@ -39,7 +39,7 @@ from utils.latex_guidelines import (
     harden_math_spans,
     sanitize_chunk_text_for_prompt,
 )
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
 # ── Supabase storage URL builder ───────────────────────────────────────────────
 
@@ -161,7 +161,7 @@ def _extract_md_image_urls(text: str) -> List[str]:
     return re.findall(r"!\[[^\]]*\]\((https?://[^)\s]+)(?:\s+\"[^\"]*\")?\)", text)
 
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 logger = logging.getLogger("jee_tutor.solver")
 
 MIN_RESPONSE_CHARS = 80   # below this we treat the generation as empty
@@ -677,7 +677,7 @@ def _grounding_note(state: Dict[str, Any]) -> str:
     fix for the two most common hallucination triggers: (1) a question that doesn't
     match anything in the tracked syllabus (primary_concept_id never resolved), and
     (2) a resolved concept where retrieval came back weak/empty (retrieval_confidence
-    == "low", already detected by graphrag_retriever.py's confidence gate but
+    == "low", already detected by the retrieval service's confidence gate but
     previously discarded before it reached the student).
     """
     confidence = state.get("retrieval_confidence")
@@ -872,8 +872,8 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         # slightly malformed LaTeX backslashes, breaking the entire fallback chain.
         # Instead, we extract and repair the JSON ourselves via regex + strict=False.
         
-        raw, model_used = groq_complete(
-            client=_groq,
+        raw, model_used = complete_text(
+            client=_llm_client,
             model=skill.get("model", config.SOLVER_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SOLVER_FALLBACK_MODELS,
@@ -907,8 +907,8 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
                 model_used,
                 len(response.strip()),
             )
-            raw, model_used = groq_complete(
-                client=_groq,
+            raw, model_used = complete_text(
+                client=_llm_client,
                 model=config.SOLVER_FALLBACK_MODELS[0],
                 messages=[{"role": "user", "content": prompt}],
                 fallback_models=config.SOLVER_FALLBACK_MODELS[1:],
@@ -940,16 +940,6 @@ def solver_node(state: TutorState) -> Dict[str, Any]:
         presentation = None
         if content_type in {"theory", "example"} and not is_practice:
             presentation = {"steps": _parse_steps(response)}
-
-        db.insert_chat_turn(
-            session_id=state["session_id"],
-            role="assistant",
-            content=response,
-            turn_index=state.get("interaction_count", 1) * 2,
-            agent_used=agent_for_db,
-            concepts_referenced=[primary_id] if primary_id else None,
-            presentation=presentation,
-        )
 
         result: Dict[str, Any] = {
             "response": response,

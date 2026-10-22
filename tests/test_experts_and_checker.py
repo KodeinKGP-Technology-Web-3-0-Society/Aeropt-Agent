@@ -88,6 +88,25 @@ class ExpertDispatchTests(unittest.TestCase):
         result = run_expert("nonexistent", "do a thing please", self.ctx)
         self.assertIn("verifier", result["error"])
 
+    def test_composer_cannot_stream_an_unchecked_draft(self):
+        from utils.stream import emit_text, stream_callback_var
+
+        emitted = []
+
+        def compose(state):
+            emit_text("Unchecked draft")
+            return {"response": "Unchecked draft"}
+
+        token = stream_callback_var.set(emitted.append)
+        try:
+            with patch("agents.solver.solver_node", side_effect=compose):
+                result = run_expert("worked_solution", "Explain torque privately", self.ctx)
+            self.assertEqual(emitted, [])
+            self.assertEqual(result["composed_by"], "worked_solution")
+            self.assertEqual(stream_callback_var.get(), emitted.append)
+        finally:
+            stream_callback_var.reset(token)
+
     def test_an_expert_that_raises_does_not_end_the_turn(self):
         with patch("agents.solver.solver_node", side_effect=RuntimeError("solver down")):
             result = run_expert("worked_solution", "explain torque to me", self.ctx)
@@ -160,7 +179,7 @@ class AnswerCheckerTests(unittest.TestCase):
 
     def test_a_clean_draft_passes_through_unchanged(self):
         with patch(
-            "agents.answer_checker.groq_complete",
+            "agents.answer_checker.complete_text",
             return_value=('{"verdict": "pass", "issues": []}', "m"),
         ):
             result = check_answer(query="q", draft=self.LONG_DRAFT, state={})
@@ -178,7 +197,7 @@ class AnswerCheckerTests(unittest.TestCase):
                 "revised_answer": fixed,
             }
         )
-        with patch("agents.answer_checker.groq_complete", return_value=(payload, "m")):
+        with patch("agents.answer_checker.complete_text", return_value=(payload, "m")):
             result = check_answer(query="q", draft=self.LONG_DRAFT, state={})
         self.assertEqual(result.verdict, VERDICT_REVISED)
         self.assertEqual(result.answer, fixed)
@@ -186,7 +205,7 @@ class AnswerCheckerTests(unittest.TestCase):
 
     def test_a_checker_outage_never_blocks_the_student(self):
         with patch(
-            "agents.answer_checker.groq_complete", side_effect=RuntimeError("groq down")
+            "agents.answer_checker.complete_text", side_effect=RuntimeError("groq down")
         ):
             result = check_answer(query="q", draft=self.LONG_DRAFT, state={})
         self.assertEqual(result.verdict, VERDICT_SKIPPED)
@@ -194,7 +213,7 @@ class AnswerCheckerTests(unittest.TestCase):
 
     def test_unparseable_checker_output_never_blocks_the_student(self):
         with patch(
-            "agents.answer_checker.groq_complete",
+            "agents.answer_checker.complete_text",
             return_value=("I think it's fine honestly", "m"),
         ):
             result = check_answer(query="q", draft=self.LONG_DRAFT, state={})
@@ -203,7 +222,7 @@ class AnswerCheckerTests(unittest.TestCase):
 
     def test_json_wrapped_in_a_code_fence_is_still_read(self):
         with patch(
-            "agents.answer_checker.groq_complete",
+            "agents.answer_checker.complete_text",
             return_value=('```json\n{"verdict": "pass", "issues": []}\n```', "m"),
         ):
             result = check_answer(query="q", draft=self.LONG_DRAFT, state={})
@@ -212,7 +231,7 @@ class AnswerCheckerTests(unittest.TestCase):
     def test_a_truncated_revision_is_rejected_in_favour_of_the_draft(self):
         """A 'correction' that drops most of the answer is a broken checker."""
         with patch(
-            "agents.answer_checker.groq_complete",
+            "agents.answer_checker.complete_text",
             return_value=(
                 '{"verdict": "revise", "issues": ["x"], "revised_answer": "Too short."}',
                 "m",
@@ -227,7 +246,7 @@ class AnswerCheckerTests(unittest.TestCase):
 
         trace = AgentTrace()
         with patch(
-            "agents.answer_checker.groq_complete",
+            "agents.answer_checker.complete_text",
             return_value=('{"verdict": "pass", "issues": []}', "m"),
         ):
             check_answer(query="q", draft=self.LONG_DRAFT, state={}, trace=trace)

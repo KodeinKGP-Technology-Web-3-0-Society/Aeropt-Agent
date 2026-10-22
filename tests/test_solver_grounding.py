@@ -28,7 +28,7 @@ class TestGroundingNote(unittest.TestCase):
 
     def test_missing_confidence_defaults_to_normal_not_a_crash(self):
         # e.g. meta/repair turns that reuse a prior turn's chunks without
-        # graphrag_retriever_node running again this turn.
+        # retrieve_for_state running again this turn.
         note = _grounding_note({})
         self.assertIn("OK", note)
 

@@ -1,8 +1,7 @@
-"""Per-page text layer, page images, and whether a page's text can be trusted."""
+"""Per-page text layer and page images."""
 
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -26,20 +25,3 @@ def render(pdf: Path, page: int, out_dir: Path, dpi: int = 150) -> Path:
             check=True,
         )
     return target
-
-
-# Glyphs a symbol font leaves behind when its mapping is lost: NCERT prints ρ as "r",
-# Ω as "W" and ∝ as "µ", which no score can detect, but the same fonts also leave these.
-_GARBLE = re.compile(r"[-�]|[µ¶§¬]|\b[a-zA-Z]\s*=\s*$", re.M)
-_EQUATION_LINE = re.compile(r"^\s{20,}\S.{0,40}\(\d+\.\d+\)\s*$", re.M)  # "   V = R I      (3.3)"
-
-
-def text_is_trustworthy(text: str) -> bool:
-    """True when a page's text layer can stand in for reading the page image.
-
-    Conservative: any sign of symbol-font loss or a numbered display equation sends
-    the page to the vision reader. Prose-only pages pass.
-    """
-    if len(text.strip()) < 200:
-        return False
-    return not (_GARBLE.search(text) or _EQUATION_LINE.search(text))

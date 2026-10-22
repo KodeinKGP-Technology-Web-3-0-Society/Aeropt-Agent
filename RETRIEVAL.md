@@ -248,9 +248,9 @@ costs grounding. `AEROPT_GATE_LLM=1` restores the classifier for the ambiguous m
 | `retrieval/search.py` | scope → pgvector + tsvector → fusion → novelty → MMR |
 | `retrieval/service.py` | the public API and the grounding pack |
 | `retrieval/bridge.py` | GraphRAG-shaped adapter for the existing graph |
-| `retrieval/local_graph.py` | Graph client over Postgres for follow-ups, suggestions, and `search_knowledge_graph` |
+| `retrieval/curriculum_graph.py` | Graph client over Postgres for follow-ups, suggestions, and `search_knowledge_graph` |
 | `retrieval/cli.py` | inspect, bench, clear a ledger |
-| `tests/test_retrieval_local.py` | the four guarantees, asserted |
+| `tests/test_retrieval_postgres.py` | the four guarantees, asserted |
 
 ## LaTeX that renders
 
@@ -288,7 +288,7 @@ so both pipelines run and KaTeX picks the winner.
 
 All graph and search call sites — follow-up suggestions, `generate_suggestions`, quiz step
 decomposition, `search_knowledge_graph`, and tutor tools — query Postgres directly through
-`retrieval.local_graph.graph_client()` and `retrieval.store`. Neo4j Aura and local SQLite indices
+`retrieval.curriculum_graph.graph_client()` and `retrieval.store`. Neo4j Aura and local SQLite indices
 have been completely removed.
 
 The single embedding model is `minishlab/potion-base-8M` (`DIM = 256`), enforced in
@@ -298,7 +298,7 @@ The single embedding model is `minishlab/potion-base-8M` (`DIM = 256`), enforced
 
 ```bash
 make push             # builds/updates local Postgres (or make push-dry)
-.venv/bin/python -m pytest tests/test_retrieval_local.py
+.venv/bin/python -m pytest tests/test_retrieval_postgres.py
 ```
 
 The build prints per-unit coverage, weak concept mappings and any in-scope concept

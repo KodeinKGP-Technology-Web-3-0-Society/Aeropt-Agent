@@ -4,8 +4,13 @@ LangGraph Learning Agent for JEE Physics. One Main Tutor owns each student turn:
 it calls tools, may consult a temporary expert, then the Answer Checker reviews
 the Teaching Answer before the student sees it.
 
-Product architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md). If this file and
-that one disagree, `ARCHITECTURE.md` wins. Retrieval: [`RETRIEVAL.md`](RETRIEVAL.md).
+Start with the current [orchestration and agent guide](docs/ORCHESTRATION.md):
+both graphs, repository layout, agents, state, HTTP routes and worked examples.
+The [tool catalog](docs/AGENT_TOOLS.md) covers all 24 registered tools and four
+Python helpers. The [architecture audit](docs/ARCHITECTURE_AUDIT.md) records
+loopholes, dormant capabilities and proposed agents; [cleanup notes](docs/CLEANUP_NOTES.md)
+explain removals. The [module cleanup map](docs/MODULE_CLEANUP.md) lists current module locations and retired internal imports. `ARCHITECTURE.md` retains the older product plan and snapshot;
+the current guide describes implemented behavior. Retrieval: [`RETRIEVAL.md`](RETRIEVAL.md).
 
 Port **8001**. Frontend talks to this service for `/chat`. Django (`Aeropt-backend`,
 port 8000) owns auth and roadmaps. Both share one Supabase Postgres
@@ -66,17 +71,19 @@ when retrieval is skipped.
 | `RETRIEVAL_DATABASE_URL` | Yes | Postgres connection URI for retrieval project (`content`, `concepts`, `pgvector`) |
 | `RETRIEVAL_SUPABASE_URL` | Optional | Retrieval project REST URL (defaults to `SUPABASE_URL`) |
 | `RETRIEVAL_SUPABASE_KEY` | Optional | Retrieval project REST key (defaults to `SUPABASE_KEY`) |
-| `GROQ_API_KEY` | Optional | Groq API key (tutor reasoning loop) |
-| `GEMINI_API_KEY` | Optional | Gemini API key (fallback/diagnostic models) |
+| `GROQ_API_KEY` | Optional | Legacy provider configuration; current default model route is Gemini |
+| `GEMINI_API_KEY` | Yes for default model route | Gemini key; `GEMINI_KEYS` also supports a key pool |
 | `DJANGO_API_BASE_URL` | Optional | Django backend URL (evidence posting; default: `http://127.0.0.1:8000`) |
 
 ## Tools
 
 Registered with `@tool`, imported from `agents/learning_agent.py::_import_tools`.
 
-`resolve_concept` · `retrieve_content` · `open_material` · `suggest_next_material` ·
-`calculate` · `get_learner_context` · `record_attempt` · `remember_about_learner` ·
-`schedule_review` · `consult_expert`
+Tools include retrieval, arithmetic, symbolic maths, physics verification,
+diagrams, learner memory, progress, reviews, expert handoffs and Study Room
+phase/grading operations. Availability depends on the caller's scope and surface;
+registration alone does not make a tool available to every agent. See the
+[complete reference and examples](docs/AGENT_TOOLS.md).
 
 Do not add a second registry in `mcp_tools/__init__.py`.
 

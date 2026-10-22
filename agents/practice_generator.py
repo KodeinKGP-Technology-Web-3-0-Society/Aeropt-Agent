@@ -18,11 +18,11 @@ from openai import OpenAI
 import config
 from db.supabase_client import db
 from models.state import TutorState
-from utils.llm import groq_complete
+from utils.llm import complete_text
 from utils.stream import stream_callback_var
 
 logger = logging.getLogger("jee_tutor.practice_generator")
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 _QUESTION_TYPES = frozenset({"mcq", "numerical"})
 
@@ -254,8 +254,8 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 
 def _generate_raw(prompt: str, max_tokens: int) -> str:
-    raw, _ = groq_complete(
-        client=_groq,
+    raw, _ = complete_text(
+        client=_llm_client,
         model=config.SOLVER_MODEL,
         messages=[{"role": "user", "content": prompt}],
         fallback_models=config.SOLVER_FALLBACK_MODELS,
@@ -324,18 +324,6 @@ def practice_generator_node(state: TutorState) -> Dict[str, Any]:
             f"on {topic_label}. Open the practice canvas to attempt them."
         )
 
-        try:
-            db.insert_chat_turn(
-                session_id=session_id,
-                role="assistant",
-                content=response_msg,
-                turn_index=state.get("interaction_count", 1) * 2,
-                agent_used="solver",
-                concepts_referenced=[concept_id] if concept_id else None,
-            )
-        except Exception:
-            logger.exception("Could not persist practice generator turn")
-
         return {
             "generated_practice_batch": questions,
             "response": response_msg,
@@ -368,85 +356,7 @@ def practice_set_node(state: TutorState) -> Dict[str, Any]:
         from agents.solver import _format_practice_response
         response_msg = _format_practice_response(valid_chunks)
         
-        session_id = state.get("session_id", "")
         concept_id = state.get("primary_concept_id", "")
-        
-        try:
-            db.insert_chat_turn(
-                session_id=session_id,
-                role="assistant",
-                content=response_msg,
-                turn_index=state.get("interaction_count", 1) * 2,
-                agent_used="practice_verbatim",
-                concepts_referenced=[concept_id] if concept_id else None,
-            )
-        except Exception:
-            logger.exception("Could not persist verbatim practice turn")
-
-        return {
-            "response": response_msg,
-            "agent_used": "practice_verbatim",
-            "primary_concept_id": concept_id,
-            "content_type_requested": "practice",
-            "awaiting_graded_response": True,  # Keep true for DB questions with explicit answers
-            "error": None,
-        }
-
-    # Fall back to LLM generation
-    result = practice_generator_node(state)
-    
-    # Add a disclosure flag if it successfully generated
-    if not result.get("error") and result.get("response"):
-        disclosure = " (Note: This question was generated dynamically and may not perfectly reflect official exam phrasing.)"
-        result["response"] += disclosure
-        
-        # We also need to update the chat turn in DB that practice_generator_node just inserted!
-        session_id = state.get("session_id", "")
-        if session_id:
-            try:
-                # To keep it simple, we don't strictly need to update the DB row if the frontend
-                # displays the state response. Wait, the DB turn is what's loaded on refresh.
-                # Actually, practice_generator_node does `db.insert_chat_turn(..., content=response_msg)`.
-                # We can just let the response have it in state, but DB turn won't.
-                pass
-            except Exception:
-                pass
-                
-    return result
-
-def practice_set_node(state: TutorState) -> Dict[str, Any]:
-    """
-    Wrapper for practice generation that tries to serve verified DB content first.
-    If no valid content is found in the retrieved chunks, falls back to generation.
-    """
-    chunks = state.get("retrieved_chunks", []) or []
-    
-    # Check if we have valid practice or pyq chunks with a solution
-    valid_chunks = [
-        c for c in chunks
-        if (c.get("content_type") or "").lower() in {"practice question", "pyq", "practice"}
-        and bool((c.get("solution") or "").strip())
-    ]
-    
-    if valid_chunks:
-        # We have verified content, use the deterministic formatter!
-        from agents.solver import _format_practice_response
-        response_msg = _format_practice_response(valid_chunks)
-        
-        session_id = state.get("session_id", "")
-        concept_id = state.get("primary_concept_id", "")
-        
-        try:
-            db.insert_chat_turn(
-                session_id=session_id,
-                role="assistant",
-                content=response_msg,
-                turn_index=state.get("interaction_count", 1) * 2,
-                agent_used="practice_verbatim",
-                concepts_referenced=[concept_id] if concept_id else None,
-            )
-        except Exception:
-            logger.exception("Could not persist verbatim practice turn")
 
         return {
             "response": response_msg,

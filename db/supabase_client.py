@@ -7,6 +7,7 @@ by every agent that needs DB access.  No agent ever calls supabase-py directly.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -314,6 +315,18 @@ class SupabaseClient:
         )
         return list(reversed(res.data or []))
 
+    def assistant_turn_contents(self, session_id: str, turn_index: int) -> List[str]:
+        """Assistant texts already stored for this session turn, if any."""
+        res = (
+            self.client.table("chat_turns")
+            .select("content")
+            .eq("session_id", session_id)
+            .eq("turn_index", turn_index)
+            .eq("role", "assistant")
+            .execute()
+        )
+        return [str((row or {}).get("content") or "") for row in (res.data or [])]
+
     def read_all_chat_turns(self, session_id: str) -> List[Dict[str, Any]]:
         res = (
             self.client.table("chat_turns")
@@ -619,6 +632,20 @@ class SupabaseClient:
             payload={"student_answer": (student_answer or "")[:500]} if student_answer else None,
         )
         return res.data[0]
+
+    def commit_graded_attempt(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Atomic attempt, proficiency, ledger, and study update (migration 022).
+
+        Raises when the function is missing or the database rejects the call.
+        Callers must not fall back to insert_user_attempt.
+        """
+        res = self.client.rpc("commit_graded_attempt", {"p_request": request}).execute()
+        data = res.data
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, str):
+            data = json.loads(data)
+        return data or {}
 
     # ─────────────────────────── learning ledger (migration 012) ──────────────
 
@@ -1745,10 +1772,17 @@ class SupabaseClient:
         """
         if not user_id or not self.consolidation_schema_ready():
             return []
+        # attempt ids, the student response, and the evidence source are what
+        # eligible_clusters uses to decide a repeated mistake or a verified
+        # strength. Omitting them makes every real row look ineligible, so the
+        # consolidation table stays empty.
         columns = (
             "episode_id, user_id, concept_id, task_type, query_excerpt, approach, "
-            "observed_outcome, feedback_outcome, feedback_status, created_at"
+            "observed_outcome, feedback_outcome, feedback_status, created_at, "
+            "attempt_id, feedback_attempt_id"
         )
+        if self.episode_evidence_enabled():
+            columns += ", assessment_status, evidence_source, student_response"
         try:
             res = (
                 self.client.table("episodic_memory")
@@ -1837,22 +1871,58 @@ class SupabaseClient:
         memory_id: Optional[str] = None,
         fact: Optional[str] = None,
     ) -> bool:
-        """Remember one proposal so the same cluster is not sent to the model again."""
+        """Remember one proposal so the same cluster is not sent to the model again.
+
+        A later saved or duplicate result updates the claim row. A second insert
+        would hit the (user_id, cluster_key) primary key and be discarded, leaving
+        the table stuck on claimed or empty.
+        """
         if not user_id or not cluster_key or not self.consolidation_schema_ready():
             return False
+        payload = {
+            "user_id": user_id,
+            "cluster_key": cluster_key,
+            "episode_ids": list(episode_ids),
+            "result": result,
+            "memory_id": memory_id,
+            "fact": fact,
+        }
         try:
-            self.client.table("episodic_consolidation").insert(
-                {
-                    "user_id": user_id,
-                    "cluster_key": cluster_key,
-                    "episode_ids": list(episode_ids),
-                    "result": result,
-                    "memory_id": memory_id,
-                    "fact": fact,
-                }
-            ).execute()
+            existing = (
+                self.client.table("episodic_consolidation")
+                .select("result")
+                .eq("user_id", user_id)
+                .eq("cluster_key", cluster_key)
+                .limit(1)
+                .execute()
+            )
+            found = (existing.data or [None])[0]
+            if found is not None:
+                if result == "claimed":
+                    return False
+                (
+                    self.client.table("episodic_consolidation")
+                    .update(
+                        {
+                            "episode_ids": list(episode_ids),
+                            "result": result,
+                            "memory_id": memory_id,
+                            "fact": fact,
+                        }
+                    )
+                    .eq("user_id", user_id)
+                    .eq("cluster_key", cluster_key)
+                    .execute()
+                )
+                return True
+            self.client.table("episodic_consolidation").insert(payload).execute()
             return True
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("jee_tutor.db").warning(
+                "episodic_consolidation write failed result=%s: %s",
+                result,
+                str(exc)[:200],
+            )
             return False
 
     def mark_episodes_consolidated(

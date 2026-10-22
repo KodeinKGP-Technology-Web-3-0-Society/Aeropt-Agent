@@ -1,10 +1,12 @@
+"""Generate a structured concept queue with a fixed model call and validation."""
+
 import json
 import logging
 from typing import Dict, Any, List
 
 from openai import OpenAI
 import config
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
 logger = logging.getLogger("jee_tutor.study_planner")
 
@@ -55,7 +57,7 @@ def generate_study_plan(user_profile: Dict[str, Any], trackers: List[Dict[str, A
     )
 
     try:
-        response_text, _ = groq_complete(
+        response_text, _ = complete_text(
             client=client,
             model=config.ORCHESTRATOR_MODEL,
             messages=[{"role": "user", "content": prompt}],

@@ -17,9 +17,11 @@ for the genuinely ambiguous middle, for anyone who wants it.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 GATE_LLM = os.getenv("AEROPT_GATE_LLM", "0").strip() == "1"
@@ -210,8 +212,70 @@ def _residual_topic(text: str) -> str:
 def _llm_is_meta(query: str, turns: list[dict[str, Any]]) -> bool | None:
     """Optional classifier for the ambiguous middle. Off unless AEROPT_GATE_LLM=1."""
     try:
-        from agents.retrieval_gate import is_meta_repair_turn
-
         return bool(is_meta_repair_turn(query, turns))
     except Exception:  # noqa: BLE001 — the gate must never fail a turn
         return None
+
+
+logger = logging.getLogger(__name__)
+
+
+_META_PROMPT = (
+    "You are a classifying agent for a tutoring system.\n"
+    "Determine if the student's message is a \"meta\" or \"repair\" turn about the immediately preceding conversation. \n"
+    "A meta/repair turn means the student is asking to clarify the previous answer, asking why they were marked wrong, asking to rephrase/shorten the last response, or otherwise talking ABOUT the conversation rather than asking a brand new physics question.\n"
+    "\n"
+    "Conversation Context:\n"
+    "{{context}}\n"
+    "\n"
+    "Student Message: \"{{query}}\"\n"
+    "\n"
+    "If it is a meta/repair turn, output ONLY the word TRUE.\n"
+    "If it is a new question or topic, output ONLY the word FALSE.\n"
+)
+
+@lru_cache(maxsize=1)
+def _meta_classifier_client():
+    """Initialize the optional classifier client only on first use."""
+    import config
+    from openai import OpenAI
+
+    return OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+
+
+def is_meta_repair_turn(query: str, recent_turns: list) -> bool:
+    if not query:
+        return False
+
+    import config
+    from utils.llm import complete_text
+
+    client = _meta_classifier_client()
+
+    context_lines = []
+    for t in recent_turns[-2:]: # Last 2 turns
+        role = t.get("role", "")
+        content = t.get("content", "")[:200]
+        context_lines.append(f"  [{role}]: {content}")
+    context = "\n".join(context_lines) if context_lines else "  (none)"
+
+    prompt = _META_PROMPT.replace("{{context}}", context).replace("{{query}}", query)
+
+    try:
+        model = getattr(config, "SMALL_MODEL_FALLBACK", ["llama3-8b-8192"])[0]
+        if hasattr(config, "ORCHESTRATOR_MODEL") and not getattr(config, "SMALL_MODEL_FALLBACK", None):
+            model = config.ORCHESTRATOR_MODEL
+
+        raw, _ = complete_text(
+            client=client,
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            fallback_models=[],
+            temperature=0.0,
+            max_tokens=10,
+            stream=False
+        )
+        return "true" in raw.lower()
+    except Exception as e:
+        logger.warning(f"Meta turn classification failed: {e}")
+        return False

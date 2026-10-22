@@ -49,6 +49,7 @@ class ConsultExpertArgs(BaseModel):
     ),
     args_model=ConsultExpertArgs,
     scopes=(SCOPE_COMPOSE,),
+    timeout_s=30.0,
 )
 def consult_expert(args: ConsultExpertArgs, ctx: ToolContext) -> Dict[str, Any]:
     if ctx.depth >= 1:

@@ -10,12 +10,12 @@ import re
 
 import config
 from db.supabase_client import db
-from retrieval.local_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
-from utils.llm import groq_complete
+from retrieval.curriculum_graph import graph_client  # backend-aware: Neo4j when hosted, the local index when not
+from utils.llm import complete_text
 from utils.presentation import filter_picker_suggestions
 from openai import OpenAI
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 
 class GenerateSuggestionsArgs(BaseModel):
@@ -114,8 +114,8 @@ Respond ONLY with a JSON array:
   {{"content_id": "...", "reason": "..."}}
 ]"""
         
-        raw, _ = groq_complete(
-            client=_groq,
+        raw, _ = complete_text(
+            client=_llm_client,
             model=getattr(config, "FOLLOW_UP_MODEL", config.ORCHESTRATOR_MODEL),
             messages=[{"role": "user", "content": prompt}],
             fallback_models=config.SMALL_MODEL_FALLBACK,

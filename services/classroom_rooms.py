@@ -21,7 +21,7 @@ def prerequisite_ids(concept_id: str) -> List[str]:
     if not concept_id:
         return []
     try:
-        from retrieval.local_graph import graph_client
+        from retrieval.curriculum_graph import graph_client
 
         rows = graph_client().get_prerequisite_concepts(concept_id, max_depth=2) or []
     except Exception:
@@ -154,27 +154,7 @@ def _remember_work_mistake(
     """Keep the broken step as one learner fact. The next turn can use it."""
     if not user_id or not isinstance(work_check, dict):
         return
-    if not work_check.get("first_problem_at_step") and not work_check.get("verdict"):
-        return
-    from db.supabase_client import db
-
-    fact = "Reverses the sign of torque when the force is into the page or down the plane."
-    try:
-        existing = db.read_learner_memories(user_id, limit=8) or []
-    except Exception:
-        existing = []
-    if any(fact.lower() in str(row.get("fact") or "").lower() for row in existing):
-        return
-    evidence = str(work_check.get("verdict") or "")[:400]
-    db.insert_learner_memory(
-        user_id,
-        "misconception",
-        fact,
-        evidence=evidence,
-        subject_key=concept_id or None,
-        source="tutor",
-        session_id=session_id or None,
-    )
+    return
 
 
 def check_handed_work(student_work: str) -> Dict[str, Any]:
@@ -194,9 +174,9 @@ def build_assessment(concept_id: str) -> Dict[str, Any]:
     concept = (concept_id or "").strip()
     if not concept:
         return {"items": []}
-    from agents.graphrag_retriever import graphrag_retriever_node
+    from retrieval.bridge import retrieve_for_state
 
-    retrieved = graphrag_retriever_node(
+    retrieved = retrieve_for_state(
         {
             "query": f"practice question on {concept}",
             "user_id": "",
@@ -245,37 +225,72 @@ def grade_submissions(
             continue
         item_id = str(row.get("item_id") or "").strip()
         answer = str(row.get("answer") or "").strip()
-        key = keys.get(item_id) or ""
-        if not item_id or not answer or not key:
+        question = keys.get(item_id)
+        if not isinstance(question, dict):
+            question = {}
+        if not item_id or not answer or not question:
             ungraded += 1
-            details.append({"item_id": item_id, "graded": False})
+            details.append({"item_id": item_id, "graded": False, "grade_status": "ungradable"})
             continue
-        is_correct = _normalize(answer) == _normalize(key)
+        from services.answer_key import grade_free_answer
+        from services.grading import answer_fingerprint, commit_progress
+
+        decision = grade_free_answer(question, answer)
+        if decision["grade_status"] not in {"correct", "incorrect"}:
+            ungraded += 1
+            details.append({
+                "item_id": item_id,
+                "graded": False,
+                "grade_status": decision["grade_status"],
+                "persistence_status": "not_attempted",
+                "failure_reason": decision.get("failure_reason"),
+            })
+            continue
+        is_correct = bool(decision["is_correct"])
         graded += 1
         if is_correct:
             correct_count += 1
-        mastery = _record_diagnostic(
-            user_id=user_id,
-            session_id=session_id,
-            concept_id=concept,
-            answer=answer,
-            is_correct=is_correct,
-        )
+        saved = None
+        if user_id and concept:
+            saved = commit_progress(
+                user_id=user_id,
+                session_id=session_id,
+                concept_id=concept,
+                content_id=item_id,
+                submission_id=f"{session_id}:{item_id}:{answer_fingerprint({'answer': answer, 'item_id': item_id})[:16]}",
+                question_instance_id=f"{session_id}:{item_id}",
+                student_answer=answer,
+                fingerprint=answer_fingerprint({"answer": answer, "content_id": item_id}),
+                is_correct=is_correct,
+                grade_status=decision["grade_status"],
+                evidence_source="answer_key",
+                source="assess",
+                answer_text=decision.get("answer_text") or "",
+            )
+        mastery = saved.proficiency_pct if saved and saved.recorded else None
         if mastery is not None:
             last_mastery = mastery
-        events.append(
-            {
-                "concept_id": concept,
-                "surface": "assess",
-                "specialist": "evaluation",
-                "kind": "attempt",
-                "payload": {"correct": is_correct, **({"mastery": mastery} if mastery is not None else {})},
-            }
-        )
-        details.append({"item_id": item_id, "graded": True, "correct": is_correct})
+        if saved and saved.recorded:
+            events.append(
+                {
+                    "concept_id": concept,
+                    "surface": "assess",
+                    "specialist": "evaluation",
+                    "kind": "attempt",
+                    "payload": {"correct": is_correct, "mastery": mastery},
+                }
+            )
+        details.append({
+            "item_id": item_id,
+            "graded": True,
+            "correct": is_correct,
+            "grade_status": decision["grade_status"],
+            "evidence_source": "answer_key",
+            "persistence_status": saved.persistence_status if saved else "not_attempted",
+            "recorded": bool(saved and saved.recorded),
+            "student_message": saved.student_message if saved else "Your answer was checked. Your progress was not saved.",
+        })
 
-    if graded and last_mastery is None:
-        last_mastery = round(100 * correct_count / graded)
     if graded and concept and last_mastery is not None:
         events.append(
             {
@@ -329,9 +344,8 @@ def _solution_index(item_ids: List[str]) -> Dict[str, str]:
     found: Dict[str, str] = {}
     for row in rows:
         content_id = str(row.get("content_id") or "")
-        solution = str(row.get("solution") or "").strip()
-        if content_id and solution:
-            found[content_id] = solution
+        if content_id and (row.get("structured") or row.get("solution")):
+            found[content_id] = row
     return found
 
 

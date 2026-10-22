@@ -23,12 +23,12 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from openai import OpenAI
 
 import config
-from agents.answer_checker import CheckResult, VERDICT_SKIPPED, check_answer, check_answer_streaming
+from agents.answer_checker import CheckResult, VERDICT_SKIPPED, check_answer_streaming
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
 from agents.runtime.trace import AgentTrace, TraceStep
@@ -39,7 +39,7 @@ from utils.stream import emit_text, stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 #: The tutor's reply when it accepts an expert's draft verbatim.
 _USE_DRAFT_TOKEN = "USE_DRAFT"
@@ -106,55 +106,6 @@ def _derive_active_agent(trace: AgentTrace) -> str:
         if step.kind == "tool" and step.name == "get_syllabus_status":
             return "syllabus"
     return "tutor"
-
-
-def _format_memory(memories: List[Dict[str, Any]]) -> str:
-    if not memories:
-        return (
-            "Nothing remembered about this student yet. Treat this as a first "
-            "meeting and pay attention to what works for them."
-        )
-    lines = []
-    for m in memories:
-        scope = f" (on {m['subject_key']})" if m.get("subject_key") else ""
-        confidence = float(m.get("confidence") or 0.6)
-        hedge = "" if confidence >= 0.75 else " — only seen once, treat as tentative"
-        lines.append(f"- [{m.get('kind')}]{scope} {m.get('fact')}{hedge}")
-    return "\n".join(lines)
-
-
-def _format_roadmap_hint(state: TutorState) -> str:
-    stage = state.get("study_stage")
-    concept = state.get("roadmap_concept_id")
-    if not stage and not concept:
-        return "Context:            open conversation, no set lesson"
-    bits = []
-    if concept:
-        bits.append(f"working through {concept}")
-    if stage:
-        bits.append(f"at the '{stage}' stage")
-    return "Context:            " + ", ".join(bits) + " from their study plan"
-
-
-def _format_pending_suggestions(state: TutorState) -> str:
-    """What was on offer at the end of the last turn.
-
-    Without this the agent cannot act on "the second one" or "yes, that one" —
-    it would have to guess which item the student meant, which is precisely the
-    fuzzy keyword matching this architecture exists to remove.
-    """
-    suggestions = state.get("follow_up_suggestions") or []
-    if not suggestions:
-        return "Nothing was offered — they are starting from their own question."
-    lines = [
-        "You offered these. If they pick one, open it by content_id rather than "
-        "searching again:"
-    ]
-    for i, s in enumerate(suggestions[:4], start=1):
-        title = s.get("title") or s.get("content_id") or "(untitled)"
-        ctype = s.get("content_type") or "material"
-        lines.append(f"  {i}. {title} [{ctype}, content_id={s.get('content_id')}]")
-    return "\n".join(lines)
 
 
 _OPTIONS_MOVE = (
@@ -227,85 +178,6 @@ def _decide_move_and_reveal(query: str, state: TutorState) -> tuple[str, int | s
         return "Hint at the core principle they are missing.", 2
     else:
         return "They are stuck. Show solution up to the sticking point and ask a question.", 3
-
-
-def _with_progress(
-    memory_text: str,
-    user_id: str,
-    session_id: str = "",
-    episode_context: str = "",
-) -> str:
-    """Memories say who the student is; the digest says how they are doing —
-    weak and mastered concepts, mistake pattern, reviews due — so a question
-    in chat is answered knowing what the student has already practised. The
-    cross-room digest says what they were just doing in the Study Room.
-    A non-empty episodic block is appended as already written."""
-    from services.cross_room import recent_activity
-    from services.progress_report import progress_digest
-
-    digest = progress_digest(user_id) if user_id else ""
-    if digest:
-        memory_text = f"{memory_text}\n\nProgress so far (from their practice record):\n{digest}"
-    activity = recent_activity(user_id, session_id)
-    if activity:
-        memory_text = f"{memory_text}\n\n{activity}"
-    context = (episode_context or "").strip()
-    if context:
-        memory_text = f"{memory_text}\n\n{context}"
-    return memory_text
-
-
-def _build_system_prompt(state: TutorState, memories: List[Dict[str, Any]], scaffolding_move: str, scaffolding_reveal: int | str) -> str:
-    skill = load_skill("learning_agent") or {}
-    prompt = skill.get("system_prompt") or ""
-    if not prompt:
-        raise RuntimeError(
-            "skills/learning_agent.yaml is missing or has no system_prompt — the "
-            "Main Tutor cannot run without its instructions."
-        )
-
-    summary = state.get("session_summary") or state.get("prior_session_summary")
-    if summary:
-        label = (
-            "Earlier in this session" if state.get("session_summary") else "Last session"
-        )
-        session_text = f"{label}: {summary}"
-    else:
-        session_text = "This is the start of the conversation."
-
-    replacements = {
-        "{{target_exam}}": str(state.get("target_exam") or "JEE_ADVANCED"),
-        "{{preferred_depth}}": str(state.get("preferred_depth") or "standard"),
-        "{{interaction_count}}": str(state.get("interaction_count") or 1),
-        "{{roadmap_hint}}": _format_roadmap_hint(state),
-        "{{learner_memory}}": _with_progress(
-            _format_memory(memories),
-            state.get("user_id") or "",
-            state.get("session_id") or "",
-            state.get("episode_context") or "",
-        ),
-        "{{session_summary}}": session_text,
-        "{{pending_suggestions}}": _format_pending_suggestions(state),
-        "{{scaffolding_move}}": scaffolding_move,
-        "{{scaffolding_reveal}}": str(scaffolding_reveal),
-    }
-    for token, value in replacements.items():
-        prompt = prompt.replace(token, value)
-    job = (state.get("classroom_job") or "").strip()
-    if job:
-        prompt = f"{prompt}\n\n{job}"
-    return prompt
-
-
-def _priming_messages(state: TutorState) -> List[Dict[str, Any]]:
-    """Recent conversation, as real turns rather than a summary blob."""
-    messages: List[Dict[str, Any]] = []
-    for turn in (state.get("recent_turns") or [])[-4:]:
-        role = "assistant" if turn.get("role") == "assistant" else "user"
-        content = (turn.get("content") or "").strip()
-        if content:
-            messages.append({"role": role, "content": content[:1500]})
-    return messages
 
 
 def _resolve_final_text(loop_text: str, ctx: ToolContext) -> str:
@@ -479,10 +351,21 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         max_steps=int(state.get("classroom_max_steps") or config.LEARNING_AGENT_MAX_STEPS),
         time_budget_s=config.LEARNING_AGENT_TIME_BUDGET_S,
         temperature=config.LEARNING_AGENT_TEMPERATURE,
-        client=_groq,
+        client=_llm_client,
         trace=trace,
         label="tutor",
     )
+
+    if result.stop_reason == "cancelled":
+        _finalize_trace()
+        usage_meter.reset(u_token)
+        return {
+            "cancelled": True,
+            "response": "",
+            "error": None,
+            "agent_stop_reason": "cancelled",
+            "agent_trace_path": trace.path(),
+        }
 
     answer = _resolve_final_text(result.text, ctx)
 

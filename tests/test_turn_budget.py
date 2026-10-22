@@ -88,7 +88,7 @@ class TurnBudgetTests(unittest.TestCase):
             return FakeMessage(content="Here is the forced closing answer."), "fake-model"
 
         start_time = time.time()
-        with patch("agents.runtime.loop.groq_chat", side_effect=fake_chat):
+        with patch("agents.runtime.loop.chat_completion", side_effect=fake_chat):
             res = run_agent_loop(
                 system_prompt="You are a tutor.",
                 user_message="Explain momentum.",
@@ -134,8 +134,8 @@ class TurnBudgetTests(unittest.TestCase):
             "Newton's second law of motion, the net force acting upon an object is equal to the "
             "rate at which its momentum changes with time, F = d(mv)/dt."
         )
-        # Mock groq_complete to raise BudgetExhausted
-        with patch("agents.answer_checker.groq_complete", side_effect=BudgetExhausted("Turn budget deadline exceeded")):
+        # Mock complete_text to raise BudgetExhausted
+        with patch("agents.answer_checker.complete_text", side_effect=BudgetExhausted("Turn budget deadline exceeded")):
             checked = check_answer(
                 query="What is force?",
                 draft=draft,

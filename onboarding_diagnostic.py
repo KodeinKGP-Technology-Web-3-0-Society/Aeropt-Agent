@@ -88,8 +88,8 @@ def _build_question(
         "question_text": text[:1200],
         "content_id": chunk["content_id"],
         "image_url": urls.get("core"),
-        "solution_text": prepare_student_markdown((chunk.get("solution") or "").strip()),
-        "solution_image_url": urls.get("solution"),
+        "solution_text": None,
+        "solution_image_url": None,
     }
 
 
@@ -128,46 +128,93 @@ def grade_placement_answer(
     user_id: str,
     concept_id: str,
     content_id: str,
-    is_correct: bool,
+    is_correct: Optional[bool] = None,
+    answer: Optional[str] = None,
+    submission_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Grade a placement answer from its stored key. A client flag is not evidence."""
+    del is_correct  # kept so older callers still import; it does not write progress
     _ensure_concept_states(user_id)
     chunk = None
     if content_id:
         rows = db.read_content_by_ids([content_id])
         chunk = rows[0] if rows else None
 
-    session = db.create_session(user_id)
-    session_id = session["session_id"]
+    grade = None
+    if chunk and (answer or "").strip():
+        from services.answer_key import grade_free_answer
+        from services.grading import answer_fingerprint, commit_progress
 
-    state: TutorState = {
-        "user_id": user_id,
-        "session_id": session_id,
-        "query": "onboarding diagnostic",
-        "primary_concept_id": concept_id,
-        "has_graded_outcome": True,
-        "attempt_source": "onboarding",
-        "student_answer": "1" if is_correct else "0",
-        "is_correct": is_correct,
-        "error_type": None,
-        "time_taken_sec": None,
-        "retrieved_chunks": [chunk] if chunk else [],
-        "interaction_count": 1,
-    }
+        decision = grade_free_answer(chunk, answer)
+        if decision["grade_status"] in {"correct", "incorrect"}:
+            instance = f"onboarding:{content_id}"
+            grade = commit_progress(
+                user_id=user_id,
+                session_id="",
+                concept_id=concept_id,
+                content_id=content_id,
+                submission_id=(submission_id or "").strip() or instance,
+                question_instance_id=instance,
+                student_answer=answer or "",
+                fingerprint=answer_fingerprint({
+                    "student_answer": answer or "",
+                    "content_id": content_id,
+                    "question_instance_id": instance,
+                }),
+                is_correct=bool(decision["is_correct"]),
+                grade_status=decision["grade_status"],
+                evidence_source="answer_key",
+                source="onboarding",
+                answer_text=decision.get("answer_text") or "",
+            ).to_public()
+        else:
+            from services.grading import GradeResult
 
-    diagnostic_node(state)
+            held = GradeResult(
+                grade_status=decision["grade_status"],
+                evidence_source="none",
+                persistence_status="not_attempted",
+                content_id=content_id,
+                concept_id=concept_id,
+                failure_reason=decision.get("failure_reason"),
+                answer_text=decision.get("answer_text") or "",
+            )
+            held.student_message = (
+                "This placement answer could not be checked, so your progress was not changed."
+            )
+            grade = held.to_public()
+    elif not (answer or "").strip():
+        from services.grading import GradeResult
+
+        held = GradeResult(
+            grade_status="ungradable",
+            evidence_source="none",
+            persistence_status="not_attempted",
+            failure_reason="answer_required",
+            content_id=content_id or None,
+            concept_id=concept_id,
+        )
+        held.student_message = (
+            "Send the answer itself. A correct or incorrect flag is not used, "
+            "and your progress was not changed."
+        )
+        grade = held.to_public()
+
+    from services.grading import measured_score
 
     states = db.read_all_user_concept_states(user_id)
-    concept_scores = {
-        row["concept_id"]: float(row.get("proficiency_score", 0.5))
-        for row in states
-    }
+    concept_scores = {}
+    for row in states:
+        score = measured_score(row)
+        if score is not None:
+            concept_scores[row["concept_id"]] = score
     overall = (
-        sum(concept_scores.values()) / len(concept_scores)
-        if concept_scores
-        else 0.5
+        round(sum(concept_scores.values()) / len(concept_scores), 4)
+        if concept_scores else None
     )
-
     return {
         "concept_scores": concept_scores,
-        "overall": round(overall, 4),
+        "overall": overall,
+        "measured": bool(concept_scores),
+        "grade": grade,
     }

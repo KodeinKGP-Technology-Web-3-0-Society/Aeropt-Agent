@@ -1,3 +1,5 @@
+"""Shared prerequisite-gap selection for assessment and graded follow-up."""
+
 import config
 from typing import Any, Dict, List, Optional
 

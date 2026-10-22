@@ -41,7 +41,7 @@ MAX_QUERY_CHARS = int(os.getenv("AGENT_MAX_QUERY_CHARS", "4000"))
 MAX_BODY_BYTES = int(os.getenv("AGENT_MAX_BODY_BYTES", str(1024 * 1024)))
 
 # No token: liveness probes, voice endpoints, and diagram SVGs
-_PUBLIC = re.compile(r"^/(health|api/v1/health|api/v1/voice/(?:transcribe|synthesize|tts|speakers)|api/v1/diagrams/[0-9a-f]{20}\.svg)$")
+_PUBLIC = re.compile(r"^/(health|api/v1/health|api/v1/voice/speakers|api/v1/diagrams/[0-9a-f]{20}\.svg)$")
 
 # Routes that name the learner in the path. `/plan/settings` is a literal route.
 _PATH_USER = re.compile(
@@ -58,6 +58,10 @@ _SPENDS_MODEL = frozenset({
     "/api/v1/onboarding/diagnostic",
     "/api/v1/coach/run",
     "/api/v1/classroom/assess/grade",
+    "/api/v1/classroom/plan",
+    "/api/v1/chat/end-session",
+    "/api/v1/voice/transcribe",
+    "/api/v1/voice/synthesize",
 })
 
 

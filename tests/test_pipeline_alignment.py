@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.planner import compute_personalization_strategy
+from services.personalization import compute_personalization_strategy
 from graph.workflow import is_structured_input, route_after_turn, route_from_bootstrap, tutor_graph
 
 

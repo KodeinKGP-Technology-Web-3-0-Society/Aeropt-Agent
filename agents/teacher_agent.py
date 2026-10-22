@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 
 import config
 from agents.answer_checker import check_answer
+from agents.runtime.context import clip_turn_text
 from agents.runtime.loop import run_agent_loop
 from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
 from agents.runtime.trace import AgentTrace
@@ -147,7 +148,7 @@ def _history(session_id: str, query: str) -> List[Dict[str, Any]]:
             continue
         role = "assistant" if r.get("role") == "assistant" else "user"
         if len(content) > _TURN_CHARS:
-            content = content[:_TURN_CHARS] + " …"
+            content = clip_turn_text(content, _TURN_CHARS)
         out.append({"role": role, "content": content})
     # Gemini rejects a conversation that does not alternate cleanly after the
     # system prompt; merge consecutive same-role rows rather than drop them.
@@ -398,7 +399,9 @@ def teacher_agent_node(state: StudyRoomState) -> Dict[str, Any]:
     progress.report("stage", "review", "done")
     from agents.runtime.provenance import strip_foreign_images
 
-    reply, _ = strip_foreign_images(_CONTENT_ID_RE.sub("", checked_result.answer))
+    from agents.runtime.release import release
+
+    reply = release(strip_foreign_images(_CONTENT_ID_RE.sub("", checked_result.answer))[0], ctx)
     if "serve_practice_question" in res.tool_calls_made:
         reply = _strip_restated_question(reply)
     updates["response"] = reply

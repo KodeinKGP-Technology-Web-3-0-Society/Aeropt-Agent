@@ -1,8 +1,8 @@
 """
-Content Summarizer Agent (Track B — Phase 4)
+Structured lesson-slide generation.
 
-Turns long Supabase theory chunks into 3–4 structured slide cards via Groq LLM.
-Standalone module — integration with presentation.py is Phase 5.
+Turns long theory chunks into 3–4 structured slide cards with a fixed model
+call. The presentation layer invokes this stage and validates its output.
 """
 
 from __future__ import annotations
@@ -16,11 +16,11 @@ from openai import OpenAI
 
 import config
 from utils.latex_guidelines import sanitize_chunk_text_for_prompt
-from utils.llm import groq_complete
+from utils.llm import complete_text
 
 logger = logging.getLogger("jee_tutor.content_summarizer")
 
-_groq = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+_llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
 CARD_TYPES = frozenset({"concept", "formula", "example", "takeaway"})
 MIN_INPUT_FOR_THREE_CARDS = 500
@@ -183,8 +183,8 @@ def summarize_to_slide_cards(
         {"role": "user", "content": user_prompt},
     ]
 
-    raw, model_used = groq_complete(
-        client=_groq,
+    raw, model_used = complete_text(
+        client=_llm_client,
         model=config.SOLVER_MODEL,
         messages=messages,
         fallback_models=config.SOLVER_FALLBACK_MODELS,
@@ -200,8 +200,8 @@ def summarize_to_slide_cards(
             "[ContentSummarizer] Empty response after think-block removal (model=%s); retrying fallback.",
             model_used,
         )
-        raw, model_used = groq_complete(
-            client=_groq,
+        raw, model_used = complete_text(
+            client=_llm_client,
             model=config.SOLVER_FALLBACK_MODELS[0],
             messages=messages,
             fallback_models=config.SOLVER_FALLBACK_MODELS[1:],

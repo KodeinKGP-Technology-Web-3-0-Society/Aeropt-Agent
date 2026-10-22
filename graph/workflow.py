@@ -87,27 +87,25 @@ def graded_fast_path_node(state: TutorState) -> Dict[str, Any]:
     existed and are unchanged — this path is a latency optimisation, not new
     behaviour, and it must not drift away from what the agent would do.
     """
-    updates: Dict[str, Any] = {}
-
-    graded = diagnostic_node({**state, "attempt_source": state.get("attempt_source") or "practice"})  # type: ignore[arg-type]
-    if graded.get("error"):
-        # Grading failed, but the student still pressed a button and is waiting.
-        # Fall through to follow-up so they get a reply. Keep a flag so the
-        # evidence hook can see the write did not land.
-        logger.warning("Fast-path grading failed: %s", graded["error"])
-        updates["attempt_record_failed"] = True
-        graded.pop("error", None)
-    updates.update(graded)
-
-    merged: Dict[str, Any] = {**state, **updates}
-    follow_up = follow_up_node(merged)  # type: ignore[arg-type]
-    if follow_up.get("error"):
-        logger.warning("Fast-path follow-up failed: %s", follow_up["error"])
+    graded = diagnostic_node({  # type: ignore[arg-type]
+        **state,
+        "attempt_source": state.get("attempt_source") or "practice",
+        "evidence_source": "student_self_report",
+    })
+    updates: Dict[str, Any] = dict(graded)
+    verdict = graded.get("response")
+    if graded.get("attempt_recorded"):
+        follow_up = follow_up_node({**state, **updates})  # type: ignore[arg-type]
+        follow_up.pop("response", None)
         follow_up.pop("error", None)
-    updates.update(follow_up)
-
-    updates.setdefault("agent_used", "graded_fast_path")
-    updates.setdefault("evidence_source", "student_self_report")
+        updates.update(follow_up)
+    else:
+        updates["attempt_record_failed"] = True
+        updates["awaiting_graded_response"] = True
+    if verdict:
+        updates["response"] = verdict
+    updates["agent_used"] = "graded_fast_path"
+    updates["evidence_source"] = "student_self_report"
     updates["error"] = None
     return updates
 
@@ -155,7 +153,17 @@ def build_graph() -> Any:
     # Recall only on the free-text branch. Both speakers then commit, and the
     # commit node uses the same post-turn route the speakers used to.
     workflow.add_edge("memory_recall", "learning_agent")
-    workflow.add_edge("learning_agent", "memory_commit")
+
+    def route_after_learning(state: TutorState) -> str:
+        if state.get("cancelled"):
+            return "end"
+        return "memory_commit"
+
+    workflow.add_conditional_edges(
+        "learning_agent",
+        route_after_learning,
+        {"memory_commit": "memory_commit", "end": END},
+    )
     workflow.add_edge("graded_fast_path", "memory_commit")
 
     post_turn = {"context_manager": "context_manager", "end": END}

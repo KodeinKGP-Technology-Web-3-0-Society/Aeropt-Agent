@@ -103,16 +103,6 @@ def _text_of(el: ET.Element, *, keep_titles: bool = True) -> str:
     return _clean("".join(out))
 
 
-def _find_titled_para(el: ET.Element, wanted: set[str]) -> tuple[str, list[ET.Element]]:
-    """CNXML marks an example's parts with <title> inside <para>, not as elements."""
-    for child in el:
-        if _tag(child) in {"para", "section"}:
-            title_el = child.find(f"{{{CNXML_NS}}}title")
-            if title_el is not None and (title_el.text or "").strip().lower() in wanted:
-                return (title_el.text or "").strip(), [child]
-    return "", []
-
-
 _CONTAINERS = {"exercise", "example", "section", "content"}
 _LINK_NOUN = {"figure": "the figure", "equation": "the equation", "table": "the table", "example": "the example"}
 

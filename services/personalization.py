@@ -1,3 +1,5 @@
+"""Deterministic teaching-mode and difficulty personalization rules."""
+
 from typing import Dict, Any, List, Optional
 import config
 
@@ -80,10 +82,9 @@ def compute_personalization_strategy(
         "use_socratic": teaching_mode == "socratic"
     }
 
-def planner_node(state: Dict[str, Any]) -> Dict[str, Any]:
+def personalize_for_state(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Thin wrapper around compute_personalization_strategy for backwards compatibility
-    with api_server prefetching.
+    Load learner data and apply the shared rules for API prefetching.
     """
     from db.supabase_client import db
     user_id = state.get("user_id")
@@ -92,7 +93,7 @@ def planner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     target_state = db.read_user_concept_state(user_id, primary_id)
     profile = db.read_user_learning_profile(user_id)
     
-    # We omit prereq fetch here just to satisfy prefetch without neo4j spam
+    # The retrieval adapter supplies prerequisite context after this prefetch step.
     return compute_personalization_strategy(
         target_state=target_state or {},
         prereq_states=[],

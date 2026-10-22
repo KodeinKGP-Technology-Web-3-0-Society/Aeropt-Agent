@@ -70,7 +70,7 @@ class TutorState(TypedDict, total=False):
     target_concept_state: Optional[Dict[str, Any]]  # user_concept_state row for primary concept
 
     # ── Teaching signals (advisory, not routing) ─────────────────────────────
-    # Computed by agents/planner.compute_personalization_strategy and surfaced to
+    # Computed by services.personalization.compute_personalization_strategy and surfaced to
     # the agent through retrieve_content as a *recommendation*. Nothing branches
     # on these any more — the agent weighs them against the conversation.
     use_socratic: bool

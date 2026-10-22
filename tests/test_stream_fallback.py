@@ -1,6 +1,6 @@
 import pytest
 from openai import InternalServerError
-from utils.llm import groq_stream
+from utils.llm import stream_completion
 
 class MockDelta:
     def __init__(self, content):
@@ -67,7 +67,7 @@ def test_stream_fallback_mid_stream(monkeypatch):
     import utils.llm
     # Prevent backoff sleeping during test
     monkeypatch.setattr(utils.llm, "BACKOFF_BASE", 0.001)
-    monkeypatch.setattr("utils.groq_pool.get_pool", lambda: None)
+    monkeypatch.setattr("utils.provider_pool.get_pool", lambda: None)
 
     from openai import APIConnectionError
     import httpx
@@ -86,7 +86,7 @@ def test_stream_fallback_mid_stream(monkeypatch):
 
     client = MockClient(streams)
     
-    gen = groq_stream(
+    gen = stream_completion(
         client=client,
         model="primary-model",
         messages=[],

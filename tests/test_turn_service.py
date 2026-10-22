@@ -24,7 +24,15 @@ class TurnServiceTests(unittest.TestCase):
         self.assertEqual(normalize_content_type("theory"), "theory")
 
     def test_parse_turn_input_ui_button_outcome(self):
-        carry = {"awaiting_graded_response": True, "content_type_requested": "practice"}
+        carry = {
+            "awaiting_graded_response": True,
+            "content_type_requested": "practice",
+            "pending_question": {
+                "question_instance_id": "q-1",
+                "content_id": "item-1",
+                "concept_id": "torque",
+            },
+        }
         query, overrides, was_graded = parse_turn_input("", carry, graded_outcome="correct")
         self.assertTrue(was_graded)
         self.assertIsNotNone(overrides)
@@ -37,7 +45,11 @@ class TurnServiceTests(unittest.TestCase):
         self.assertEqual(overrides["student_answer"], "0")
 
     def test_parse_turn_input_raw_digits_when_awaiting(self):
-        carry = {"awaiting_graded_response": True, "content_type_requested": "practice"}
+        carry = {
+            "awaiting_graded_response": True,
+            "content_type_requested": "practice",
+            "pending_question": {"question_instance_id": "q-1", "content_id": "item-1"},
+        }
         query, overrides, was_graded = parse_turn_input("1", carry)
         self.assertTrue(was_graded)
         self.assertTrue(overrides["is_correct"])
@@ -54,7 +66,7 @@ class TurnServiceTests(unittest.TestCase):
         self.assertEqual(query, "1")
 
     def test_parse_turn_input_legacy_answer(self):
-        carry = {}
+        carry = {"pending_question": {"question_instance_id": "q-1", "content_id": "item-1"}}
         raw = "ANSWER::Option B::correct::None::45"
         query, overrides, was_graded = parse_turn_input(raw, carry)
         self.assertTrue(was_graded)

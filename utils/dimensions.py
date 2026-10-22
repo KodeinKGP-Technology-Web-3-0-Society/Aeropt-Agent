@@ -21,7 +21,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Iterable, Mapping
+from typing import Mapping
 
 from utils.mathexpr import (
     DIMENSIONLESS_FUNCTIONS,
@@ -476,11 +476,3 @@ def resolve_quantity(name: str) -> Dim:
     if lowered in QUANTITIES:
         return QUANTITIES[lowered]
     return parse_unit(key)[1]
-
-
-def dimension_table(names: Iterable[str]) -> dict[str, Dim]:
-    """Caller-supplied overrides: {'T': 'temperature'} -> {'T': Dim}."""
-    out: dict[str, Dim] = {}
-    for symbol, meaning in dict(names).items():  # type: ignore[arg-type]
-        out[symbol] = resolve_quantity(meaning)
-    return out

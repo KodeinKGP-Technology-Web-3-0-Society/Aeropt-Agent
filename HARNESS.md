@@ -1,5 +1,10 @@
 # Harness engineering plan for the tutor agent
 
+Historical snapshot: this plan describes the 17 October implementation, not the
+current module tree. Main Tutor context is now built by `agents/runtime/context.py`;
+see [current orchestration](docs/ORCHESTRATION.md) and the
+[module cleanup map](docs/MODULE_CLEANUP.md) for current boundaries.
+
 Status: plan, not started (written 2026-10-17 against commit `b4bb310` plus the working tree).
 Scope: `Aeropt-agent/` only. One phase = one commit in this repo (root `CLAUDE.md`, invariant 8).
 
@@ -31,7 +36,7 @@ learning_agent:
   proof gate:  ensure_proof (agents/runtime/proof.py)
   check_answer_streaming (agents/answer_checker.py)  fail-open, may rewrite, streams a rewrite
   trace.persist → agent_trace
-model access: utils/llm.py (groq_chat / groq_complete / groq_stream) → utils/groq_pool.py
+model access: utils/llm.py (chat_completion / complete_text / stream_completion) → utils/provider_pool.py
               → Gemini's OpenAI-compatible endpoint, free-tier key pool
 ```
 

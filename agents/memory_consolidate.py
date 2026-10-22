@@ -367,10 +367,10 @@ def _default_complete(prompt: str) -> str:
     from openai import OpenAI
 
     import config
-    from utils.llm import groq_complete
+    from utils.llm import complete_text
 
     client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
-    text, _model = groq_complete(
+    text, _model = complete_text(
         client=client,
         model=config.GEMINI_MODEL,
         messages=[{"role": "user", "content": prompt}],

@@ -9,6 +9,7 @@ memory. Both are tested here rather than trusted to a prompt.
 from __future__ import annotations
 
 import json
+import threading
 import unittest
 
 from pydantic import BaseModel, Field
@@ -20,8 +21,12 @@ from agents.runtime.toolbelt import (
     TUTOR_SCOPES,
     ToolContext,
     ToolSpec,
+    ToolResult,
     Toolbelt,
+    surface_for_state,
 )
+from agents.runtime.budget import TurnBudget, current_budget_var
+from services import progress
 
 
 class _Args(BaseModel):
@@ -123,6 +128,63 @@ class ValidationTests(unittest.TestCase):
 
 
 class FailureContainmentTests(unittest.TestCase):
+    def test_handler_error_is_not_cached_as_a_success(self):
+        calls = []
+
+        def missing(args, ctx):
+            calls.append(args.name)
+            return {"error": "Material not found"}
+
+        spec = ToolSpec("missing", "Missing material.", _Args, missing)
+        belt, ctx = _belt([spec])
+        for _ in range(3):
+            self.assertFalse(belt.call("missing", {"name": "x"}).ok)
+        self.assertEqual(calls, ["x", "x"])
+        self.assertTrue(all(not step.ok for step in ctx.trace.steps))
+
+    def test_handler_can_return_a_tool_result(self):
+        spec = ToolSpec("structured", "Structured failure.", _Args,
+                        lambda args, ctx: ToolResult(ok=False, error="Unavailable"))
+        belt, _ = _belt([spec])
+        result = belt.call("structured", {"name": "x"})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "Unavailable")
+
+    def test_tool_worker_keeps_budget_reporter_and_cancellation_context(self):
+        budget = TurnBudget.from_duration(10)
+        cancelled = threading.Event()
+        events = []
+
+        def check_context(args, ctx):
+            progress.report("stage", "thinking")
+            cancelled.set()
+            return {"same_budget": current_budget_var.get() is budget,
+                    "cancelled": progress.is_cancelled()}
+
+        spec = ToolSpec("context", "Inspect turn context.", _Args, check_context)
+        belt, _ = _belt([spec], budget=budget)
+        budget_token = current_budget_var.set(budget)
+        reporter_token = progress.install(events.append)
+        cancel_token = progress.install_cancel(cancelled)
+        try:
+            result = belt.call("context", {"name": "x"})
+        finally:
+            progress.reset_cancel(cancel_token)
+            progress.reset(reporter_token)
+            current_budget_var.reset(budget_token)
+        self.assertEqual(result.data, {"same_budget": True, "cancelled": True})
+        self.assertTrue(any(event["kind"] == "stage" for event in events))
+
+    def test_expired_turn_does_not_start_a_tool(self):
+        calls = []
+        spec = ToolSpec("expensive", "Must not run.", _Args,
+                        lambda args, ctx: calls.append(args.name))
+        belt, _ = _belt([spec], budget=TurnBudget.from_duration(0))
+        result = belt.call("expensive", {"name": "x"})
+        self.assertFalse(result.ok)
+        self.assertIn("budget exhausted", result.error)
+        self.assertEqual(calls, [])
+
     def test_a_raising_tool_never_escapes_the_belt(self):
         belt, _ = _belt([BROKEN_TOOL])
         result = belt.call("broken", {"name": "x"})
@@ -174,6 +236,28 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(ctx.trace.tool_calls, 2)
         self.assertEqual(ctx.trace.path(), ["tool:read_tool", "tool:broken"])
         self.assertFalse(ctx.trace.steps[1].ok)
+
+
+class StudySurfaceTests(unittest.TestCase):
+    def test_current_phase_selects_practice_over_stale_stage(self):
+        self.assertEqual(surface_for_state({"study_session_id": "study-1",
+                                           "current_phase": "practice",
+                                           "study_stage": "theory"}), "study_practice")
+
+    def test_real_teacher_can_plan_lessons_and_grade_practice(self):
+        from agents.teacher_agent import _import_study_tools, _TEACHER_TOOLS
+        from agents.runtime.toolbelt import registry
+
+        _import_study_tools()
+        specs = [s for name, s in registry().items() if name in _TEACHER_TOOLS]
+        learn, _ = _belt(specs, state={"study_session_id": "study-1", "current_phase": "learn"})
+        self.assertIn("set_lesson_plan", learn)
+        self.assertIn("complete_lesson_part", learn)
+        self.assertIn("schedule_review", learn)
+        practice, _ = _belt(specs, state={"study_session_id": "study-1", "current_phase": "practice"})
+        self.assertIn("serve_practice_question", practice)
+        self.assertIn("grade_practice_answer", practice)
+        self.assertIn("schedule_review", practice)
 
 
 if __name__ == "__main__":

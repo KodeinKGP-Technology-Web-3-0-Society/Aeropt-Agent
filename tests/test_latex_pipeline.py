@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import unittest
 
-from agents.follow_up import _extract_chunk_formulae
 from agents.solver import (
     _replace_stray_n,
     _sanitize_latex_expr,
@@ -24,10 +23,8 @@ class TestLatexPipeline(unittest.TestCase):
         self.assertNotIn(r"\nE", joined)
         self.assertTrue(any("E=mc^2" in p or "mc^2" in p for p in pieces))
 
-    def test_follow_up_extract_preserves_nu(self) -> None:
-        block = _extract_chunk_formulae(
-            {"latex_formulae_core": r"F=m\nu\nE=mc^2", "latex_formulae_solution": ""}
-        )
+    def test_presentation_formula_block_preserves_nu(self) -> None:
+        block = _as_katex_block(r"F=m\nu\nE=mc^2")
         self.assertIsNotNone(block)
         assert block is not None
         self.assertIn(r"\nu", block)

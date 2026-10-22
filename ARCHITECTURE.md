@@ -1,11 +1,18 @@
 # Learning Agent: Simple Overview
 
-This file is the product architecture for JEEPath. Implementation details live in
-`README.md`. The graph around the agent is deliberately small; educational decisions
-happen inside the Main Tutor, not as keyword routing.
+> Historical product plan and implementation snapshot. For the current source
+> wiring, both graphs, agent usage and examples, use
+> [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md). For known gaps and remediation
+> status, use [docs/ARCHITECTURE_AUDIT.md](docs/ARCHITECTURE_AUDIT.md).
+> The older snapshot below predates connected diagrams, voice endpoints and
+> the separate Study Room; its guarantees are design goals, not verified runtime
+> guarantees. Current tools: [docs/AGENT_TOOLS.md](docs/AGENT_TOOLS.md).
+
+The graph around the agent is deliberately small; educational decisions
+happen inside the Main Tutor rather than a closed intent enum.
 
 Copied from the architecture plan (`LEARNING_AGENT_SIMPLE_OVERVIEW.md`). The
-**Live on `beta-main`** section at the end is the only addition — it maps this
+**Historical implementation snapshot** section at the end is the only addition — it maps this
 plan onto the code without changing the plan.
 
 ## The basic idea
@@ -269,7 +276,7 @@ platform optionally remembers and follows up.**
 
 ---
 
-## Live on `beta-main`
+## Historical implementation snapshot (superseded)
 
 This section is the connection map, not a second architecture. Roles 1–5 exist.
 Role 6 does not. Curriculum retrieval is already connected (further than the

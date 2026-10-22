@@ -27,7 +27,7 @@ import numpy as np
 from retrieval import embedder, store
 
 # Calibrated on 2026-09-17 against this corpus (15 in-syllabus, 12 off-syllabus
-# queries — see tests/test_retrieval_local.py):
+# queries — see tests/test_retrieval_postgres.py):
 #
 #   concept-name similarity alone does NOT separate the two. Physics queries ran
 #   0.37-0.88; other-subject queries ran 0.16-0.42, overlapping badly ("what is the

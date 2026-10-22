@@ -127,7 +127,7 @@ class LoopMechanicsTests(unittest.TestCase):
             budget.record_call()
             return replies.pop(0)
 
-        with patch("agents.runtime.loop.groq_chat", side_effect=fake_chat):
+        with patch("agents.runtime.loop.chat_completion", side_effect=fake_chat):
             res = run_agent_loop(
                 system_prompt="prompt",
                 user_message="question",
@@ -151,7 +151,7 @@ class LoopMechanicsTests(unittest.TestCase):
         ]
 
         t0 = time.time()
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies) as chat_mock:
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies) as chat_mock:
             res = run_agent_loop(
                 system_prompt="prompt",
                 user_message="question",
@@ -181,7 +181,7 @@ class LoopMechanicsTests(unittest.TestCase):
             (_msg("Final text after max tool rounds."), "test-model"),
         ]
 
-        with patch("agents.runtime.loop.groq_chat", side_effect=replies) as chat_mock:
+        with patch("agents.runtime.loop.chat_completion", side_effect=replies) as chat_mock:
             res = run_agent_loop(
                 system_prompt="prompt",
                 user_message="question",

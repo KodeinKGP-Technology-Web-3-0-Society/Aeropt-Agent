@@ -365,7 +365,7 @@ The learning agent loads up to eight active learner facts before reasoning. This
 | NumPy | Supports vector representation and normalization in the shared embedder. |
 | OpenAI Python SDK | Provides the client interface used by consolidation to call an OpenAI-compatible endpoint. This does not imply an OpenAI-hosted model. |
 | Gemini endpoint | `config.py` points the client at Google's OpenAI-compatible API. The configured model is `GEMINI_MODEL`; the source default is `gemini-3-flash-preview`, subject to environment override. |
-| `utils.llm.groq_complete` | Existing completion wrapper invoked by consolidation with configured model/fallbacks. The function name alone does not establish that the request goes to Groq. |
+| `utils.llm.complete_text` | Existing completion wrapper invoked by consolidation with configured model/fallbacks. The function name alone does not establish that the request goes to Groq. |
 | Pydantic | Defines/validates tool argument schemas, including the learner-memory tool. Consolidation JSON also has explicit Python validation. |
 | FastAPI | Hosts the application API and startup status reporting. It is not the memory storage engine. |
 | psycopg2 / pgvector | Used by the separate retrieval database path; not the episode upsert or episode similarity scorer described here. |

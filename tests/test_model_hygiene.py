@@ -3,13 +3,13 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from utils.groq_pool import (
+from utils.provider_pool import (
     GeminiKeyPool,
     check_model_drift,
     clear_pruned_models,
     get_pruned_models,
 )
-from utils.llm import _run_chain, groq_chat, groq_complete
+from utils.llm import _run_chain, chat_completion, complete_text
 
 
 class DummyModel:
@@ -49,7 +49,7 @@ def test_run_chain_drops_background_when_keys_exhausted():
     pool = GeminiKeyPool(["key1"])
     pool.mark_limited(0, "model-a", seconds=60.0)
 
-    with patch("utils.groq_pool.get_pool", return_value=pool):
+    with patch("utils.provider_pool.get_pool", return_value=pool):
         # Background lane returns (None, model)
         msg, model_used = _run_chain(
             client=MagicMock(),

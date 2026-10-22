@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore", message=".*pydantic.v1.*", category=UserWarnin
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-# Force uvicorn reload (retry 3)
 load_dotenv(_ROOT / ".env")
 load_dotenv(_ROOT / ".env.local", override=True)
 
@@ -34,8 +33,8 @@ RETRIEVAL_SUPABASE_KEY = os.getenv("RETRIEVAL_SUPABASE_KEY", SUPABASE_KEY)
 
 # ── LLM APIs (Gemini with Round-Robin Key Pool) ───────────────────────────────
 # Comma-separated in .env (GEMINI_KEYS). Never put keys in source: this file is
-# committed. utils/groq_pool.py rotates through them and retires rejected ones.
-from utils.groq_pool import load_gemini_api_keys, load_sarvam_api_keys  # noqa: E402
+# committed. utils/provider_pool.py rotates through them and retires rejected ones.
+from utils.provider_pool import load_gemini_api_keys, load_sarvam_api_keys  # noqa: E402
 
 GEMINI_API_KEYS = load_gemini_api_keys()
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
@@ -105,6 +104,24 @@ MASTERY_THRESHOLD = 0.8      # meeting Jul 17 — concept mastery / roadmap skip
 PROFICIENCY_WMA_ALPHA = 0.7       # weight on old score in weighted moving average
 TIME_DAMPEN_MULTIPLIER = 2.0      # if time_taken > X * avg_time, dampen proficiency gain
 TIME_DAMPEN_FACTOR = 0.7          # multiply the outcome contribution by this
+# A slow correct uses outcome 0.7. Above 0.70 that can lower a stored score.
+# This is the retained release rule, not an accident. Buttons and Study send no
+# time today, so dampening runs only when a valid positive time is recorded.
+
+# Study Room difficulty and session outcome. Same numbers the tools already used.
+STUDY_DIFFICULTY_UP_STREAK = 3
+STUDY_DIFFICULTY_DOWN_STREAK = 2
+STUDY_DIFFICULTY_MIN = 1
+STUDY_DIFFICULTY_MAX = 5
+STUDY_MASTERED_MIN_QUESTIONS = 4
+STUDY_MASTERED_RATE = 0.75
+STUDY_MASTERED_HARD_QUESTIONS = 3
+STUDY_MASTERED_HARD_RATE = 0.7
+STUDY_MASTERED_HARD_DIFFICULTY = 3
+
+# Paid voice routes stay off unless this is set. Speakers and health stay public.
+VOICE_SPENDING_ENABLED = os.getenv("VOICE_SPENDING_ENABLED", "false").lower() in {"1", "true", "yes"}
+MAX_VOICE_BYTES = int(os.getenv("MAX_VOICE_BYTES", str(5 * 1024 * 1024)))
 
 # ── Socratic routing thresholds ───────────────────────────────────────────────
 SOCRATIC_PREREQ_MIN = 0.7
@@ -116,22 +133,6 @@ STRUGGLE_STREAK_QUIZ_TRIGGER = 3
 
 # ── Context Manager ───────────────────────────────────────────────────────────
 CONTEXT_MANAGER_EVERY_N = 5      # summarise every N interactions
-
-# ── Memory (memory/, plan in MEMORY_AGENT.md) ─────────────────────────────────
-# off    = the pre-v2 behaviour, nothing new runs.
-# shadow = jobs run and write; prompts keep the old memory text, and the pack the
-#          new recall would have used is logged to var/memory_shadow.jsonl.
-# on     = the new recall pack goes into prompts.
-MEMORY_MODE = os.getenv("MEMORY_MODE", "shadow").strip().lower()
-MEMORY_MODEL = os.getenv("MEMORY_MODEL", CONTEXT_MANAGER_MODEL).strip()
-MEMORY_SUMMARY_MIN_ROWS = int(os.getenv("MEMORY_SUMMARY_MIN_ROWS", "8"))      # unsummarised chat_turns rows
-MEMORY_SUMMARY_MIN_CHARS = int(os.getenv("MEMORY_SUMMARY_MIN_CHARS", "6000"))
-MEMORY_WINDOW_MAX_ROWS = int(os.getenv("MEMORY_WINDOW_MAX_ROWS", "12"))        # raw turns in the prompt
-MEMORY_WINDOW_MAX_CHARS = int(os.getenv("MEMORY_WINDOW_MAX_CHARS", "9000"))
-MEMORY_IDLE_CLOSE_MINUTES = int(os.getenv("MEMORY_IDLE_CLOSE_MINUTES", "30"))
-MEMORY_SWEEP_EVERY_S = int(os.getenv("MEMORY_SWEEP_EVERY_S", "600"))
-MEMORY_PROMPT_BUDGET_CHARS = int(os.getenv("MEMORY_PROMPT_BUDGET_CHARS", "2500"))
-MEMORY_MAX_ACTIVE_FACTS = int(os.getenv("MEMORY_MAX_ACTIVE_FACTS", "200"))
 
 # ── Autonomous Learning Agent ─────────────────────────────────────────────────
 LEARNING_AGENT_MODEL = GEMINI_MODEL
