@@ -1,4 +1,4 @@
-.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench latex-fixture exams ncert hcverma extract-status eval eval-live memory-status memory-consolidate
+.PHONY: push push-dry push-fetch cursor-gateway cursor-gateway-test run-cursor ci test deploy retrieval-bench retrieval-eval latex-fixture exams ncert hcverma extract-status eval eval-live memory-status memory-consolidate
 
 ci:
 	bash ci/run.sh
@@ -54,6 +54,10 @@ push-fetch:
 
 retrieval-bench:
 	.venv/bin/python -m retrieval.cli --bench
+
+# Does each correctness problem get material from the right subject and chapter? No LLM calls.
+retrieval-eval:
+	.venv/bin/python -m evals.retrieval
 
 # Dump corpus text (as the student would see it) into the frontend's KaTeX fixture,
 # then run the contract there:  cd ../Aeropt-frontend && npm run test:latex
