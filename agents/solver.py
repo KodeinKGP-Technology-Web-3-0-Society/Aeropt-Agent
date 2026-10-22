@@ -425,6 +425,21 @@ def _normalize_latex_output(text: str) -> str:
     return text
 
 
+# `![alt](url)` where the "url" runs on into prose: the model wrote
+# `![Slanted Line](https://host/img?x%20 increases steadily)`. Markdown cannot parse a URL with
+# a space, so it reached the student as raw bracket-and-parenthesis text. A title after the URL
+# (`![a](u "title")`) and a `<url with spaces>` are valid and left alone.
+_MD_IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\(([^)\n]*)\)")
+_MD_IMAGE_TARGET_OK = re.compile(r"""^\s*(?:<[^>]*>|\S+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*$""")
+
+
+def _drop_malformed_images(text: str) -> str:
+    def fix(m: "re.Match[str]") -> str:
+        return m.group(0) if _MD_IMAGE_TARGET_OK.match(m.group(2)) else m.group(1).strip()
+
+    return _MD_IMAGE_RE.sub(fix, text)
+
+
 def prepare_student_markdown(text: str) -> str:
     """Normalize agent/DB text for react-markdown + KaTeX rendering.
 
@@ -437,6 +452,7 @@ def prepare_student_markdown(text: str) -> str:
     """
     if not text:
         return text
+    text = _drop_malformed_images(text)
     # Currency first: an unescaped "$5" opens a math span that eats the sentence,
     # and every later step would then treat that prose as maths.
     out = escape_currency_dollars(text)
