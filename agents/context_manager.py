@@ -19,6 +19,7 @@ Model: config.CONTEXT_MANAGER_MODEL through the shared model transport.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from openai import OpenAI
@@ -27,6 +28,8 @@ import config
 from db.supabase_client import db
 from models.state import TutorState
 from utils.llm import complete_text
+
+logger = logging.getLogger("jee_tutor.context_manager")
 
 _llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
