@@ -186,7 +186,7 @@ def ready() -> JSONResponse:
     /health says the process is up. This says it can serve: at least one LLM key
     is still live and the turn gate is not saturated.
     """
-    from utils.groq_pool import get_pool
+    from utils.provider_pool import get_pool
 
     try:
         live_keys = get_pool().live_count
