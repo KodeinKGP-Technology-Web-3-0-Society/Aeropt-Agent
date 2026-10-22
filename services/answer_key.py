@@ -90,6 +90,21 @@ _FRACTION = re.compile(r"^(?P<num>[+-]?\d+)\s*/\s*(?P<den>[+-]?\d+)$")
 _UNIT_CHARS = re.compile(r"[A-Za-zΩµμ°/^*·.\-]+$")
 
 
+def stored_answer(question: dict) -> Optional[dict]:
+    """The question's official answer: the solutions table's `answer`, else the one inside `structured`."""
+    raw = (question or {}).get("answer")
+    if isinstance(raw, str):
+        import json
+
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    if isinstance(raw, dict) and raw:
+        return raw
+    return (structured_of(question) or {}).get("answer") or None
+
+
 def parse_number(text: str) -> Optional[float]:
     """A complete numeric token, or None.
 
@@ -322,7 +337,7 @@ def grade_structured(question: dict, choice: Iterable[str] = (), value: Optional
 
     A present but unusable key is ungradable. It does not fall through to solution text.
     """
-    answer = (structured_of(question) or {}).get("answer")
+    answer = stored_answer(question)
     if not answer:
         return None
     return _grade_answer(answer, choice, value)

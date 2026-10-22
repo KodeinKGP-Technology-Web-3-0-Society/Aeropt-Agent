@@ -60,7 +60,7 @@ EXAM_ALLOWED: dict[str, tuple[str, ...]] = {
 _PASSAGE_SKIP = """
 not (c.content_type = 'Theory' and length(c.core_text) < 400 and c.core_text ~* 'exercise')
 and not (c.content_type = 'PYQ' and length(c.core_text) < 120)
-and not (c.content_type = 'Practice Question' and coalesce(length(c.solution), 0) < 40 and length(c.core_text) < 80)
+and not (c.content_type = 'Practice Question' and coalesce((select length(s.worked_solution) from knowledge_private.solutions s where s.question_id = c.content_id), 0) < 40 and length(c.core_text) < 80)
 and not (
   c.source_book ilike 'ALLEN%%'
   and (length(c.core_text) < 180
@@ -110,6 +110,8 @@ class Hit:
             "in_syllabus": bool(row["in_syllabus"]),
             "has_solution": bool(row["has_solution"]),
             "structured": _loads(row["structured"]) if "structured" in row.keys() and row["structured"] else None,
+            # The official answer as data (services/answer_key.py grades from it); None when unknown.
+            "answer": _loads(row["answer"]) if "answer" in row.keys() and row["answer"] else None,
             "citation": f"{row['source_book']} — {row['source_ref']}".strip(" —"),
             "retrieval_score": round(self.score, 4),
             "seen_before": self.seen_before,

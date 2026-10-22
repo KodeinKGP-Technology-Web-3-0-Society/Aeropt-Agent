@@ -67,7 +67,7 @@ revoke all on public.theory, public.concept_map, public.chapter_summary
   from anon, authenticated;
 
 -- 3. Descriptions: Supabase Studio shows these next to every table and column.
-comment on table  public.content       is 'Every retrievable item: theory passages, solved examples, practice and past-year questions. Read it through the views questions / solutions / theory.';
+comment on table  public.content       is 'Every retrievable item: theory passages, solved examples, practice and past-year questions. Read it through the views questions / theory (solutions are in the private schema knowledge_private).';
 comment on table  public.concepts      is 'One row per teachable concept (a textbook section or syllabus topic), each in exactly one chapter. Carries the concept embedding.';
 comment on table  public.chapters      is 'One row per JEE chapter (a JEE unit), per subject.';
 comment on table  public.concept_edges is 'Prerequisites: concept_id needs requires first.';
@@ -90,7 +90,6 @@ comment on column public.content.difficulty    is '1 (easy) to 5 (hardest); exam
 comment on column public.content.source_book   is 'Where it came from (book or exam paper).';
 comment on column public.content.source_ref    is 'Exact place in the source: section, page or question number.';
 comment on column public.content.core_text     is 'The passage or the full question text (stem and options). Answers never live here.';
-comment on column public.content.solution      is 'Worked solution text, when one exists.';
 comment on column public.content.structured    is 'Questions only: stem, figure, options, parts, qtype and answer, laid out for the practice screen and the grader.';
 comment on column public.content.has_solution  is 'True when a worked solution exists.';
 comment on column public.content.is_question   is 'True for everything except Theory.';

@@ -48,6 +48,26 @@ development, not for a paid product. Swapping the source means writing one parse
 every item carries `source_book`, `source_ref` and `license`, and the syllabus is
 derived from structure, so nothing downstream is hard-wired to OpenStax.
 
+## Where things live: items, solutions, sources
+
+| Table | Holds | Notes |
+|---|---|---|
+| `public.content` | every retrievable item (theory and questions); vectors and the full-text index | questions and theory share one table so hybrid search stays one query; `theory` and `questions` views separate them for reading |
+| `knowledge_private.solutions` | the worked solution text and the structured official `answer`, one row per question that has either | a private schema: the REST API cannot see it, only the agent's own database login; theory has no row |
+| `public.sources` | one row per book, paper or note set: family, kind, licence text, `rights_status` (`unreviewed` until someone decides; nothing gates on it yet) | `content.source_id` points here |
+| `public.chunk_concepts` | content to concept links with `method` (`heading`, `embedding`, `syllabus_text`) and `confidence` | |
+| `public.ingest_issues` | what the last build dropped or could not structure, and why (printed number tables, duplicate questions, rejected layouts) | rewritten on every push |
+
+What a model sees: a retrieved question reaches the tutor with a `has_solution` flag, not the text. The Study Room
+teacher gets the stored solution for the one question on the table, to be revealed only after an attempt. Grading
+never calls a model: `services/answer_key.py` compares the student's pick or number with `answer`
+(kinds `letters`, `integer`, `range`, `any_of`). Worked examples, exercises and subjective items have no discrete
+answer, so they have a solution text and no `answer`.
+
+The keyword index (`content.fts`) still includes the first 2,000 characters of each solution at the lowest weight. It
+is an ordinary column the build refreshes from `knowledge_private.solutions` (it was a generated column over
+`content.solution`, which is gone).
+
 ## Exam level: Main and Advanced, not Advanced-only
 
 | | JEE Main | JEE Advanced | labelled for both |

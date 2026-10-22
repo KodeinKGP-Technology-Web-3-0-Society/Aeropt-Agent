@@ -63,7 +63,9 @@ CHUNK_COLUMNS = f"""
     c.source_book, c.source_ref, c.license, {EFFECTIVE_DIFFICULTY_SQL} AS difficulty, c.question_type, c.target_exam,
     coalesce(c.in_syllabus, true)::int AS in_syllabus, coalesce(c.has_solution, false)::int AS has_solution,
     coalesce(c.is_question, false)::int AS is_question, c.heading, c.core_text,
-    coalesce((select s.worked_solution from public.solutions s where s.question_id = c.content_id), c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
+    coalesce((select s.worked_solution from knowledge_private.solutions s where s.question_id = c.content_id), '') AS solution,
+    (select s.answer::text from knowledge_private.solutions s where s.question_id = c.content_id) AS answer,
+    c.fingerprint, c.token_len, c.structured::text AS structured
 """
 
 

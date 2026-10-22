@@ -51,6 +51,7 @@ MIGRATION = ROOT / "db" / "migrations" / "019_retrieval_pgvector.sql"
 INTEGRITY = ROOT / "db" / "migrations" / "023_retrieval_integrity.sql"
 READABLE = ROOT / "db" / "migrations" / "024_retrieval_readable.sql"
 SOURCES = ROOT / "db" / "migrations" / "025_sources_solutions.sql"
+PROVENANCE = ROOT / "db" / "migrations" / "026_provenance_rights_issues.sql"
 INTEGRITY_CONSTRAINTS = sorted(set(re.findall(r"'(\w+_(?:fk|chk))'", INTEGRITY.read_text()))) + ["content_source_fk"]
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -81,6 +82,7 @@ def ensure_schema(cur) -> None:
     cur.execute(INTEGRITY.read_text())
     cur.execute(READABLE.read_text())
     cur.execute(SOURCES.read_text())
+    cur.execute(PROVENANCE.read_text())
     # `add column if not exists` keeps a pre-existing column of another dimension; fail loudly.
     for table in ("content", "concepts"):
         cur.execute(
@@ -143,7 +145,7 @@ def upsert_concepts(cur, rows: list[tuple]) -> int:
 
 CONTENT_SQL = (
     "insert into public.content (content_id, content_type, subject, chapter, chapter_id, unit, source_book,"
-    " source_ref, page_number, license, heading, core_text, solution, primary_concept, primary_concept_id,"
+    " source_ref, page_number, license, heading, core_text, primary_concept, primary_concept_id,"
     " secondary_concepts, difficulty, question_type, target_exam, in_syllabus, has_solution, is_question,"
     " fingerprint, token_len, structured,"
     " embedding, embed_model, text_hash, synced_at) values %s"
@@ -151,7 +153,7 @@ CONTENT_SQL = (
     " chapter=excluded.chapter, chapter_id=excluded.chapter_id, unit=excluded.unit,"
     " source_book=excluded.source_book, source_ref=excluded.source_ref, page_number=excluded.page_number,"
     " license=excluded.license, heading=excluded.heading, core_text=excluded.core_text,"
-    " solution=excluded.solution, primary_concept=excluded.primary_concept,"
+    " primary_concept=excluded.primary_concept,"
     " primary_concept_id=excluded.primary_concept_id, secondary_concepts=excluded.secondary_concepts,"
     " difficulty=excluded.difficulty, question_type=excluded.question_type, target_exam=excluded.target_exam,"
     " in_syllabus=excluded.in_syllabus, has_solution=excluded.has_solution, is_question=excluded.is_question,"
@@ -159,7 +161,7 @@ CONTENT_SQL = (
     " embedding=excluded.embedding, embed_model=excluded.embed_model, text_hash=excluded.text_hash,"
     " synced_at=excluded.synced_at"
 )
-CONTENT_TEMPLATE = "(" + ",".join(["%s"] * 24) + ",%s::jsonb,%s::vector,%s,%s,now())"
+CONTENT_TEMPLATE = "(" + ",".join(["%s"] * 23) + ",%s::jsonb,%s::vector,%s,%s,now())"
 
 
 def content_tuple(it: dict, vec: np.ndarray, model: str) -> tuple:
@@ -172,7 +174,7 @@ def content_tuple(it: dict, vec: np.ndarray, model: str) -> tuple:
     return (
         it["content_id"], it["content_type"], it["subject"], it["chapter"], it["chapter_id"], it["unit"],
         it["source_book"], it["source_ref"], (it["source_ref"] or "")[:120] or None, it["license"],
-        it["heading"], it["core_text"], it["solution"] or None, it["concept_id"], it["concept_id"],
+        it["heading"], it["core_text"], it["concept_id"], it["concept_id"],
         ", ".join(it["secondary_concepts"]) or None, it["difficulty"], it["question_type"], it["target_exam"],
         bool(it["in_syllabus"]), bool(it["has_solution"]), bool(it["is_question"]), it["fingerprint"],
         it["token_len"], structured, vec_literal(vec), model, row_hash(payload, vec, model),
@@ -208,8 +210,26 @@ def source_row(name: str) -> tuple[str, str, str, str]:
     return (re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:80], name, family, kind)
 
 
+def answer_for(it: dict) -> dict | None:
+    """The structured official answer: the source's own, else the key line of the solution text.
+
+    The key line is read only for questions that have options, where "Answer: C" means option C;
+    on a numeric question the same words would name a number.
+    """
+    st = it.get("structured")
+    given = st.get("answer") if isinstance(st, dict) else None
+    if given:
+        return given
+    if not (isinstance(st, dict) and st.get("options")):
+        return None
+    from services.answer_key import parse_key
+
+    key = parse_key(it.get("solution") or "")
+    return {"kind": "letters", "letters": "".join("ABCD"[i - 1] for i in sorted(key))} if key else None
+
+
 def sync_sources_solutions(cur, items) -> tuple[int, int]:
-    """Fill sources + solutions from this build, and point every item at its source."""
+    """Fill sources and the private solutions table from this build, and point every item at its source."""
     from psycopg2.extras import Json, execute_values
 
     rows = sorted({source_row(it["source_book"]) for it in items if it.get("source_book")})
@@ -218,25 +238,79 @@ def sync_sources_solutions(cur, items) -> tuple[int, int]:
                    " kind=excluded.kind", rows)
     cur.execute("update public.content c set source_id = s.source_id from public.sources s"
                 " where s.name = c.source_book and c.source_id is distinct from s.source_id")
+    # The licence text each source's items carry: evidence for a later rights decision, not one.
+    cur.execute("update public.sources s set license = x.license from ("
+                " select source_id, mode() within group (order by license) as license"
+                " from public.content where license is not null group by 1) x"
+                " where x.source_id = s.source_id and s.license is distinct from x.license")
 
     sols = []
     for it in items:
         if not it.get("is_question"):
             continue
-        st = it.get("structured") or {}
-        answer = st.get("answer") if isinstance(st, dict) else None
+        answer = answer_for(it)
         text = (it.get("solution") or "").strip() or None
         if text or answer:
             sols.append((it["content_id"], "worked" if text else "answer", text, Json(answer) if answer else None))
     ids = [it["content_id"] for it in items if it.get("is_question")]
-    cur.execute("delete from public.solutions where question_id = any(%s)"
+    cur.execute("delete from knowledge_private.solutions where question_id = any(%s)"
                 " and not (question_id = any(%s))", (ids, [r[0] for r in sols] or [""]))
     for start in range(0, len(sols), 1000):
-        execute_values(cur, "insert into public.solutions (question_id, kind, worked_solution, answer) values %s"
-                       " on conflict (question_id) do update set kind=excluded.kind,"
+        execute_values(cur, "insert into knowledge_private.solutions (question_id, kind, worked_solution, answer)"
+                       " values %s on conflict (question_id) do update set kind=excluded.kind,"
                        " worked_solution=excluded.worked_solution, answer=excluded.answer",
                        sols[start:start + 1000])
+    detach_fts_from_solution(cur)
+    # Every solution is in the private table now; the copy on content is no longer read.
+    cur.execute("alter table public.content drop column if exists solution")
+    refresh_fts(cur)
     return len(rows), len(sols)
+
+
+# Keyword search weights: heading A, body B, and the first 2,000 characters of the solution at the
+# lowest weight D (a question is still found by words that only its worked solution uses).
+_FTS_SQL = (
+    "setweight(to_tsvector('english', coalesce({c}.heading, '')), 'A') ||"
+    " setweight(to_tsvector('english', coalesce({c}.core_text, '')), 'B') ||"
+    " setweight(to_tsvector('english', left(coalesce(sol.worked_solution, ''), 2000)), 'D')"
+)
+
+
+def detach_fts_from_solution(cur) -> None:
+    """`fts` was generated from content.solution, which pins the column. Make it an ordinary column the
+    build fills from the private solutions table (same weights), so that column can go."""
+    cur.execute("select attgenerated from pg_attribute where attrelid = 'public.content'::regclass and attname = 'fts'")
+    row = cur.fetchone()
+    if row and row[0] == "s":
+        cur.execute("alter table public.content drop column fts")  # its GIN index goes with it
+        cur.execute("alter table public.content add column fts tsvector")
+
+
+def refresh_fts(cur) -> int:
+    """Recompute the full-text vector wherever it differs, then (re)create its index."""
+    expr = _FTS_SQL.format(c="c2")
+    cur.execute(
+        "update public.content c set fts = n.v from ("
+        f" select c2.content_id, ({expr}) as v from public.content c2"
+        " left join knowledge_private.solutions sol on sol.question_id = c2.content_id) n"
+        " where n.content_id = c.content_id and c.fts is distinct from n.v"
+    )
+    changed = cur.rowcount
+    cur.execute("create index if not exists ix_content_fts on public.content using gin (fts)")
+    return changed
+
+
+def sync_ingest_issues(cur, issues: list[dict]) -> int:
+    """Replace the build's drop/rejection log. Kinds this build reports are rewritten; others are kept."""
+    from psycopg2.extras import execute_values
+
+    kinds = sorted({i["kind"] for i in issues}) or ["number_table", "duplicate", "structure_rejected"]
+    cur.execute("delete from public.ingest_issues where kind = any(%s)", (kinds,))
+    if issues:
+        execute_values(cur, "insert into public.ingest_issues (kind, content_id, source, detail) values %s",
+                       [(i["kind"], i.get("content_id"), i.get("source"), i.get("detail")) for i in issues],
+                       page_size=1000)
+    return len(issues)
 
 
 def replace_links(cur, items) -> int:
@@ -250,10 +324,14 @@ def replace_links(cur, items) -> int:
     links = []
     for it in items:
         if it["concept_id"]:
-            links.append((it["content_id"], it["concept_id"], "primary"))
-        links.extend((it["content_id"], s, "secondary") for s in it["secondary_concepts"] if s)
+            links.append((it["content_id"], it["concept_id"], "primary",
+                          it.get("mapping_method") or "embedding", it.get("mapping_score")))
+        scores = it.get("secondary_scores") or []
+        for n, s in enumerate(it["secondary_concepts"]):
+            if s:
+                links.append((it["content_id"], s, "secondary", "embedding", scores[n] if n < len(scores) else None))
     execute_values(
-        cur, "insert into public.chunk_concepts (content_id, concept_id, role) values %s"
+        cur, "insert into public.chunk_concepts (content_id, concept_id, role, method, confidence) values %s"
         " on conflict (content_id, concept_id) do nothing", links, page_size=1000,
     )
     return len(links)
@@ -554,8 +632,9 @@ def main() -> int:
         print(f"sources {n_src}, solutions {n_sol}")
         links = replace_links(cur, items)
         edges = replace_edges(cur, syllabus)
+        n_issues = sync_ingest_issues(cur, corpus_builder.build_issues())
         print(f"concepts written {c_written}/{len(concepts)}; content written {written}, unchanged {unchanged}; "
-              f"links {links}, edges {edges}")
+              f"links {links}, edges {edges}, build issues logged {n_issues}")
 
         concept_ids = {c.concept_id for c in concepts}
         if not args.skip_topics:
@@ -582,6 +661,9 @@ def main() -> int:
                 execute_values(cur, "insert into public.syllabus_topics (subject, unit, unit_ord, topic, topic_ord,"
                                " concept_id, chapter_id, created, material) values %s", res["topic_rows"])
                 concept_ids |= {c["concept_id"] for c in res["concepts"]}
+
+        # Links the syllabus-topic pass added are matched on the topic's words.
+        cur.execute("update public.chunk_concepts set method = 'syllabus_text' where role = 'syllabus' and method is null")
 
         if args.prune:
             print("pruned:", prune(cur, subjects, items, concept_ids))

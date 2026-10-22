@@ -41,8 +41,9 @@ def main() -> int:
         raise SystemExit("retrieval database unavailable; set RETRIEVAL_DATABASE_URL and run `make push`")
 
     rows = store.query(
-        "select content_id, content_type, core_text, coalesce(solution, '') as solution from public.content"
-        " where core_text like '%$%' or solution like '%$%' order by content_id"
+        "select c.content_id, c.content_type, c.core_text, coalesce(s.worked_solution, '') as solution"
+        " from public.content c left join knowledge_private.solutions s on s.question_id = c.content_id"
+        " where c.core_text like '%$%' or s.worked_solution like '%$%' order by c.content_id"
     )
     random.seed(args.seed)
     rows = random.sample(rows, min(args.limit, len(rows)))

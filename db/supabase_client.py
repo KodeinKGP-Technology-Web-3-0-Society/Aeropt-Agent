@@ -511,18 +511,16 @@ class SupabaseClient:
     # ─────────────────────────── content ──────────────────────────────────────
 
     def read_content_by_ids(self, content_ids: List[str]) -> List[Dict[str, Any]]:
+        """Content rows as chunks. Goes through retrieval/store.py (a direct connection): the
+        solution lives in a private schema the REST API does not expose."""
         if not content_ids:
             return []
-        res = (
-            self.retrieval_client.table("content")
-            .select(
-                "content_id, content_type, chapter, difficulty, core_text, solution, "
-                "primary_concept_id, secondary_concepts, question_type, target_exam"
-            )
-            .in_("content_id", content_ids)
-            .execute()
-        )
-        return res.data or []
+        from retrieval import search, store
+
+        return [
+            search.Hit(r["content_id"], 1.0, 0.0, 0.0, None, None, r).as_chunk()
+            for r in store.chunks_by_ids(list(content_ids))
+        ]
 
     # ─────────────────────────── user_concept_state ───────────────────────────
 

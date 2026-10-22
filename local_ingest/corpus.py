@@ -791,6 +791,21 @@ _PHYSICS_CHAPTER_MAP = {
 }
 
 
+def numeric_answer(raw: Any) -> dict[str, Any] | None:
+    """A numeric official answer in the shape services/answer_key.py grades: integer (an exact value,
+    decimals included) or range. The source gives either a number or {is_range, exact_value,
+    min_value, max_value}; this used to be stored as the text of that dict, which nothing could
+    compare, so a correct numeric answer was marked wrong."""
+    if isinstance(raw, dict):
+        if raw.get("is_range") and raw.get("min_value") is not None and raw.get("max_value") is not None:
+            return {"kind": "range", "low": float(raw["min_value"]), "high": float(raw["max_value"])}
+        raw = raw.get("exact_value")
+    try:
+        return {"kind": "integer", "value": float(raw)} if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def jeechallenger_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
     sources = [
         ("Chemistry", ROOT / ".local-run" / "jeechallenger" / "questions_chemistry.json", _CHEMISTRY_CHAPTER_MAP, "mole_concept_stoichiometry"),
@@ -866,7 +881,7 @@ def jeechallenger_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, An
                     "figure": "",
                     "options": opt_struct or None,
                     "qtype": item["question_type"],
-                    "answer": {"kind": "letters", "letters": ans_str} if ans_str else {"kind": "exact", "value": str(num_ans)},
+                    "answer": {"kind": "letters", "letters": ans_str} if ans_str else numeric_answer(num_ans),
                     "built_by": "source",
                 }
             if item["fingerprint"] in seen_fp:
@@ -1274,12 +1289,11 @@ def map_concepts(
             best = named
         it["concept_id"] = concepts[best].concept_id
         it["mapping_score"] = float(sims[order[0]]) if named is None else 1.0
-        secondary = [
-            concepts[pool[j]].concept_id
-            for j in order[1:4]
-            if float(sims[j]) >= min_score and pool[j] != best
-        ]
+        it["mapping_method"] = "embedding" if named is None else "heading"  # a printed heading naming the concept
+        picked = [j for j in order[1:4] if float(sims[j]) >= min_score and pool[j] != best]
+        secondary = [concepts[pool[j]].concept_id for j in picked]
         it["secondary_concepts"] = secondary
+        it["secondary_scores"] = [float(sims[j]) for j in picked]
         if not it["chapter_id"]:
             concept = concepts[best]
             it["chapter_id"] = concept.chapter_id
@@ -1288,6 +1302,19 @@ def map_concepts(
             ch = chapter_of.get(concept.chapter_id)
             it["in_syllabus"] = bool(ch.in_syllabus) if ch else True
     return item_vecs, concept_vecs
+
+
+# What the last build dropped or could not structure, and why. push_index writes it to
+# public.ingest_issues so a missing question can be explained instead of hunted for.
+_ISSUES: list[dict[str, Any]] = []
+
+
+def _note(kind: str, item: dict[str, Any], detail: str) -> None:
+    _ISSUES.append({"kind": kind, "content_id": item.get("content_id"), "source": item.get("source_book"), "detail": detail})
+
+
+def build_issues() -> list[dict[str, Any]]:
+    return list(_ISSUES)
 
 
 EDGE_MIN_SIM = 0.45
@@ -1363,7 +1390,14 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
     items += calculus_items(chapter_lookup)
     items += reference_items(chapter_lookup)
 
-    items = [it for it in items if not _number_table(it)]
+    _ISSUES.clear()
+    kept: list[dict[str, Any]] = []
+    for it in items:
+        if _number_table(it):
+            _note("number_table", it, "printed number table; matches every numeric query and teaches nothing")
+        else:
+            kept.append(it)
+    items = kept
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}
@@ -1381,17 +1415,25 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
         if len(it["solution"]) > len(prior["solution"]):
             ordered[ordered.index(prior)] = it
             best_by_fp[fp] = it
+            _note("duplicate", prior, f"same question as {it['content_id']}, which has the longer solution")
+        else:
+            _note("duplicate", it, f"same question as {prior['content_id']}")
 
     by_id: dict[str, dict[str, Any]] = {}
     unique: list[dict[str, Any]] = []
     for it in ordered:
         if it["content_id"] in by_id:
+            _note("duplicate", it, "content_id already produced by another source")
             continue
         by_id[it["content_id"]] = it
         unique.append(it)
 
     from local_ingest.structure import attach
     counts = attach(unique)
+    for it in unique:
+        st = it.get("structured")
+        if isinstance(st, dict) and st.get("rejected"):
+            _note("structure_rejected", it, str(st["rejected"])[:300])
     print(f"  question structure: {counts}")
     item_vecs, concept_vecs = map_concepts(unique, concepts, chapters)
     return unique, item_vecs, concept_vecs
