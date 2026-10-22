@@ -235,17 +235,28 @@ def clean(text: str) -> str:
     return text.strip()
 
 
-def fingerprint(text: str) -> str:
+def fingerprint(text: str, fallback: str = "") -> str:
     """Stable hash of a question's content words — catches the same question twice.
 
     Two items with the same fingerprint are the same problem even if one source
     reformatted it, so the novelty filter can refuse a near-duplicate, not just a
     literal repeat of the same content_id.
+
+    A text with under three content words ("$\\int x^2 dx$", a figure only) has no
+    shingles; hashed as is, every such item shared the empty-string digest, so the build
+    kept one of 91 and serving one marked all of them seen. Those hash `fallback` (the raw
+    text) verbatim instead.
+
+    Numbers count whatever their length. Dropping short tokens left only "begin matrix geq
+    end" of $f(x) = x^2 - 3$ for $x < 0$ ..., so different piecewise exercises shared one
+    fingerprint and the dedupe kept one of them (131 distinct questions, measured).
     """
     words = re.findall(r"[a-z]+|\d+(?:\.\d+)?", (text or "").lower())
-    words = [w for w in words if len(w) > 2][:120]
+    words = [w for w in words if len(w) > 2 or w[0].isdigit()][:160]
     shingles = sorted({" ".join(words[i : i + 3]) for i in range(max(0, len(words) - 2))})
-    digest = hashlib.sha1(" | ".join(shingles[:40]).encode()).hexdigest()
+    if not shingles:
+        return "raw" + hashlib.sha1(" ".join((fallback or text or "").split()).encode()).hexdigest()[:13]
+    digest = hashlib.sha1(" | ".join(shingles[:60]).encode()).hexdigest()
     return digest[:16]
 
 
@@ -292,6 +303,14 @@ _EXERCISE_DIFFICULTY = {
 }
 
 
+# Each source spells question formats its own way (JEE Challenger "MCQ", "MULTI_CORRECT",
+# "NUMERIC"; others "numerical"). One spelling per format, so a filter on it means one thing.
+_QTYPE_CANON = {
+    "mcq": "single_correct", "single": "single_correct", "multi_correct": "multiple_correct",
+    "numerical": "numeric", "comprehension": "comprehension",
+}
+
+
 def _item(
     *,
     content_id: str,
@@ -335,11 +354,12 @@ def _item(
         "source_ref": source_ref,
         "license": license_,
         "difficulty": difficulty,
-        "question_type": question_type,
+        "question_type": _QTYPE_CANON.get((question_type or "").strip().lower(), (question_type or "").strip().lower()),
         "target_exam": target_exam,
         "has_solution": bool(solution),
         "is_question": is_question,
-        "fingerprint": fingerprint(match_text(core_text)) if is_question else fingerprint(match_text(core_text)[:400]),
+        "fingerprint": (fingerprint(match_text(core_text), core_text) if is_question
+                        else fingerprint(match_text(core_text)[:400], core_text[:400])),
         "token_len": token_len(core_text) + token_len(solution),
         "module_id": module_id,
         "candidate_scope": list(candidate_scope),
@@ -505,7 +525,7 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
       * the text is interleaved with Kruti Dev mojibake.
     A worked solution that lost its images is cut back to the answer key.
     """
-    aliases = alias_index()
+    aliases = alias_index("Physics")  # physics files: a maths or chemistry alias would misfile them
     files = [
         ("jee_main_physics_train.jsonl", EXAM_MAIN),
         ("jee_main_physics_test.jsonl", EXAM_MAIN),
@@ -1183,7 +1203,8 @@ def map_concepts(
     by_chapter: dict[str, list[int]] = {}
     by_unit: dict[str, list[int]] = {}
     for i, c in enumerate(concepts):
-        by_module.setdefault(c.module_id, []).append(i)
+        if c.module_id:  # "" is no module; as a key it pooled every chapter's placeholder concept
+            by_module.setdefault(c.module_id, []).append(i)
         by_chapter.setdefault(c.chapter_id, []).append(i)
         if c.in_syllabus:
             by_unit.setdefault(c.unit, []).append(i)
@@ -1213,6 +1234,11 @@ def map_concepts(
     concept_words = [_words(c.name) for c in concepts]
 
     def named_in(hint: str, pool: list[int]) -> int | None:
+        # The exact name first: _words drops parentheses, and with them the qualifier that
+        # tells "Properties (Alkenes)" from "Properties (Alkanes)".
+        exact = next((j for j in pool if norm(concepts[j].name) == norm(hint)), None)
+        if exact is not None:
+            return exact
         target = _words(hint)
         best, best_len = None, 0
         for j in pool:
@@ -1228,7 +1254,9 @@ def map_concepts(
         for unit in it.get("candidate_scope") or []:
             scope_rows.extend(by_unit.get(unit, []))
         in_scope = in_scope_by_subject.get(it.get("subject") or "Physics", [])
-        candidates = module_rows or scope_rows or chapter_rows or in_scope
+        # The item's own chapter before its JEE unit: unit-wide, a glossary term from a
+        # sibling chapter wins ("Young's double slit" filed under Brewster's law).
+        candidates = module_rows or chapter_rows or scope_rows or in_scope
         # A module's own concepts are the best answer when they exist, but a
         # section can teach a concept defined in a sibling module, so the chapter
         # stays in the candidate pool.
@@ -1262,6 +1290,53 @@ def map_concepts(
     return item_vecs, concept_vecs
 
 
+EDGE_MIN_SIM = 0.45
+
+
+def refine_edges(syllabus: dict[str, Any], concept_vecs: np.ndarray, min_sim: float = EDGE_MIN_SIM) -> list[dict[str, str]]:
+    """Keep only prerequisite edges whose two concepts are about the same thing.
+
+    The syllabus builders propose edges by position, not meaning: a module that links an
+    earlier module requires that module's first three glossary terms ("Rydberg formula
+    requires elastic"), every section requires the one before it. Measured on 4,075 such
+    edges, pairs under ~0.45 cosine were almost all of that kind and pairs above it read as
+    real prerequisites. A cross-chapter prerequisite must also come from an earlier chapter.
+    """
+    concepts: list[Concept] = syllabus["concepts"]
+    idx = {c.concept_id: i for i, c in enumerate(concepts)}
+    order = {ch.chapter_id: ch.order for ch in syllabus["chapters"]}
+    vecs = concept_vecs / (np.linalg.norm(concept_vecs, axis=1, keepdims=True) + 1e-9)
+    kept: list[dict[str, str]] = []
+    for e in syllabus["requires"]:
+        i, j = idx.get(e["concept_id"]), idx.get(e["requires"])
+        if i is None or j is None or i == j:
+            continue
+        a, b = concepts[i], concepts[j]
+        if a.subject != b.subject:
+            continue
+        if a.chapter_id != b.chapter_id and order.get(b.chapter_id, 0) > order.get(a.chapter_id, 0):
+            continue
+        if float(vecs[i] @ vecs[j]) >= min_sim:
+            kept.append(e)
+    print(f"  prerequisite edges: kept {len(kept)} of {len(syllabus['requires'])} (cosine >= {min_sim})")
+    return kept
+
+
+def _number_table(item: dict[str, Any]) -> bool:
+    """NCERT's printed log/antilog tables and similar grids: long theory chunks that are
+    almost all digits. They teach nothing a student would ask for, and their hundreds of
+    numeric terms matched every worked problem, filing integrals under chemical equilibrium."""
+    if item["content_type"] != TYPE_THEORY:
+        return False
+    text = item["core_text"]
+    # The printed tables, by their own captions. A section that teaches logarithms is
+    # not one of them, so a heading alone is no evidence.
+    if re.search(r"TABLE I+\b[^\n]{0,60}(?:anti)?logarithm|(?:anti)?logarithm table", text[:300], re.I):
+        return True
+    letters = sum(ch.isalpha() for ch in text)
+    return len(text) > 1000 and letters / len(text) < 0.10
+
+
 def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
     chapters: list[Chapter] = syllabus["chapters"]
     concepts: list[Concept] = syllabus["concepts"]
@@ -1287,6 +1362,8 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
 
     items += calculus_items(chapter_lookup)
     items += reference_items(chapter_lookup)
+
+    items = [it for it in items if not _number_table(it)]
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}

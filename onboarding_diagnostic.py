@@ -26,28 +26,19 @@ def _pick_concepts(question_count: int) -> List[Dict[str, Any]]:
 
 
 def _practice_for_concept(concept_id: str) -> Optional[Dict[str, Any]]:
-    res = (
-        db.client.table("content")
-        .select(
-            "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id, image_filename, has_image_core, has_diagram, has_image_solution"
-        )
-        .eq("primary_concept_id", concept_id)
-        .eq("content_type", "practice")
-        .limit(5)
-        .execute()
+    # The corpus lives in the retrieval database. This used to read `content` from the user
+    # database (empty) and filter on content_type 'practice' (no such value), so placement
+    # never found a question. Solved, figure-free questions first; any question otherwise.
+    from retrieval import store
+
+    rows = store.query(
+        f"""select {store.CHUNK_COLUMNS} from public.content c
+            where c.primary_concept_id = %s and c.is_question and coalesce(c.in_syllabus, true)
+              and {store.FIGURE_READY_SQL}
+            order by c.has_solution desc, (c.content_type = 'Practice Question') desc, c.content_id
+            limit 5""",
+        (concept_id,),
     )
-    rows = res.data or []
-    if not rows:
-        res = (
-            db.client.table("content")
-            .select(
-                "content_id, content_type, chapter, difficulty, core_text, solution, primary_concept_id, image_filename, has_image_core, has_diagram, has_image_solution"
-            )
-            .eq("primary_concept_id", concept_id)
-            .limit(3)
-            .execute()
-        )
-        rows = res.data or []
     if not rows:
         return None
     return random.choice(rows)
