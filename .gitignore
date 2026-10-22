@@ -44,3 +44,5 @@ tests/fixtures/routing_baseline*.json
 
 # compiled tutor diagrams (services/diagrams.py)
 var/
+evals/correctness/runs/*
+!evals/correctness/runs/baseline.json

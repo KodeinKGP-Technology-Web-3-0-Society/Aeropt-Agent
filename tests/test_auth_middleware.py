@@ -43,6 +43,18 @@ def _app() -> FastAPI:
     def health():
         return {"status": "ok"}
 
+    @app.get("/ready")
+    def ready():
+        return {"status": "ok"}
+
+    @app.get("/api/v1/voice/speakers")
+    def speakers():
+        return {"speakers": []}
+
+    @app.post("/api/v1/voice/synthesize")
+    def synthesize():
+        return {"audio_base64": ""}
+
     @app.post("/api/v1/chat/message")
     def chat(body: Body):
         return {"user_id": body.user_id}
@@ -87,6 +99,16 @@ def test_auth_is_off_without_a_signing_key(monkeypatch):
 
 def test_health_needs_no_token(client):
     assert client.get("/health").status_code == 200
+
+
+def test_readiness_and_speaker_metadata_remain_public(client):
+    assert client.get("/ready").status_code == 200
+    assert client.get("/api/v1/voice/speakers").status_code == 200
+
+
+def test_paid_voice_requires_learner_auth(client):
+    assert client.post("/api/v1/voice/synthesize").status_code == 401
+    assert client.post("/api/v1/voice/synthesize", headers=_headers(_token())).status_code == 200
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,10 @@ browser), not the server's — a 23:30 IST practice must count for that day.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections import Counter, defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -164,10 +167,43 @@ def _streaks(active_days: set, today: date) -> Tuple[int, int]:
 # ── the report ────────────────────────────────────────────────────────────────
 
 
-def _load(user_id: str) -> Dict[str, Any]:
-    events = db.read_learning_events(user_id, limit=5000)
+#: The home page asks for the progress report and the study overview at the same
+#: moment, and both read the same rows. A short cache lets the second reuse the
+#: first's load; ten seconds is stale enough to be invisible, fresh enough that a
+#: just-finished session shows up on the next visit.
+_LOAD_TTL_S = 10.0
+_load_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_load_lock = threading.Lock()
+_load_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="report-load")
+
+#: The columns the report reads from learning_events. `payload` is the heavy one;
+#: `select *` also drags back ids and bookkeeping nobody here looks at.
+_EVENT_COLUMNS = (
+    "kind, concept_id, content_id, created_at, error_type, outcome, payload, "
+    "proficiency_before, proficiency_after, source"
+)
+
+
+def _read_events(user_id: str) -> List[Dict[str, Any]]:
     try:
-        states = (
+        return (
+            db.client.table("learning_events")
+            .select(_EVENT_COLUMNS)
+            .eq("user_id", str(user_id))
+            .order("created_at", desc=True)
+            .limit(5000)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        logger.debug("learning events read failed", exc_info=True)
+        return []
+
+
+def _read_states(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        return (
             db.client.table("user_concept_state")
             .select("concept_id, proficiency_score, attempts, correct, flagged_weak, error_type_dist, last_seen_at, updated_at")
             .eq("user_id", user_id)
@@ -177,9 +213,12 @@ def _load(user_id: str) -> Dict[str, Any]:
             or []
         )
     except Exception:
-        states = []
+        return []
+
+
+def _read_reviews(user_id: str) -> List[Dict[str, Any]]:
     try:
-        reviews = (
+        return (
             db.client.table("review_schedule")
             .select("review_id, concept_id, due_at, reason, status")
             .eq("user_id", user_id)
@@ -190,13 +229,68 @@ def _load(user_id: str) -> Dict[str, Any]:
             or []
         )
     except Exception:
-        reviews = []
-    readiness = {r["concept_id"]: r for r in db.read_readiness_scores(user_id) if r.get("concept_id")}
+        return []
+
+
+def _read_memories(user_id: str) -> List[Dict[str, Any]]:
     try:
-        memories = db.read_learner_memories(user_id, limit=12) or []
+        return db.read_learner_memories(user_id, limit=12) or []
     except Exception:
-        memories = []
-    return {"events": events, "states": states, "reviews": reviews, "readiness": readiness, "memories": memories}
+        return []
+
+
+_load_inflight: Dict[str, "Future[Dict[str, Any]]"] = {}
+
+
+def _load(user_id: str) -> Dict[str, Any]:
+    # Single flight: the home page fires progress, overview and plan together and
+    # all three need this load. The first caller reads; the others wait for it
+    # instead of repeating the same five round trips.
+    now = time.monotonic()
+    with _load_lock:
+        hit = _load_cache.get(user_id)
+        if hit and now - hit[0] < _LOAD_TTL_S:
+            return hit[1]
+        pending = _load_inflight.get(user_id)
+        if pending is None:
+            pending = _load_inflight[user_id] = Future()
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        return pending.result()
+    try:
+        data = _read_all(user_id)
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _load_lock:
+            _load_inflight.pop(user_id, None)
+    pending.set_result(data)
+    return data
+
+
+def _read_all(user_id: str) -> Dict[str, Any]:
+    # Five independent reads: run them together so the page waits for the
+    # slowest one, not the sum of all five.
+    events = _load_pool.submit(_read_events, user_id)
+    states = _load_pool.submit(_read_states, user_id)
+    reviews = _load_pool.submit(_read_reviews, user_id)
+    readiness = _load_pool.submit(db.read_readiness_scores, user_id)
+    memories = _load_pool.submit(_read_memories, user_id)
+    data = {
+        "events": events.result(),
+        "states": states.result(),
+        "reviews": reviews.result(),
+        "readiness": {r["concept_id"]: r for r in readiness.result() if r.get("concept_id")},
+        "memories": memories.result(),
+    }
+    with _load_lock:
+        if len(_load_cache) > 256:
+            _load_cache.clear()
+        _load_cache[user_id] = (time.monotonic(), data)
+    return data
 
 
 def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30) -> Dict[str, Any]:
@@ -204,7 +298,9 @@ def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30)
     now = datetime.now(timezone.utc)
     today = now.astimezone(tz).date()
     data = _load(user_id)
-    events = data["events"]
+    # Copies: the rows below get per-call fields (_t, _d) that depend on the
+    # timezone, and the loaded rows are shared with other requests.
+    events = [dict(e) for e in data["events"]]
     for e in events:
         e["_t"] = _parse(e.get("created_at")) or now
         e["_d"] = e["_t"].astimezone(tz).date()
@@ -313,12 +409,42 @@ def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30)
             "readiness": (data["readiness"].get(cid) or {}).get("score"),
             "review_due": review.get("due_at") if review else None,
         })
+    # Taught in chat or a lesson but never practised: no user_concept_state row, yet
+    # the student did study it. Listed as "new" with no score, so the study page and
+    # the tutor know it was covered without pretending it was assessed.
+    practised = {c["concept_id"] for c in concepts}
+    for e in turns:
+        cid = e.get("concept_id")
+        if not cid or cid in practised:
+            continue
+        practised.add(cid)
+        touched = last_touch.get(cid)
+        review = review_by_concept.get(cid)
+        concepts.append({
+            "concept_id": cid,
+            "name": meta[cid]["name"],
+            "chapter": meta[cid]["chapter"],
+            "unit": meta[cid]["unit"],
+            "proficiency": 0.0,
+            "attempts": 0,
+            "correct": 0,
+            "accuracy": None,
+            "trend": None,
+            "status": "new",
+            "discussed_only": True,
+            "flagged_weak": False,
+            "last_practised": touched,
+            "days_since": (now - touched).days if touched else None,
+            "readiness": (data["readiness"].get(cid) or {}).get("score"),
+            "review_due": review.get("due_at") if review else None,
+        })
+
     concepts.sort(key=lambda c: (c["last_practised"] or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
     overview["concepts_mastered"] = sum(c["status"] == "mastered" for c in concepts)
 
-    # ── chapters ──
+    # ── chapters ── (practice-based: a concept only discussed has no score to average)
     chapters_acc: Dict[str, Dict[str, Any]] = {}
-    for c in concepts:
+    for c in (c for c in concepts if c["attempts"]):
         ch = chapters_acc.setdefault(c["chapter"], {
             "chapter": c["chapter"], "unit": c["unit"], "concepts": 0, "attempts": 0, "correct": 0,
             "mastered": 0, "weak": 0, "_wprof": 0.0, "last_practised": None,
@@ -333,7 +459,7 @@ def build_report(user_id: str, *, tz_name: Optional[str] = None, days: int = 30)
             ch["last_practised"] = c["last_practised"]
     chapters = []
     for ch in chapters_acc.values():
-        weight = sum(max(1, c["attempts"]) for c in concepts if c["chapter"] == ch["chapter"])
+        weight = sum(c["attempts"] for c in concepts if c["chapter"] == ch["chapter"])
         ch["proficiency"] = round(ch.pop("_wprof") / weight, 3) if weight else 0.0
         ch["accuracy"] = round(ch["correct"] / ch["attempts"], 3) if ch["attempts"] else None
         chapters.append(ch)
@@ -512,7 +638,8 @@ def progress_digest(user_id: str, *, tz_name: Optional[str] = None) -> str:
         logger.debug("progress digest failed", exc_info=True)
         return ""
     o = r["overview"]
-    if not o["questions_attempted"] and not o["study_sessions_completed"]:
+    discussed = [c for c in r["concepts"] if c.get("discussed_only")][:5]
+    if not o["questions_attempted"] and not o["study_sessions_completed"] and not discussed:
         return ""
     lines = []
     if o["accuracy"] is not None:
@@ -533,4 +660,6 @@ def progress_digest(user_id: str, *, tz_name: Optional[str] = None) -> str:
         lines.append(f"- Most common mistake type: {top} ({count} of {r['mistakes']['total_wrong']}).")
     if r["reviews"]:
         lines.append("- Reviews pending: " + ", ".join(x["name"] for x in r["reviews"][:3]) + ".")
+    if discussed:
+        lines.append("- Studied with the tutor recently, not practised yet: " + ", ".join(c["name"] for c in discussed) + ".")
     return "\n".join(lines)

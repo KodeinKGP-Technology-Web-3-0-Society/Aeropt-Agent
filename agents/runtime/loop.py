@@ -30,6 +30,7 @@ from agents.runtime.toolbelt import SCOPE_READ, Toolbelt
 from agents.runtime.trace import AgentTrace, TraceStep
 from utils.chat_messages import serialize_assistant_message
 from utils.llm import chat_completion
+from agents.runtime.web_fallback import attach_ready_passages
 
 logger = logging.getLogger("jee_tutor.loop")
 
@@ -44,6 +45,12 @@ _FORCED_CLOSE_NUDGE = (
     "You have used your full tool budget for this turn. Do not request any more "
     "tools. Answer the student now with what you already have. If something "
     "remains unverified, say so plainly rather than guessing."
+)
+
+_GROUND_FIRST_NUDGE = (
+    "Before you answer: this is a substantive course question and you have not "
+    "called `{tool}`. Call it now and build your answer on what it returns. If it "
+    "returns nothing useful, answer from your own knowledge."
 )
 
 
@@ -154,12 +161,16 @@ def run_agent_loop(
     trace: Optional[AgentTrace] = None,
     label: str = "agent",
     lane: str = "live",
+    require_tool: Optional[str] = None,
 ) -> LoopResult:
     """Run one bounded reasoning loop and return the agent's final text.
 
     `priming_messages` are inserted between the system prompt and the student's
     message — recalled memory, session summary, retrieved evidence the caller
     already has. They are context, not instructions.
+
+    `require_tool`: if the model tries to answer without having called this tool,
+    it is sent back once to call it. The draft it wrote is discarded.
     """
     if label == "coach" and lane == "live":
         lane = "background"
@@ -190,6 +201,7 @@ def run_agent_loop(
     model_used = model
     steps = 0
     max_step_input_chars = 0
+    nudged = False
 
     from services import progress
 
@@ -208,6 +220,7 @@ def run_agent_loop(
 
     try:
         while steps < max_steps:
+            attach_ready_passages(toolbelt.ctx, messages)
             step_chars = sum(len(str(m.get("content") or "")) for m in messages)
             if step_chars > max_step_input_chars:
                 max_step_input_chars = step_chars
@@ -249,6 +262,7 @@ def run_agent_loop(
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                     lane=lane,
+                    web_ctx=toolbelt.ctx,
                 )
 
             tool_rounds_limit = max_tool_rounds if max_tool_rounds is not None else max_steps - 1
@@ -293,6 +307,7 @@ def run_agent_loop(
                     stop_reason=stop_r,
                     reserve_s=budget.close_reserve_s,
                     lane=lane,
+                    web_ctx=toolbelt.ctx,
                 )
             except Exception as exc:  # noqa: BLE001 — the whole chain failed
                 logger.exception("[%s] LLM chain failed", label)
@@ -342,8 +357,22 @@ def run_agent_loop(
                     ),
                     duration_ms=int((time.time() - step_started) * 1000),
                     depth=toolbelt.ctx.depth,
+                    text=text or None,
                 )
             )
+
+            if (
+                not calls
+                and require_tool
+                and not nudged
+                and not final_pass
+                and require_tool in toolbelt
+                and require_tool not in tool_names_called
+            ):
+                nudged = True
+                trace.note(f"nudge: answered without {require_tool}, sent back to ground first", depth=toolbelt.ctx.depth)
+                messages.append({"role": "system", "content": _GROUND_FIRST_NUDGE.format(tool=require_tool)})
+                continue
 
             if not calls:
                 stop_r = "max_steps" if final_pass and steps >= max_steps else "answered"
@@ -435,9 +464,13 @@ def run_agent_loop(
             stop_reason="time_budget" if budget.is_exhausted() or time.time() >= deadline else "max_steps",
             reserve_s=budget.close_reserve_s,
             lane=lane,
+            web_ctx=toolbelt.ctx,
         )
     finally:
         current_budget_var.reset(budget_token)
+        fallback = getattr(getattr(toolbelt, "ctx", None), "web_fallback", None)
+        if fallback is not None:
+            fallback.ignore_if_unattached()
 
 
 def _forced_close(
@@ -457,8 +490,11 @@ def _forced_close(
     stop_reason: str = "max_steps",
     reserve_s: float = 8.0,
     lane: str = "live",
+    web_ctx: Any = None,
 ) -> LoopResult:
     """One last tool-free call so a budget overrun still answers the student."""
+    if web_ctx is not None:
+        attach_ready_passages(web_ctx, messages)
     messages = messages + [{"role": "system", "content": _FORCED_CLOSE_NUDGE}]
     started = time.time()
     try:

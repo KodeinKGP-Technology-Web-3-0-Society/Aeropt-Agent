@@ -415,6 +415,23 @@ JEE_CHEMISTRY_TOPICS: list[tuple[str, list[Topic]]] = [
         ("Electronegativity and periodic trends", "electronegativity", "Pauling scale"),
         ("Periodic trends in valence and chemical reactivity", "valency", "oxidation state", "anomalous properties of second period elements"),
     ]),
+    ("Solid State", [
+        ("Classification of solids and crystal systems", "crystalline solids", "unit cell", "crystal lattice"),
+        ("Close packing and voids", "fcc", "bcc", "hcp", "packing efficiency", "voids"),
+        ("Point defects", "Schottky defect", "Frenkel defect"),
+    ]),
+    ("Surface Chemistry", [
+        ("Adsorption", "physisorption", "chemisorption", "Freundlich adsorption isotherm"),
+        ("Colloids", "colloids", "lyophilic", "lyophobic", "micelles", "emulsions"),
+    ]),
+    ("Hydrogen", [
+        ("Position, isotopes and preparation of hydrogen", "isotopes of hydrogen", "preparation of hydrogen", "hydrides"),
+        ("Water and hydrogen peroxide", "heavy water", "hydrogen peroxide", "structure of hydrogen peroxide"),
+    ]),
+    ("s-Block Elements", [
+        ("Alkali metals", "alkali metals", "sodium carbonate", "sodium hydroxide", "anomalous behaviour of lithium"),
+        ("Alkaline earth metals", "alkaline earth metals", "calcium carbonate", "anomalous behaviour of beryllium"),
+    ]),
     ("P-Block Elements", [
         ("General characteristics of p-block elements", "p-block", "electronic configuration", "inert pair effect"),
         ("Group 13 elements: Boron family", "boron", "aluminium", "diborane", "boric acid", "borax"),
@@ -521,6 +538,21 @@ JEE_CHEMISTRY_TOPICS: list[tuple[str, list[Topic]]] = [
         ("Nucleic acids: Structure and composition of DNA and RNA", "nucleotides", "nucleosides", "DNA", "RNA", "double helix", "Watson Crick model"),
         ("Biological functions of nucleic acids", "replication", "transcription", "translation", "genetic code"),
         ("Hormones", "hormones", "endocrine glands", "insulin", "thyroxine", "adrenaline"),
+    ]),
+    ("Isolation of Metals", [
+        ("Concentration of ores", "ore concentration", "froth floatation", "magnetic separation"),
+        ("Extraction and refining", "Ellingham diagram", "electrolytic reduction", "zone refining", "cyanide process"),
+    ]),
+    ("Environmental Chemistry", [
+        ("Environmental pollution", "air pollution", "water pollution", "soil pollution", "green chemistry"),
+    ]),
+    ("Polymers", [
+        ("Types of polymerisation", "addition polymerisation", "condensation polymerisation", "copolymer"),
+        ("Named polymers", "nylon", "teflon", "bakelite", "natural rubber", "biodegradable polymers"),
+    ]),
+    ("Chemistry in Everyday Life", [
+        ("Drugs and their therapeutic action", "antacids", "antihistamines", "analgesics", "antimicrobials"),
+        ("Soaps and detergents", "saponification", "cleansing action of soap", "detergents"),
     ]),
     ("Principles Related to Practical Chemistry", [
         ("Detection of extra elements in organic compounds", "Lassaigne's test for nitrogen", "Lassaigne's test for sulphur", "Lassaigne's test for halogens"),

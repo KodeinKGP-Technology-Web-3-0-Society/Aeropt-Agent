@@ -194,7 +194,8 @@ class SupabaseClient:
                 .order("turn_index")
                 .execute()
             )
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("jee_tutor.db").warning("first_user_turn_previews failed: %s", exc)
             return {}
         previews: Dict[str, str] = {}
         for row in res.data or []:
@@ -426,6 +427,18 @@ class SupabaseClient:
             self._agent_used_is_narrow = True
             row["agent_used"] = self.normalize_agent_used(agent_used)
             res = self.client.table("chat_turns").insert(row).execute()
+
+        if role == "user" and content and content.strip():
+            try:
+                sess = self.read_session(session_id)
+                if sess and not sess.get("title"):
+                    title_preview = content.strip()
+                    if len(title_preview) > 80:
+                        title_preview = title_preview[:79] + "…"
+                    self.update_session_title(session_id, title_preview)
+            except Exception:
+                pass
+
         return res.data[0]
 
     def update_chat_turn_presentation(
@@ -475,13 +488,25 @@ class SupabaseClient:
     # ─────────────────────────── concepts ─────────────────────────────────────
 
     def read_concepts(self) -> List[Dict[str, Any]]:
-        """Return all 33 concepts as a flat list (concept_id, concept_name, chapter)."""
-        res = (
-            self.retrieval_client.table("concepts")
-            .select("concept_id, concept_name, chapter, subject")
-            .execute()
-        )
-        return res.data or []
+        """Every concept as a flat list (concept_id, concept_name, chapter, subject).
+
+        PostgREST returns at most 1,000 rows per request and there are ~1,900 concepts,
+        so a single call silently dropped half of them. Page until a short page.
+        """
+        rows: List[Dict[str, Any]] = []
+        page = 1000
+        while True:
+            res = (
+                self.retrieval_client.table("concepts")
+                .select("concept_id, concept_name, chapter, subject")
+                .order("concept_id")
+                .range(len(rows), len(rows) + page - 1)
+                .execute()
+            )
+            batch = res.data or []
+            rows.extend(batch)
+            if len(batch) < page:
+                return rows
 
     # ─────────────────────────── content ──────────────────────────────────────
 
@@ -492,10 +517,7 @@ class SupabaseClient:
             self.retrieval_client.table("content")
             .select(
                 "content_id, content_type, chapter, difficulty, core_text, solution, "
-                "latex_formulae_core, latex_formulae_solution, "
-                "has_image_core, has_image_solution, image_filename, "
-                "diagram_description_core, primary_concept_id, secondary_concepts, "
-                "prerequisite_concepts, question_type, target_exam"
+                "primary_concept_id, secondary_concepts, question_type, target_exam"
             )
             .in_("content_id", content_ids)
             .execute()

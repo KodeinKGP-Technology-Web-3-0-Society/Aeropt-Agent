@@ -9,7 +9,9 @@ statuses from services/study_overview.py and due reviews from the ledger.
 It simulates study days forward:
   * each day starts with reviews that are due (spaced: every topic finished in
     the plan comes back a week later for 15 minutes),
-  * then continues topics already started, then new topics in syllabus order,
+  * then continues topics already started, then new topics,
+  * new work alternates Physics, Chemistry and Mathematics so no subject waits
+    until another is finished; inside a subject, syllabus order is unchanged,
   * until the day's minutes are used.
 That yields this week's schedule, the date each unit will be finished, when the
 whole syllabus will be done, and so the pace verdict and the daily minutes that
@@ -33,12 +35,137 @@ MIN_TUTOR_TAUGHT = 25 # no question bank: shorter
 MIN_REVIEW = 15
 REVIEW_AFTER_DAYS = 7
 HORIZON_DAYS = 900
+SUBJECT_ORDER = ("Physics", "Chemistry", "Mathematics")
 
 # Approximate session dates (NTA publishes the exact ones each year).
 EXAM_DEFAULTS = {
     "JEE_MAINS": (1, 22, "JEE Main (session 1)"),
     "JEE_ADVANCED": (5, 23, "JEE Advanced"),
 }
+
+
+def _subject_rank(subject: str) -> tuple:
+    try:
+        return (SUBJECT_ORDER.index(subject), subject)
+    except ValueError:
+        return (len(SUBJECT_ORDER), subject)
+
+
+def interleave_subjects(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Started topics first, then new ones. Each band alternates subjects.
+
+    Topics stay in syllabus order inside a subject. Across subjects the plan
+    takes one topic from each before returning to the first, so Physics is not
+    finished before Chemistry and Mathematics begin.
+    """
+    started = [item for item in queue if item.get("kind") == "continue"]
+    fresh = [item for item in queue if item.get("kind") != "continue"]
+    return _round_robin(started) + _round_robin(fresh)
+
+
+def _round_robin(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        subject = str(item.get("subject") or "Syllabus")
+        buckets.setdefault(subject, []).append(item)
+    order = sorted(buckets, key=_subject_rank)
+    out: List[Dict[str, Any]] = []
+    while any(buckets[subject] for subject in order):
+        for subject in order:
+            if buckets[subject]:
+                out.append(buckets[subject].pop(0))
+    return out
+
+
+def _unit_key(unit: Dict[str, Any]) -> tuple:
+    return (str(unit.get("subject") or "Syllabus"), unit["unit"])
+
+
+def parallel_milestones(
+    units: List[Dict[str, Any]],
+    unit_finish: Dict[tuple, date],
+) -> List[Dict[str, Any]]:
+    """One milestone per remaining step, with the next unfinished unit of each subject.
+
+    Units already mastered are absent from unit_finish, so the first milestone
+    is whatever each subject still has left, not the first chapter of the book.
+    """
+    by_subject: Dict[str, List[Dict[str, Any]]] = {}
+    for unit in units:
+        key = _unit_key(unit)
+        if key not in unit_finish:
+            continue
+        by_subject.setdefault(key[0], []).append(unit)
+    subjects = sorted(by_subject, key=_subject_rank)
+    depth = max((len(rows) for rows in by_subject.values()), default=0)
+    milestones: List[Dict[str, Any]] = []
+    for index in range(depth):
+        parts: List[Dict[str, Any]] = []
+        dates: List[date] = []
+        for subject in subjects:
+            rows = by_subject[subject]
+            if index >= len(rows):
+                continue
+            unit = rows[index]
+            when = unit_finish[_unit_key(unit)]
+            parts.append({"subject": subject, "unit": unit["unit"], "by": when})
+            dates.append(when)
+        if not parts:
+            continue
+        when = max(dates)
+        milestones.append({
+            "month": when.strftime("%Y-%m"),
+            "by": when,
+            "units": [part["unit"] for part in parts],
+            "subjects": parts,
+        })
+    return milestones
+
+
+def subject_board(
+    units: List[Dict[str, Any]],
+    unit_finish: Dict[tuple, date],
+) -> Dict[str, Any]:
+    """One figure for parallel coverage: how far the furthest-behind subject has reached.
+
+    A subject counts as covered by topics that are started or mastered. The
+    together percent is the lowest of those shares, so the plan cannot look
+    ahead while one subject is left behind.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for unit in units:
+        grouped.setdefault(str(unit.get("subject") or "Syllabus"), []).append(unit)
+    subjects = []
+    for subject in sorted(grouped, key=_subject_rank):
+        rows = grouped[subject]
+        total = sum(int(unit.get("total") or 0) for unit in rows)
+        mastered = sum(int(unit.get("mastered") or 0) for unit in rows)
+        started = sum(int(unit.get("started") or 0) for unit in rows)
+        done_units = [unit for unit in rows if unit.get("total") and unit.get("mastered") == unit.get("total")]
+        remaining = [unit for unit in rows if _unit_key(unit) in unit_finish]
+        finish = max((unit_finish[_unit_key(unit)] for unit in remaining), default=None)
+        subjects.append({
+            "subject": subject,
+            "topics_total": total,
+            "topics_mastered": mastered,
+            "topics_started": started,
+            "units_total": len(rows),
+            "units_done": len(done_units),
+            "next_unit": remaining[0]["unit"] if remaining else None,
+            "finish_by": finish,
+            "percent": round(100 * started / total) if total else 0,
+        })
+    scored = [row for row in subjects if row["topics_total"]]
+    if not scored:
+        return {"percent": 0, "behind": None, "level": True, "subjects": subjects}
+    behind = min(scored, key=lambda row: (row["percent"], _subject_rank(row["subject"])))
+    percents = {row["percent"] for row in scored}
+    return {
+        "percent": behind["percent"],
+        "behind": behind["subject"],
+        "level": len(percents) == 1,
+        "subjects": subjects,
+    }
 
 
 def default_exam_date(exam: str, year: int) -> tuple[date, str]:
@@ -110,13 +237,14 @@ def build_plan(
                 "concept_id": t["concept_id"],
                 "topic": t["topic"],
                 "unit": u["unit"],
+                "subject": u.get("subject") or "Syllabus",
                 "unit_ord": unit_ord,
                 "kind": "continue" if t["status"] == "started" else "learn",
                 "minutes": minutes,
                 "tutor_taught": t["tutor_taught"],
             })
-    # Finish what is started before opening new topics, otherwise syllabus order.
-    queue.sort(key=lambda q: (q["kind"] != "continue", q["unit_ord"]))
+    # Finish what is started before opening new topics. Both bands alternate subjects.
+    queue = interleave_subjects(queue)
 
     reviews_due: List[Dict[str, Any]] = []
     for r in report["reviews"]:
@@ -136,7 +264,7 @@ def build_plan(
     # ── simulate ──
     rest = _rest_weekdays(study_days)
     days: List[Dict[str, Any]] = []
-    unit_finish: Dict[str, date] = {}
+    unit_finish: Dict[tuple, date] = {}
     pending_reviews = sorted(reviews_due, key=lambda r: r["due"])
     qi = 0
     day = today
@@ -155,7 +283,7 @@ def build_plan(
                 q = queue[qi]
                 entry["items"].append(dict(q))
                 budget -= q["minutes"]
-                unit_finish[q["unit"]] = day
+                unit_finish[(q.get("subject") or "Syllabus", q["unit"])] = day
                 # Spaced repetition: everything learnt comes back a week later.
                 pending_reviews.append({"concept_id": q["concept_id"], "topic": q["topic"],
                                         "due": day + timedelta(days=REVIEW_AFTER_DAYS),
@@ -198,25 +326,18 @@ def build_plan(
     else:
         verdict = "behind"
 
-    # ── milestones: units grouped by the month they finish ──
-    milestones: Dict[str, Dict[str, Any]] = {}
-    for u in units:
-        if u["unit"] not in unit_finish:
-            continue
-        when = unit_finish[u["unit"]]
-        key = when.strftime("%Y-%m")
-        m = milestones.setdefault(key, {"month": key, "by": when, "units": []})
-        m["by"] = max(m["by"], when)
-        m["units"].append(u["unit"])
+    milestones = parallel_milestones(units, unit_finish)
+    together = subject_board(units, unit_finish)
 
     roadmap = []
     for u in units:
         roadmap.append({
+            "subject": u.get("subject") or "Syllabus",
             "unit": u["unit"],
             "total": u["total"],
             "mastered": u["mastered"],
             "started": u["started"],
-            "finish_by": unit_finish.get(u["unit"]),
+            "finish_by": unit_finish.get(_unit_key(u)),
             "complete": u["mastered"] == u["total"],
             "topics": u["topics"],
         })
@@ -249,13 +370,14 @@ def build_plan(
                 "minutes": d["minutes"],
                 "minutes_done": d.get("minutes_done", 0),
                 "items": [
-                    {k: v for k, v in i.items() if k in ("concept_id", "topic", "unit", "kind", "minutes", "tutor_taught", "done", "spaced")}
+                    {k: v for k, v in i.items() if k in ("concept_id", "topic", "unit", "subject", "kind", "minutes", "tutor_taught", "done", "spaced")}
                     for i in d["items"]
                 ],
             }
             for d in days[:7]
         ],
-        "milestones": sorted(milestones.values(), key=lambda m: m["month"]),
+        "milestones": milestones,
+        "together": together,
         "roadmap": roadmap,
     }
 

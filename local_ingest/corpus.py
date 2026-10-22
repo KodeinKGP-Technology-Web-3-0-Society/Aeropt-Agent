@@ -235,17 +235,28 @@ def clean(text: str) -> str:
     return text.strip()
 
 
-def fingerprint(text: str) -> str:
+def fingerprint(text: str, fallback: str = "") -> str:
     """Stable hash of a question's content words — catches the same question twice.
 
     Two items with the same fingerprint are the same problem even if one source
     reformatted it, so the novelty filter can refuse a near-duplicate, not just a
     literal repeat of the same content_id.
+
+    A text with under three content words ("$\\int x^2 dx$", a figure only) has no
+    shingles; hashed as is, every such item shared the empty-string digest, so the build
+    kept one of 91 and serving one marked all of them seen. Those hash `fallback` (the raw
+    text) verbatim instead.
+
+    Numbers count whatever their length. Dropping short tokens left only "begin matrix geq
+    end" of $f(x) = x^2 - 3$ for $x < 0$ ..., so different piecewise exercises shared one
+    fingerprint and the dedupe kept one of them (131 distinct questions, measured).
     """
     words = re.findall(r"[a-z]+|\d+(?:\.\d+)?", (text or "").lower())
-    words = [w for w in words if len(w) > 2][:120]
+    words = [w for w in words if len(w) > 2 or w[0].isdigit()][:160]
     shingles = sorted({" ".join(words[i : i + 3]) for i in range(max(0, len(words) - 2))})
-    digest = hashlib.sha1(" | ".join(shingles[:40]).encode()).hexdigest()
+    if not shingles:
+        return "raw" + hashlib.sha1(" ".join((fallback or text or "").split()).encode()).hexdigest()[:13]
+    digest = hashlib.sha1(" | ".join(shingles[:60]).encode()).hexdigest()
     return digest[:16]
 
 
@@ -292,6 +303,14 @@ _EXERCISE_DIFFICULTY = {
 }
 
 
+# Each source spells question formats its own way (JEE Challenger "MCQ", "MULTI_CORRECT",
+# "NUMERIC"; others "numerical"). One spelling per format, so a filter on it means one thing.
+_QTYPE_CANON = {
+    "mcq": "single_correct", "single": "single_correct", "multi_correct": "multiple_correct",
+    "numerical": "numeric", "comprehension": "comprehension",
+}
+
+
 def _item(
     *,
     content_id: str,
@@ -335,11 +354,12 @@ def _item(
         "source_ref": source_ref,
         "license": license_,
         "difficulty": difficulty,
-        "question_type": question_type,
+        "question_type": _QTYPE_CANON.get((question_type or "").strip().lower(), (question_type or "").strip().lower()),
         "target_exam": target_exam,
         "has_solution": bool(solution),
         "is_question": is_question,
-        "fingerprint": fingerprint(match_text(core_text)) if is_question else fingerprint(match_text(core_text)[:400]),
+        "fingerprint": (fingerprint(match_text(core_text), core_text) if is_question
+                        else fingerprint(match_text(core_text)[:400], core_text[:400])),
         "token_len": token_len(core_text) + token_len(solution),
         "module_id": module_id,
         "candidate_scope": list(candidate_scope),
@@ -505,7 +525,7 @@ def hf_pyq_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
       * the text is interleaved with Kruti Dev mojibake.
     A worked solution that lost its images is cut back to the answer key.
     """
-    aliases = alias_index()
+    aliases = alias_index("Physics")  # physics files: a maths or chemistry alias would misfile them
     files = [
         ("jee_main_physics_train.jsonl", EXAM_MAIN),
         ("jee_main_physics_test.jsonl", EXAM_MAIN),
@@ -856,31 +876,60 @@ def jeechallenger_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, An
     return items
 
 
-_ALLEN_HB_MAP = {
-    "01-mole concept": "mole_concept_stoichiometry",
-    "02-thermodynamics": "chemical_thermodynamics_energetics",
-    "03-thermochemistry": "chemical_thermodynamics_energetics",
-    "04-chemical equilibrium": "chemical_equilibrium",
-    "05-ionic equilibrium": "chemical_equilibrium",
-    "06-redox": "redox_reactions",
-    "07-electrochemistry": "electrochemistry",
-    "08-chemical kinetics": "chemical_kinetics",
-    "09-radioactivity": "structure_of_atom",
-    "10-liquid solution": "solutions",
-    "11-solid state": "solutions",
-    "12-gaseous state": "chemical_thermodynamics_energetics",
-    "13-atomic structure": "structure_of_atom",
-    "14-surface chemistry": "chemical_kinetics",
-    "periodic": "periodic_table_and_periodicity",
-    "bonding": "chemical_bonding_molecular_structure",
-    "coordination": "coordination_compounds",
-    "d-block": "d_and_f_block_elements",
-    "hydrocarbons": "hydrocarbons",
-    "isomerism": "general_organic_chemistry_goc",
-    "reaction mechanism": "general_organic_chemistry_goc",
-    "practical organic": "general_organic_chemistry_goc",
-    "carboxylic": "aldehydes_ketones_and_carboxylic_acids",
-}
+# Printed page where each handbook chapter starts. The PDF footer stopped updating
+# after surface chemistry, so the old filename match filed the rest of the book
+# under kinetics. The printed page number is two behind the PDF page index.
+_ALLEN_RANGES: list[tuple[int, str, str, str]] = [
+    (1, "mole_concept_stoichiometry", "Some Basic Concepts of Chemistry", "Some Basic Concepts in Chemistry"),
+    (7, "chemical_thermodynamics_energetics", "Thermodynamics", "Chemical Thermodynamics"),
+    (18, "chemical_thermodynamics_energetics", "Thermochemistry", "Chemical Thermodynamics"),
+    (20, "chemical_equilibrium", "Chemical Equilibrium", "Equilibrium"),
+    (23, "chemical_equilibrium", "Ionic Equilibrium", "Equilibrium"),
+    (28, "redox_reactions", "Redox Reactions", "Redox Reactions and Electrochemistry"),
+    (32, "electrochemistry", "Electrochemistry", "Redox Reactions and Electrochemistry"),
+    (39, "chemical_kinetics", "Chemical Kinetics", "Chemical Kinetics"),
+    (43, "structure_of_atom", "Radioactivity", "Atomic Structure"),
+    (45, "solutions", "Liquid Solutions", "Solutions"),
+    (49, "solid_state", "Solid State", "Solid State"),
+    (53, "chemical_thermodynamics_energetics", "Gaseous State", "Chemical Thermodynamics"),
+    (55, "structure_of_atom", "Atomic Structure", "Atomic Structure"),
+    (58, "surface_chemistry", "Surface Chemistry", "Surface Chemistry"),
+    (61, "periodic_table_and_periodicity", "Periodic Properties", "Classification of Elements and Periodicity in Properties"),
+    (65, "chemical_bonding_molecular_structure", "Chemical Bonding", "Chemical Bonding and Molecular Structure"),
+    (81, "s_block_elements", "s-Block Elements", "s-Block Elements"),
+    (86, "p_block_elements", "p-Block Elements", "P-Block Elements"),
+    (104, "coordination_compounds", "Coordination Compounds", "Coordination Compounds"),
+    (110, "d_and_f_block_elements", "d-Block Elements", "d- and f-Block Elements"),
+    (114, "isolation_of_metals", "Isolation of Metals", "Isolation of Metals"),
+    (118, "qualitative_analysis", "Qualitative Analysis", "Principles Related to Practical Chemistry"),
+    (124, "environmental_chemistry", "Environmental Chemistry", "Environmental Chemistry"),
+    (127, "general_organic_chemistry_goc", "IUPAC Nomenclature", "Some Basic Principles of Organic Chemistry"),
+    (129, "general_organic_chemistry_goc", "Isomerism", "Some Basic Principles of Organic Chemistry"),
+    (133, "general_organic_chemistry_goc", "Reaction Mechanism", "Some Basic Principles of Organic Chemistry"),
+    (135, "general_organic_chemistry_goc", "Practical Organic Chemistry", "Purification and Characterisation of Organic Compounds"),
+    (137, "general_organic_chemistry_goc", "Distinction between Compounds", "Some Basic Principles of Organic Chemistry"),
+    (142, "hydrocarbons", "Hydrocarbons", "Hydrocarbons"),
+    (147, "alkyl_and_aryl_halides", "Haloalkanes and Grignard Reagents", "Organic Compounds Containing Halogens"),
+    (151, "alcohols_phenols_and_ethers", "Alcohols, Ethers and Phenols", "Organic Compounds Containing Oxygen"),
+    (159, "aldehydes_ketones_and_carboxylic_acids", "Carboxylic Acids", "Organic Compounds Containing Oxygen"),
+    (165, "organic_compounds_containing_nitrogen", "Amines", "Organic Compounds Containing Nitrogen"),
+    (167, "organic_compounds_containing_nitrogen", "Benzene Diazonium Chloride", "Organic Compounds Containing Nitrogen"),
+    (169, "general_organic_chemistry_goc", "Organic Reagents", "Some Basic Principles of Organic Chemistry"),
+    (174, "general_organic_chemistry_goc", "Organic Name Reactions", "Some Basic Principles of Organic Chemistry"),
+    (178, "polymers", "Polymers", "Polymers"),
+    (180, "biomolecules_and_polymers", "Carbohydrates", "Biomolecules"),
+]
+
+
+def allen_range(printed_page: int) -> tuple[int, str, str, str]:
+    """Handbook chapter for a printed page. Pages before 1 are the contents."""
+    chosen = _ALLEN_RANGES[0]
+    for row in _ALLEN_RANGES:
+        if row[0] <= printed_page:
+            chosen = row
+        else:
+            break
+    return chosen
 
 
 def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, Any]]:
@@ -894,35 +943,36 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
         return []
     pages = res.stdout.split("\x0c")
     by_chap: dict[str, list[str]] = {}
-    cur_chap = "01-mole concept"
-    for p in pages:
-        m = re.search(r"Handbook\(E\+L\)[\\/][^\\/]+[\\/]Eng[\\/]([^\.]+)\.p65", p, re.I)
-        if m:
-            cur_chap = m.group(1).lower().strip()
-        elif "node06" in p:
-            m2 = re.search(r"([0-9]{2}-[a-z\s]+)\.p65", p, re.I)
-            if m2:
-                cur_chap = m2.group(1).lower().strip()
-        clean_p = "\n".join(l for l in p.splitlines() if "node06" not in l and "@JEEAdvanced" not in l and "Handbook" not in l)
-        by_chap.setdefault(cur_chap, []).append(clean_p)
+    for index, page in enumerate(pages, 1):
+        printed = index - 2  # contents and the copyright page sit in front of printed page 1
+        if printed < 1:
+            continue
+        _start, cid, title, unit = allen_range(printed)
+        clean_p = "\n".join(
+            line for line in page.splitlines()
+            if "node06" not in line and "@JEEAdvanced" not in line and "Handbook" not in line
+        )
+        by_chap.setdefault(cid, []).append(clean_p)
 
     items: list[dict[str, Any]] = []
-    for chap_name, plist in by_chap.items():
-        cid = None
-        for k, v in _ALLEN_HB_MAP.items():
-            if k in chap_name:
-                cid = v
-                break
-        cid = cid or "mole_concept_stoichiometry"
+    for cid, plist in by_chap.items():
         ch = chapter_lookup.get(cid)
+        meta = next(row for row in _ALLEN_RANGES if row[1] == cid)
+        title = ch.title if ch else meta[2]
+        unit = (ch.jee_unit or ch.unit) if ch else meta[3]
         full_text = "\n\n".join(plist)
         chunks = split_theory(full_text)
-        title = ch.title if ch else chap_name
         for i, chunk in enumerate(chunks, 1):
+            body = re.sub(r"\s+", " ", chunk).strip()
+            # Page furniture from the handbook PDF: running headers, "E 57", the disclaimer.
+            if len(body) < 180 or re.search(
+                r"due care and diligence|shall not hold any responsibility", body, re.I
+            ):
+                continue
             heading = f"ALLEN Chemistry Handbook · {title}"
-            ref = f"ALLEN Handbook · {chap_name} (part {i})"
+            ref = f"ALLEN Handbook · {title} (part {i})"
             item = _item(
-                content_id=f"allen_hb_{re.sub(r'[^a-z0-9]+', '_', chap_name)}_{i}",
+                content_id=f"allen_hb_{cid}_{i}",
                 content_type=TYPE_THEORY,
                 core_text=f"{heading}\n\n{chunk}",
                 solution="",
@@ -934,11 +984,11 @@ def allen_handbook_items(chapter_lookup: dict[str, Chapter]) -> list[dict[str, A
                 difficulty=2,
                 question_type="theory",
                 target_exam=EXAM_BOTH,
-                candidate_scope=(ch.jee_unit or ch.unit,) if ch else (),
+                candidate_scope=(unit,),
                 subject="Chemistry",
-                chapter_id=ch.chapter_id if ch else cid,
+                chapter_id=cid,
                 chapter_title=title,
-                unit=ch.unit if ch else "Chemistry",
+                unit=unit,
             )
             items.append(item)
     return items
@@ -1153,7 +1203,8 @@ def map_concepts(
     by_chapter: dict[str, list[int]] = {}
     by_unit: dict[str, list[int]] = {}
     for i, c in enumerate(concepts):
-        by_module.setdefault(c.module_id, []).append(i)
+        if c.module_id:  # "" is no module; as a key it pooled every chapter's placeholder concept
+            by_module.setdefault(c.module_id, []).append(i)
         by_chapter.setdefault(c.chapter_id, []).append(i)
         if c.in_syllabus:
             by_unit.setdefault(c.unit, []).append(i)
@@ -1183,6 +1234,11 @@ def map_concepts(
     concept_words = [_words(c.name) for c in concepts]
 
     def named_in(hint: str, pool: list[int]) -> int | None:
+        # The exact name first: _words drops parentheses, and with them the qualifier that
+        # tells "Properties (Alkenes)" from "Properties (Alkanes)".
+        exact = next((j for j in pool if norm(concepts[j].name) == norm(hint)), None)
+        if exact is not None:
+            return exact
         target = _words(hint)
         best, best_len = None, 0
         for j in pool:
@@ -1198,7 +1254,9 @@ def map_concepts(
         for unit in it.get("candidate_scope") or []:
             scope_rows.extend(by_unit.get(unit, []))
         in_scope = in_scope_by_subject.get(it.get("subject") or "Physics", [])
-        candidates = module_rows or scope_rows or chapter_rows or in_scope
+        # The item's own chapter before its JEE unit: unit-wide, a glossary term from a
+        # sibling chapter wins ("Young's double slit" filed under Brewster's law).
+        candidates = module_rows or chapter_rows or scope_rows or in_scope
         # A module's own concepts are the best answer when they exist, but a
         # section can teach a concept defined in a sibling module, so the chapter
         # stays in the candidate pool.
@@ -1232,6 +1290,53 @@ def map_concepts(
     return item_vecs, concept_vecs
 
 
+EDGE_MIN_SIM = 0.45
+
+
+def refine_edges(syllabus: dict[str, Any], concept_vecs: np.ndarray, min_sim: float = EDGE_MIN_SIM) -> list[dict[str, str]]:
+    """Keep only prerequisite edges whose two concepts are about the same thing.
+
+    The syllabus builders propose edges by position, not meaning: a module that links an
+    earlier module requires that module's first three glossary terms ("Rydberg formula
+    requires elastic"), every section requires the one before it. Measured on 4,075 such
+    edges, pairs under ~0.45 cosine were almost all of that kind and pairs above it read as
+    real prerequisites. A cross-chapter prerequisite must also come from an earlier chapter.
+    """
+    concepts: list[Concept] = syllabus["concepts"]
+    idx = {c.concept_id: i for i, c in enumerate(concepts)}
+    order = {ch.chapter_id: ch.order for ch in syllabus["chapters"]}
+    vecs = concept_vecs / (np.linalg.norm(concept_vecs, axis=1, keepdims=True) + 1e-9)
+    kept: list[dict[str, str]] = []
+    for e in syllabus["requires"]:
+        i, j = idx.get(e["concept_id"]), idx.get(e["requires"])
+        if i is None or j is None or i == j:
+            continue
+        a, b = concepts[i], concepts[j]
+        if a.subject != b.subject:
+            continue
+        if a.chapter_id != b.chapter_id and order.get(b.chapter_id, 0) > order.get(a.chapter_id, 0):
+            continue
+        if float(vecs[i] @ vecs[j]) >= min_sim:
+            kept.append(e)
+    print(f"  prerequisite edges: kept {len(kept)} of {len(syllabus['requires'])} (cosine >= {min_sim})")
+    return kept
+
+
+def _number_table(item: dict[str, Any]) -> bool:
+    """NCERT's printed log/antilog tables and similar grids: long theory chunks that are
+    almost all digits. They teach nothing a student would ask for, and their hundreds of
+    numeric terms matched every worked problem, filing integrals under chemical equilibrium."""
+    if item["content_type"] != TYPE_THEORY:
+        return False
+    text = item["core_text"]
+    # The printed tables, by their own captions. A section that teaches logarithms is
+    # not one of them, so a heading alone is no evidence.
+    if re.search(r"TABLE I+\b[^\n]{0,60}(?:anti)?logarithm|(?:anti)?logarithm table", text[:300], re.I):
+        return True
+    letters = sum(ch.isalpha() for ch in text)
+    return len(text) > 1000 and letters / len(text) < 0.10
+
+
 def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
     chapters: list[Chapter] = syllabus["chapters"]
     concepts: list[Concept] = syllabus["concepts"]
@@ -1251,7 +1356,14 @@ def build_items(syllabus: dict[str, Any]) -> tuple[list[dict[str, Any]], np.ndar
     official = official_exam_items(physics_lookup)
     items += official
     items += jeebench_items({f"JEE Adv {it['source_book'].split()[2]} Paper {it['source_book'].split()[-1]}" for it in official})
+    # Calculus volumes only, and only when the CNXML has been downloaded. University
+    # Physics stays excluded above: it is not the JEE physics sequence.
+    from local_ingest.openstax_calculus import calculus_items
+
+    items += calculus_items(chapter_lookup)
     items += reference_items(chapter_lookup)
+
+    items = [it for it in items if not _number_table(it)]
 
     # Cross-source duplicate questions: same problem, keep the one with a solution.
     best_by_fp: dict[str, dict[str, Any]] = {}

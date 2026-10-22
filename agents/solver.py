@@ -183,7 +183,7 @@ def _clean_output(raw: str) -> str:
 
 # ── Prompt template (theory / example) ────────────────────────────────────────
 _SOLVER_PROMPT = """\
-You are an expert JEE Physics tutor. Provide a clear, rigorous, personalized answer.
+You are an expert JEE tutor across Physics, Chemistry, and Mathematics. Provide a clear, rigorous, personalized answer.
 
 ── Student Profile ──────────────────────────────────────────────────────────
 Target exam:          {target_exam}
@@ -425,6 +425,21 @@ def _normalize_latex_output(text: str) -> str:
     return text
 
 
+# `![alt](url)` where the "url" runs on into prose: the model wrote
+# `![Slanted Line](https://host/img?x%20 increases steadily)`. Markdown cannot parse a URL with
+# a space, so it reached the student as raw bracket-and-parenthesis text. A title after the URL
+# (`![a](u "title")`) and a `<url with spaces>` are valid and left alone.
+_MD_IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\(([^)\n]*)\)")
+_MD_IMAGE_TARGET_OK = re.compile(r"""^\s*(?:<[^>]*>|\S+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*$""")
+
+
+def _drop_malformed_images(text: str) -> str:
+    def fix(m: "re.Match[str]") -> str:
+        return m.group(0) if _MD_IMAGE_TARGET_OK.match(m.group(2)) else m.group(1).strip()
+
+    return _MD_IMAGE_RE.sub(fix, text)
+
+
 def prepare_student_markdown(text: str) -> str:
     """Normalize agent/DB text for react-markdown + KaTeX rendering.
 
@@ -437,6 +452,7 @@ def prepare_student_markdown(text: str) -> str:
     """
     if not text:
         return text
+    text = _drop_malformed_images(text)
     # Currency first: an unescaped "$5" opens a math span that eats the sentence,
     # and every later step would then treat that prose as maths.
     out = escape_currency_dollars(text)
@@ -683,12 +699,9 @@ def _grounding_note(state: Dict[str, Any]) -> str:
     confidence = state.get("retrieval_confidence")
     if confidence == "unresolved":
         return (
-            "GROUNDING STATUS: UNRESOLVED — this question did not match any concept in "
-            "this tutor's JEE Physics syllabus. Say so plainly in your first sentence "
-            "(e.g. \"This looks outside the syllabus this tutor covers\"), then you may "
-            "still give a brief, clearly-labelled best-effort general explanation — but "
-            "do not present it as verified JEE material or invent formulae/values you "
-            "are not confident in."
+            "GROUNDING STATUS: UNRESOLVED — this question did not match a pre-indexed concept in "
+            "the local database. Answer accurately from standard JEE syllabus principles (Physics, "
+            "Chemistry, or Mathematics). Never claim that you only teach physics."
         )
     if confidence == "low":
         return (
@@ -699,7 +712,11 @@ def _grounding_note(state: Dict[str, Any]) -> str:
             "values, formulae, or exam-specific claims with more confidence than you "
             "actually have."
         )
-    return "GROUNDING STATUS: OK — answer normally using the chunks below as your primary source."
+    return (
+        "GROUNDING STATUS: OK — the chunks below matched this concept. Use what in them applies "
+        "to this exact question; a chunk about a different situation is not evidence for this one, "
+        "so ignore it rather than bend the answer toward it."
+    )
 
 
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:

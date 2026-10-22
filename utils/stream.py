@@ -8,12 +8,25 @@ stream_callback_var: contextvars.ContextVar[Optional[Callable[[str], None]]] = c
     "stream_callback_var", default=None
 )
 
+# Swap the whole reply: the checker revised a draft that was already streamed.
+stream_replace_var: contextvars.ContextVar[Optional[Callable[[str], None]]] = contextvars.ContextVar(
+    "stream_replace_var", default=None
+)
+
+
+def emit_replace(text: str) -> None:
+    """Tell the stream that the reply it has shown so far is superseded by `text`."""
+    cb = stream_replace_var.get()
+    if cb and text:
+        cb(text)
+
+
 # The reply is streamed after the Answer Checker approves it, so the text is
 # already complete. Pace it like typing, but never let pacing itself become a
 # wait: a long answer gets bigger chunks, not a longer animation.
 _TOKEN = re.compile(r"\S+\s*|\s+")
-_MAX_STREAM_S = 1.5
-_MAX_CHUNKS = 150
+_MIN_STREAM_S = 1.2
+_MAX_STREAM_S = 4.0
 
 
 def emit_text(text: str, cb: Optional[Callable[[str], None]] = None) -> None:
@@ -24,9 +37,14 @@ def emit_text(text: str, cb: Optional[Callable[[str], None]] = None) -> None:
     if not cb or not text:
         return
     words = _TOKEN.findall(text)
-    per_chunk = max(1, -(-len(words) // _MAX_CHUNKS))
+    if not words:
+        return
+    # Pace progressively: ~25ms per word, bounded between 1.2s and 4.0s
+    target_time_s = max(_MIN_STREAM_S, min(_MAX_STREAM_S, len(words) * 0.025))
+    target_chunks = max(20, min(len(words), int(target_time_s / 0.025)))
+    per_chunk = max(1, -(-len(words) // target_chunks))
     chunks = ["".join(words[i : i + per_chunk]) for i in range(0, len(words), per_chunk)]
-    delay = min(0.01, _MAX_STREAM_S / max(1, len(chunks)))
+    delay = max(0.012, target_time_s / max(1, len(chunks)))
     for chunk in chunks:
         cb(chunk)
         time.sleep(delay)

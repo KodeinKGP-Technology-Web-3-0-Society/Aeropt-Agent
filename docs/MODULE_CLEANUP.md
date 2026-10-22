@@ -113,3 +113,30 @@ Python execution required the unrestricted runner because the Windows virtualenv
 launcher could not create its interpreter process inside the filesystem sandbox.
 Database-dependent retrieval tests require a populated local retrieval database;
 live model/provider and deployed frontend verification were not performed.
+
+## Integration with GitHub main
+
+The local work was committed as `e7841a6` before merging GitHub main at
+`3cb85e4`. A local backup branch, `codex/backup-before-main-merge-20261022`,
+retains that pre-merge state.
+
+The merge retains remote retrieval, streaming, readiness, corpus, and admin
+updates alongside the local grading and module cleanup. Conflict resolutions
+keep lossless assistant tool-call metadata, tool timeout isolation, live Study
+Room phase selection, paid-voice authentication, and the optional retrieval
+classifier. Remote refusal-history filtering is combined with the local
+end-of-turn text clipping. Study Room keeps its lesson-planning and first
+practice-question tools; the unused `suggest_next_material` entry is removed
+from its surface because the teacher's allowed-tool list does not include it.
+Incoming callers and test patches use the renamed completion/retrieval helpers.
+
+The unapplied local grading migration is now `026_grading_commit.sql`, avoiding
+the existing remote 022–025. Its contents and references were updated together;
+no database migration was applied during this Git merge. The runtime requirements
+now include `tzdata` so progress-report timezone lookup works on Windows.
+
+Post-merge validation: **652 tests and 18 subtests passed, 4 tests skipped**;
+the same three local source-data assertions in `test_math_syllabus.py` fail.
+Database-dependent retrieval tests were excluded as above. **25/25 replay
+scenarios pass**, and Python syntax compilation passes. These checks do not
+establish deployed database, frontend, or live-provider readiness.

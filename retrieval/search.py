@@ -55,6 +55,19 @@ EXAM_ALLOWED: dict[str, tuple[str, ...]] = {
     "JEE_MAINS": ("Jee main", "Jee main and Advanced"),
 }
 
+# Same exclusions as local_ingest.pg_syllabus_topics.PASSAGE_SKIP. Kept here so a theory
+# request does not wait for the next ingest to stop seeing them.
+_PASSAGE_SKIP = """
+not (c.content_type = 'Theory' and length(c.core_text) < 400 and c.core_text ~* 'exercise')
+and not (c.content_type = 'PYQ' and length(c.core_text) < 120)
+and not (c.content_type = 'Practice Question' and coalesce(length(c.solution), 0) < 40 and length(c.core_text) < 80)
+and not (
+  c.source_book ilike 'ALLEN%%'
+  and (length(c.core_text) < 180
+       or c.core_text ~* 'due care and diligence|shall not hold any responsibility')
+)
+"""
+
 MAX_CANDIDATES = 600
 RRF_K = 10
 MMR_LAMBDA = 0.78
@@ -129,9 +142,19 @@ def _loads(raw: Any) -> list[str]:
         return [s.strip() for s in str(raw).split(",") if s.strip()]
 
 
+_LATEX_NOISE = re.compile(r"\\(?!(?:sin|cos|tan|cot|sec|csc|log|ln|lim|int|sum|exp)\b)[A-Za-z]+")
+
+
 def _fts_query(text: str) -> str:
-    """FTS5 MATCH string: content words OR-ed, quoted so operators can't leak in."""
-    words = re.findall(r"[A-Za-z][A-Za-z\-']{2,}|\d+(?:\.\d+)?", text or "")
+    """FTS5 MATCH string: content words OR-ed, quoted so operators can't leak in.
+
+    No bare numbers and no LaTeX command names. OR-ed, the "0", "2", "500" of a worked
+    problem matched NCERT's log and antilog tables (570 numeric lexemes each) ahead of any
+    real passage, and "\\text" read as the word "text"; together they filed integrals and
+    mechanics problems under chemical equilibrium. Function names keep their meaning.
+    """
+    text = _LATEX_NOISE.sub(" ", text or "")
+    words = re.findall(r"[A-Za-z][A-Za-z\-']{2,}", text)
     stop = {
         "the", "and", "for", "what", "why", "how", "does", "did", "can", "will",
         "with", "this", "that", "are", "was", "were", "explain", "please", "give",
@@ -194,7 +217,7 @@ def _fetch_candidates(
         "ids": list(concept_ids), "types": list(types), "limit": limit,
         "qv": embedder.to_pg(qvec) if qvec is not None else None, "terms": _terms(query),
     }
-    where = ["cc.concept_id = any(%(ids)s)", "c.content_type = any(%(types)s)"]
+    where = ["cc.concept_id = any(%(ids)s)", "c.content_type = any(%(types)s)", _PASSAGE_SKIP, store.FIGURE_READY_SQL]
     if require_solution:
         where.append("c.has_solution")
     if in_syllabus_only:
@@ -212,7 +235,7 @@ def _fetch_candidates(
     # A primary-concept chunk is about the concept; a secondary one merely touches it.
     sql = f"""
         select c.content_id, c.content_type, c.subject, c.chapter_id, c.chapter, c.unit,
-               c.primary_concept_id as concept_id, c.difficulty, c.license, c.fingerprint,
+               c.primary_concept_id as concept_id, {store.EFFECTIVE_DIFFICULTY_SQL} as difficulty, c.license, c.fingerprint,
                c.target_exam, coalesce(c.has_solution, false)::int as has_solution,
                case min(case cc.role when 'primary' then 0 else 1 end) when 0 then 'primary' else 'secondary' end
                  as concept_role,
@@ -271,6 +294,32 @@ def _mmr(
     return chosen
 
 
+def _is_official(row: dict[str, Any]) -> bool:
+    """An official Advanced paper or a JEE-Bench copy of one, not a coaching sheet."""
+    license_name = row.get("license") or ""
+    return license_name.startswith("official exam paper") or license_name == "past exam paper"
+
+
+def _official_first(
+    rows: list[dict[str, Any]],
+    kept: list[int],
+    kept_scores: list[float],
+    *,
+    concept_id: str,
+) -> tuple[list[int], list[float]]:
+    """When the student asked for a JEE Advanced question, an official paper on
+    that concept beats a coaching paper. If the concept has no official question,
+    the coaching one stays."""
+    official = [
+        (i, score)
+        for i, score in zip(kept, kept_scores)
+        if _is_official(rows[i]) and (not concept_id or rows[i].get("concept_id") == concept_id)
+    ]
+    if not official:
+        return kept, kept_scores
+    return [i for i, _ in official], [score for _, score in official]
+
+
 def search(
     query: str,
     *,
@@ -287,8 +336,12 @@ def search(
     require_solution: bool | None = None,
     in_syllabus_only: bool = True,
     diversify: bool = True,
+    prefer_official: bool = False,
 ) -> SearchResult:
-    families = CASCADE.get(content_type, (content_type,))
+    # An explicit Advanced / past-paper request must not fall through to a
+    # textbook exercise. Coaching papers remain inside the pyq family and lose
+    # to an official paper on the same concept when one exists.
+    families = ("pyq",) if prefer_official else CASCADE.get(content_type, (content_type,))
     exclude_ids = set(exclude_ids)
     exclude_fps = {fp for fp in exclude_fingerprints if fp}
     is_question_request = content_type in {"practice", "pyq", "example", "question"}
@@ -367,6 +420,7 @@ def search(
                 # this, a chapter neighbour that scores marginally higher is served
                 # while the concept's own questions sit unseen forever.
                 concept_first=concept_id if is_question_request else "",
+                prefer_official=prefer_official,
             )
             result.content_type_used = family
             result.scope_used = scope_label
@@ -402,6 +456,7 @@ def _rank(
     diversify: bool,
     drop_seen: bool,
     concept_first: str = "",
+    prefer_official: bool = False,
 ) -> SearchResult:
     ids = [r["content_id"] for r in rows]
     lexical = _lexical_ranks(rows)
@@ -449,6 +504,9 @@ def _rank(
                 continue
         kept.append(i)
         kept_scores.append(score)
+
+    if prefer_official and kept:
+        kept, kept_scores = _official_first(rows, kept, kept_scores, concept_id=concept_first)
 
     if not kept:
         return SearchResult(excluded_seen=excluded, candidates=len(rows), fts_terms=match_terms,

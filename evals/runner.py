@@ -7,6 +7,8 @@ Usage:
     python -m evals.runner --rerecord <id>       # Re-record a single scenario
     python -m evals.runner --mode judge          # Run LLM judge calibration suite
     python -m evals.runner --mode live           # Run live without recording (local DB only)
+    python -m evals.runner --suite correctness --mode live
+    python -m evals.runner --suite correctness --mode replay
 """
 
 from __future__ import annotations
@@ -247,6 +249,20 @@ def run_suite(
 
 
 def main() -> None:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument(
+        "--suite",
+        choices=["behavior", "correctness"],
+        default="behavior",
+        help="behavior is the 25 replay scenarios. correctness scores hard-problem answers.",
+    )
+    known, rest = pre.parse_known_args()
+    if known.suite == "correctness":
+        from evals.correctness.runner import main as correctness_main
+
+        correctness_main(rest)
+        return
+
     parser = argparse.ArgumentParser(description="Aeropt Tutor Agent Eval Harness")
     parser.add_argument(
         "--mode",
@@ -272,7 +288,7 @@ def main() -> None:
         help="Also run LLM judge on scenario responses.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(rest)
 
     # Mode: Judge calibration
     if args.mode == "judge":

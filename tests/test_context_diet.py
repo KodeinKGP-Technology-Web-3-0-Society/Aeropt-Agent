@@ -45,7 +45,31 @@ def test_surface_for_state_routing():
     assert surface_for_state({"classroom_surface": "assess"}) == "classroom_assess"
     assert surface_for_state({"study_session_id": "s1", "study_phase": "explore"}) == "study_learn"
     assert surface_for_state({"study_session_id": "s1", "study_phase": "practice"}) == "study_practice"
+    # The Study Room stores the phase as current_phase, not study_phase.
+    assert surface_for_state({"study_session_id": "s1", "current_phase": "learn"}) == "study_learn"
+    assert surface_for_state({"study_session_id": "s1", "current_phase": "examples"}) == "study_learn"
+    assert surface_for_state({"study_session_id": "s1", "current_phase": "practice"}) == "study_practice"
     assert surface_for_state({"is_coach": True}) == "coach"
+
+
+def test_study_room_keeps_the_tools_the_teacher_is_told_to_call():
+    """Learn must be able to set an outline, and practice must be able to serve a question."""
+    la._import_tools()
+    import mcp_tools.study_tools  # noqa: F401
+
+    learn = Toolbelt(
+        registry().values(),
+        ToolContext(user_id="u1", session_id="s1", state={"study_session_id": "ss", "current_phase": "learn"}),
+    )
+    assert "set_lesson_plan" in learn.names
+    assert "serve_practice_question" in learn.names
+
+    practice = Toolbelt(
+        registry().values(),
+        ToolContext(user_id="u1", session_id="s1", state={"study_session_id": "ss", "current_phase": "practice"}),
+    )
+    assert "serve_practice_question" in practice.names
+    assert "grade_practice_answer" in practice.names
 
 
 def test_toolbelt_surface_filtering():
@@ -188,3 +212,25 @@ def test_cache_friendly_skill_split():
     assert "{{target_exam}}" not in skill["stable"]
     assert "You are this student's tutor" in skill["stable"]
     assert "{{target_exam}}" in skill["dynamic"]
+
+
+def test_refusal_filtering_in_recent_turns():
+    """Ensure previous assistant refusal messages are stripped from recent_turns."""
+    state = {
+        "user_id": "u_test",
+        "session_id": "s_test",
+        "query": "explain me all kind of reactions in organic chemistry with diagrams",
+        "recent_turns": [
+            {
+                "role": "user",
+                "content": "explain me all kind of reactions in organic chemistry with diagrams",
+            },
+            {
+                "role": "assistant",
+                "content": "I understand you're curious about organic chemistry reactions, but as your physics tutor for JEE, my expertise and syllabus coverage are strictly in physics. I cannot provide organic chemistry mechanisms or reaction schemes.",
+            },
+        ],
+    }
+    sec = context.build(state, stable_system_prompt="Static Tutor Prompt")
+    # Both the assistant refusal and its triggering user turn should be filtered out
+    assert len(sec.recent_turns) == 0

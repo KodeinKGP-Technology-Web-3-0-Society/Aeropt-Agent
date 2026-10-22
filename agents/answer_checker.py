@@ -60,16 +60,22 @@ def has_claims_to_check(draft: str) -> bool:
     return False
 
 _CHECKER_PROMPT = """\
-You are the final reviewer for a JEE Physics tutor. An answer has been drafted \
+You are the final reviewer for a JEE tutor (covering Physics, Chemistry, and Mathematics). An answer has been drafted \
 for a student. It does not reach them until you approve it.
 
 Check it against these, in this order of importance:
 
-1. CORRECT — is the physics right, and does the arithmetic hold? A wrong number \
+1. CORRECT — is the scientific/mathematical explanation right, and does the arithmetic hold? A wrong number \
 presented confidently is the worst failure here.
+   Do not trust a closed form just because it looks familiar. For any claimed value of an integral, sum or \
+limit, substitute the smallest case (n=1, n=2) and compute it yourself. Check that the identity really applies \
+to this integrand (cos versus cosh is the classic trap). If the small case disagrees, revise.
 2. RESPONSIVE — does it answer what this student actually asked, rather than a \
 nearby question?
-3. GROUNDED (FAIL-CLOSED FORMULAS) — CRITICAL: Any formula or numeric value in the draft MUST be strictly traceable to the course material below or explicitly derived using exact symbolic tools. If a formula or number is uncited, hallucinated, or improvised, you MUST issue a verdict of "revise" and strip the unsupported formula. If stripping it ruins the answer, rewrite the answer to abstain or fall back to a qualitative explanation.
+3. GROUNDED (FAIL-CLOSED FORMULAS) — Course material below was retrieved automatically and can be about a \
+different situation, chapter or even subject than the question. First decide whether it addresses this exact \
+problem. If it does, formulas must be consistent with it. If it does not, ignore it entirely: never revise a \
+correct answer to match material about something else. With no relevant material, allow well-established, standard JEE textbook formulas, reaction mechanisms, and principles rather than rejecting the answer. Never rewrite a correct chemistry or math answer to claim that the tutor only teaches physics.
 4. HONEST — is uncertainty stated plainly, rather than smoothed over?
 5. TEACHING — does it explain the reasoning rather than only stating a result?
 6. PITCHED — is the language right for this student's level?
@@ -150,14 +156,22 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _format_evidence(chunks: List[Dict[str, Any]], limit: int = 3) -> str:
+def _format_evidence(
+    chunks: List[Dict[str, Any]],
+    web_passages: Optional[List[Dict[str, Any]]] = None,
+    limit: int = 3,
+) -> str:
+    from retrieval.official_web import format_for_checker
+
     if not chunks:
-        return "(no course material was retrieved for this turn)"
-    parts = []
-    for chunk in chunks[:limit]:
-        text = (chunk.get("core_text") or "").strip()
-        parts.append(f"[{chunk.get('content_id', '?')}] {text[:500]}")
-    return "\n\n".join(parts)
+        body = "(no course material was retrieved for this turn)"
+    else:
+        parts = []
+        for chunk in chunks[:limit]:
+            text = (chunk.get("core_text") or "").strip()
+            parts.append(f"[{chunk.get('content_id', '?')}] {text[:500]}")
+        body = "\n\n".join(parts)
+    return body + format_for_checker(web_passages)
 
 
 def _format_learner_context(state: Dict[str, Any]) -> str:
@@ -220,7 +234,10 @@ def check_answer(
     prompt = _CHECKER_PROMPT.format(
         query=(query or "")[:1500],
         learner_context=_format_learner_context(state),
-        evidence=_format_evidence(state.get("retrieved_chunks") or []),
+        evidence=_format_evidence(
+            state.get("retrieved_chunks") or [],
+            state.get("web_passages") or [],
+        ),
         known_issues=_format_known_issues(state),
         draft=draft,
     )
@@ -343,7 +360,10 @@ def check_answer_streaming(
     prompt = _CHECKER_PROMPT.format(
         query=(query or "")[:1500],
         learner_context=_format_learner_context(state),
-        evidence=_format_evidence(state.get("retrieved_chunks") or []),
+        evidence=_format_evidence(
+            state.get("retrieved_chunks") or [],
+            state.get("web_passages") or [],
+        ),
         known_issues=_format_known_issues(state),
         draft=draft,
     )

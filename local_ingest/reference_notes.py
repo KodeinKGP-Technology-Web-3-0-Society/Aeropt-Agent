@@ -579,6 +579,19 @@ Multinomial Theorem and Binomial Divisibility:
   - Expansion: $(1 + x)^n = 1 + nx + \frac{n(n-1)}{2}x^2 + \dots + x^n$.
   - To test divisibility by $x^2$: truncate higher order terms $\mathcal{O}(x^2)$.
 """),
+    ("binomial_theorem", "Summation of series involving binomial coefficients", r"""
+Summation of series involving binomial coefficients. Start from the binomial theorem for a positive integer $n$:
+$$(1 + x)^n = \sum_{r=0}^{n} \binom{n}{r} x^r.$$
+Reading off coefficients, or substituting a value of $x$, gives the standard sums.
+
+- **Sum of coefficients.** Put $x = 1$: $\sum_{r=0}^{n} \binom{n}{r} = 2^n$. Put $x = -1$: $\sum_{r=0}^{n} (-1)^r \binom{n}{r} = 0$ for $n > 0$, so the alternating sum of binomial coefficients vanishes and the even-indexed and odd-indexed sums are each $2^{n-1}$.
+- **Weighted by the index.** Differentiate, then set $x = 1$. Since $r \binom{n}{r} = n \binom{n-1}{r-1}$,
+  $$\sum_{r=1}^{n} r \binom{n}{r} = n \, 2^{n-1}, \qquad \sum_{r=2}^{n} r(r-1)\binom{n}{r} = n(n-1)\,2^{n-2}.$$
+- **Divided by the index.** Integrate from $0$ to $1$. Because $\binom{n}{r}/(r+1) = \binom{n+1}{r+1}/(n+1)$,
+  $$\sum_{r=0}^{n} \frac{\binom{n}{r}}{r+1} = \frac{2^{n+1} - 1}{n+1}.$$
+- **Square of the coefficients.** $\sum_{r=0}^{n} \binom{n}{r}^2 = \binom{2n}{n}$. This is the coefficient of $x^n$ in $(1+x)^{2n} = (1+x)^n(1+x)^n$.
+- **A short check.** For $n = 3$ the coefficients are $1, 3, 3, 1$. Their sum is $8 = 2^3$, the alternating sum is $0$, and $\sum r \binom{3}{r} = 0 + 3 + 6 + 3 = 12 = 3 \cdot 2^{2}$.
+"""),
     ("matrices", "Cayley-Hamilton theorem and powers of matrices", r"""
 Cayley-Hamilton Theorem and Matrix Powers:
 
@@ -700,6 +713,107 @@ Scalar and Vector Triple Products in 3D Vectors:
   - Note that $\vec{a} \times (\vec{b} \times \vec{c}) \ne (\vec{a} \times \vec{b}) \times \vec{c}$ in general.
 - **Lagrange's Identity**:
   $$(\vec{a} \times \vec{b}) \cdot (\vec{c} \times \vec{d}) = (\vec{a} \cdot \vec{c})(\vec{b} \cdot \vec{d}) - (\vec{a} \cdot \vec{d})(\vec{b} \cdot \vec{c})$$
+"""),
+    ("integrals", "Properties of definite integrals", r"""
+Properties of definite integrals. NCERT lists these as $P_3$ and $P_4$ and does not use the coaching names.
+
+- **King's property.** For an integrable $f$ on $[a, b]$,
+  $$\int_a^b f(x)\, dx = \int_a^b f(a + b - x)\, dx.$$
+  Use it when the integrand contains $f(x)$ and $f(a+b-x)$ together, or when a substitution $x \to a+b-x$ simplifies a factor such as $e^x$ on symmetric limits. It holds because $t = a+b-x$ reverses the limits and $P_1$ flips them back.
+- **Queen's property.** The case $a = 0$ of King's property:
+  $$\int_0^a f(x)\, dx = \int_0^a f(a - x)\, dx.$$
+- **Even and odd.** If $f$ is even, $\int_{-a}^{a} f(x)\, dx = 2\int_0^a f(x)\, dx$. If $f$ is odd, $\int_{-a}^{a} f(x)\, dx = 0$.
+- **Periodicity.** If $f(x+T) = f(x)$, then $\int_a^{a+nT} f(x)\, dx = n\int_0^T f(x)\, dx$ for a positive integer $n$.
+
+Worked pattern (King's property). Let $I = \int_0^{\pi/2} \frac{1}{1 + \tan x}\, dx$. The substitution $x \to \frac{\pi}{2} - x$ gives $\tan(\frac{\pi}{2}-x) = \cot x$, so
+$$I = \int_0^{\pi/2} \frac{\tan x}{1 + \tan x}\, dx.$$
+Adding the two forms, $2I = \int_0^{\pi/2} 1\, dx = \frac{\pi}{2}$, hence $I = \frac{\pi}{4}$.
+"""),
+    ("integrals", "Integrals of special forms", r"""
+Integrals of special forms: the standard results for quadratic expressions, and for rational and irrational functions of that shape. Throughout, $a > 0$, and each result holds on an interval where the expression under a root or in a denominator is positive.
+
+$$\int \frac{dx}{x^2 + a^2} = \frac{1}{a}\tan^{-1}\frac{x}{a} + C$$
+
+$$\int \frac{dx}{a^2 - x^2} = \frac{1}{2a}\log\left|\frac{a+x}{a-x}\right| + C \quad (|x| < a)$$
+
+$$\int \frac{dx}{x^2 - a^2} = \frac{1}{2a}\log\left|\frac{x-a}{x+a}\right| + C \quad (|x| > a)$$
+
+$$\int \frac{dx}{\sqrt{a^2 - x^2}} = \sin^{-1}\frac{x}{a} + C \quad (|x| < a)$$
+
+$$\int \frac{dx}{\sqrt{x^2 + a^2}} = \log\left|x + \sqrt{x^2 + a^2}\right| + C$$
+
+$$\int \frac{dx}{\sqrt{x^2 - a^2}} = \log\left|x + \sqrt{x^2 - a^2}\right| + C \quad (|x| > a)$$
+
+$$\int \sqrt{x^2 - a^2}\, dx = \frac{x}{2}\sqrt{x^2 - a^2} - \frac{a^2}{2}\log\left|x + \sqrt{x^2 - a^2}\right| + C$$
+
+A linear factor over a quadratic, $\int \frac{(px+q)\, dx}{ax^2 + bx + c}$ or over its square root, is reduced by writing $px + q = A\frac{d}{dx}(ax^2 + bx + c) + B$ and splitting. The first piece is a logarithm or a root; the second is completed to one of the forms above:
+$$ax^2 + bx + c = a\left[\left(x + \frac{b}{2a}\right)^2 + \left(\frac{c}{a} - \frac{b^2}{4a^2}\right)\right].$$
+"""),
+    ("binomial_theorem", "Middle term and greatest term", r"""
+Middle term and greatest term in the binomial expansion of $(a + b)^n$, $n$ a positive integer. The general term is
+$$T_{r+1} = \binom{n}{r} a^{n-r} b^{r}, \quad r = 0, 1, \ldots, n.$$
+
+- **Middle term.** If $n$ is even there is one middle term, $T_{n/2 + 1}$. If $n$ is odd there are two, $T_{(n+1)/2}$ and $T_{(n+3)/2}$.
+- **Numerically greatest term.** Compare successive terms:
+  $$\frac{T_{r+1}}{T_r} = \frac{n-r+1}{r}\left|\frac{b}{a}\right|.$$
+  $T_{r+1}$ is greater than $T_r$ while this ratio is greater than $1$. The greatest term is the last $T_{r+1}$ for which the ratio is still at least $1$; if the ratio equals $1$, those two neighbouring terms are equal and both greatest.
+"""),
+    ("sequences_and_series", "Special series and sum to n terms", r"""
+Special series: the sums of the first $n$ natural numbers, their squares and their cubes ($n$ a positive integer).
+
+$$\sum_{k=1}^{n} k = \frac{n(n+1)}{2}$$
+
+$$\sum_{k=1}^{n} k^2 = \frac{n(n+1)(2n+1)}{6}$$
+
+$$\sum_{k=1}^{n} k^3 = \left(\frac{n(n+1)}{2}\right)^2$$
+
+An arithmetico-geometric progression, $a + (a+d)r + (a+2d)r^2 + \cdots$, is summed by writing $S$, then $rS$, and subtracting. The difference is a geometric series plus a multiple of the geometric sum. For $|r| < 1$ the infinite sum is $\frac{a}{1-r} + \frac{dr}{(1-r)^2}$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "Complex numbers and algebraic operations", r"""
+Algebra of complex numbers. Write $z_1 = a + ib$ and $z_2 = c + id$ with $a, b, c, d$ real, and $i$ the imaginary unit, $i^2 = -1$.
+
+- Addition and multiplication of complex numbers: $z_1 + z_2 = (a+c) + i(b+d)$, and $z_1 z_2 = (ac - bd) + i(ad + bc)$.
+- Subtraction and division: $z_1 - z_2 = (a-c) + i(b-d)$. For $z_2 \ne 0$, $\frac{z_1}{z_2} = \frac{z_1 \bar{z_2}}{|z_2|^2}$.
+- Powers of $i$ repeat every four: $i^1 = i$, $i^2 = -1$, $i^3 = -i$, $i^4 = 1$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "Modulus, argument and conjugate of complex numbers", r"""
+Modulus, argument and conjugate of a complex number $z = x + iy$, $x, y$ real.
+
+- Modulus: $|z| = \sqrt{x^2 + y^2}$. It is zero only at $z = 0$, and $|z_1 z_2| = |z_1||z_2|$.
+- Conjugate: $\bar{z} = x - iy$. Then $z\bar{z} = |z|^2$, $\overline{z_1 + z_2} = \bar{z_1} + \bar{z_2}$ and $\overline{z_1 z_2} = \bar{z_1}\bar{z_2}$.
+- Argument (amplitude): an angle $\theta$ with $\cos\theta = x/|z|$ and $\sin\theta = y/|z|$, so $\tan\theta = y/x$ only fixes the quadrant when the signs of $x$ and $y$ are used. $\arg(z_1 z_2) = \arg z_1 + \arg z_2$, up to multiples of $2\pi$.
+"""),
+    ("complex_numbers_and_quadratic_equations", "Formation and transformation of quadratic equations", r"""
+Formation and transformation of a quadratic equation. If the roots are $\alpha$ and $\beta$, the monic equation is
+$$x^2 - (\alpha + \beta)x + \alpha\beta = 0.$$
+For $ax^2 + bx + c = 0$ with $a \ne 0$, the sum of roots is $-b/a$ and the product is $c/a$.
+
+- Roots increased by $h$ (each new root is an old root plus $h$): replace $x$ by $x - h$.
+- Roots multiplied by $k \ne 0$: replace $x$ by $x/k$.
+- Reciprocal roots: replace $x$ by $1/x$ and multiply through by $x^2$, which swaps the coefficients of $x^2$ and the constant term.
+- A common root of $a_1 x^2 + b_1 x + c_1 = 0$ and $a_2 x^2 + b_2 x + c_2 = 0$ satisfies the condition $(c_1 a_2 - c_2 a_1)^2 = (a_1 b_2 - a_2 b_1)(b_1 c_2 - b_2 c_1)$.
+"""),
+    ("conic_sections", "Tangents to parabola", r"""
+Tangents to the parabola $y^2 = 4ax$ ($a > 0$).
+
+- At the point $(at^2, 2at)$: $ty = x + at^2$.
+- Of slope $m$: $y = mx + \frac{a}{m}$, for $m \ne 0$. The condition of tangency for the line $y = mx + c$ is $c = a/m$.
+- A focal chord joins two points whose parameters $t_1, t_2$ satisfy $t_1 t_2 = -1$. It passes through the focus $(a, 0)$.
+"""),
+    ("hydrogen", "Position, isotopes and preparation of hydrogen", r"""
+Hydrogen on the JEE Advanced syllabus. Hydrogen has three isotopes: protium ($^1\mathrm{H}$), deuterium ($^2\mathrm{H}$, also written $\mathrm{D}$) and tritium ($^3\mathrm{H}$).
+
+- Laboratory preparation is the reaction of zinc with dilute acid, $\mathrm{Zn} + 2\mathrm{H}^+ \rightarrow \mathrm{Zn}^{2+} + \mathrm{H}_2$. Industrially it is made by steam reforming of hydrocarbons.
+- Hydrides are ionic (saline hydrides of the alkali and alkaline-earth metals, such as $\mathrm{NaH}$), covalent (for example $\mathrm{H}_2\mathrm{O}$, $\mathrm{NH}_3$, $\mathrm{CH}_4$) or interstitial (hydrogen absorbed in the lattice of a transition metal).
+- Water has a bent molecule and extensive hydrogen bonding, so its boiling point is high for its molar mass. Heavy water is $\mathrm{D}_2\mathrm{O}$.
+- Hydrogen peroxide, $\mathrm{H}_2\mathrm{O}_2$, has a non-planar open-book structure. It oxidises and reduces: it oxidises $\mathrm{I}^-$ to $\mathrm{I}_2$ in acid, and it reduces acidified $\mathrm{KMnO}_4$.
+"""),
+    ("chemistry_in_everyday_life", "Drugs and their therapeutic action", r"""
+Chemistry in everyday life, limited to the classes the JEE Advanced syllabus names. Structures of the individual drug molecules are not required.
+
+- Antacids neutralise excess acid in the stomach. Antihistamines oppose the action of histamine. Tranquilizers act on the central nervous system. Analgesics relieve pain. Antimicrobials (including antibiotics) stop or slow the growth of microorganisms. Antifertility drugs are named as a class.
+- Artificial sweeteners are known by name only.
+- Soaps are sodium or potassium salts of long-chain fatty acids, made by saponification of fats with alkali. A soap anion has a hydrophobic tail and a hydrophilic head. In water the tails collect inward and the heads face the water, forming micelles that take grease into the interior. Detergents are synthetic and keep working in hard water, where soap precipitates as calcium and magnesium salts.
 """),
     ("probability_12", "Bayes' theorem and total probability", r"""
 Law of Total Probability and Bayes' Theorem:

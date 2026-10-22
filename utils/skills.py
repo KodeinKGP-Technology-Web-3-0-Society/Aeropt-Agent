@@ -11,7 +11,12 @@ import yaml
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=32)
+def _load_skill_cached(path_str: str, mtime: float) -> Optional[Dict[str, Any]]:
+    with open(path_str, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
 def load_skill(name: str) -> Optional[Dict[str, Any]]:
     clean_name = name
     if clean_name.startswith("skills/"):
@@ -22,8 +27,7 @@ def load_skill(name: str) -> Optional[Dict[str, Any]]:
     path = _SKILLS_DIR / f"{clean_name}.yaml"
     if not path.is_file():
         return None
-    with path.open(encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+    return _load_skill_cached(str(path), path.stat().st_mtime)
 
 
 def get_skill_version(name: str) -> str:

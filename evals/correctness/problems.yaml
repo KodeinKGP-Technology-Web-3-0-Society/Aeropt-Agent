@@ -1,0 +1,590 @@
+version: 1
+description: Hard problems with machine-checkable answers. Authored values were computed by sympy (see
+  verify). Official values are copied from the exam key, not from a model.
+problems:
+- id: cosh_integral_n1
+  subject: mathematics
+  topic: definite_integral
+  source: authored
+  source_id: ''
+  prompt: 'The function $f$ is positive and twice differentiable and satisfies
+
+
+    $$f f'''' - (f'')^2 = f^2 \ln f,$$
+
+
+    with $f(0) = e$ and $f''(0) = 0$. Find $f(x)$. Then evaluate
+
+
+    $$I = \int_0^{\pi} \cosh x \cos x \, dx$$
+
+
+    and give the numerical value of $I$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.02
+    rel_tol: 0.01
+    value: -5.774369678628874
+  verify:
+    op: integrate
+    expr: cosh(x)*cos(x)
+    var: x
+    lo: '0'
+    hi: pi
+  notes: The cos^n identity gives pi/2 here. The integral is -sinh(pi)/2.
+- id: cosh_integral_n2
+  subject: mathematics
+  topic: definite_integral
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate
+
+
+    $$I_2 = \int_0^{\pi} \cosh^2 x \cos(2x) \, dx$$
+
+
+    and give the numerical value of $I_2$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.05
+    rel_tol: 0.01
+    value: 33.46811175512706
+  verify:
+    op: integrate
+    expr: cosh(x)**2 * cos(2*x)
+    var: x
+    lo: '0'
+    hi: pi
+  notes: The cos identity would give pi/4. Direct integration does not.
+- id: cos_integral_n2
+  subject: mathematics
+  topic: definite_integral
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate
+
+
+    $$J = \int_0^{\pi} \cos^2 x \cos(2x) \, dx$$
+
+
+    and give the numerical value of $J$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.01
+    rel_tol: 0.01
+    value: 0.7853981633974483
+  verify:
+    op: integrate
+    expr: cos(x)**2 * cos(2*x)
+    var: x
+    lo: '0'
+    hi: pi
+  notes: Control. For cos, the identity integral_0^pi cos^n(x) cos(nx) dx = pi/2^n is correct, so J =
+    pi/4.
+- id: ode_y_at_1
+  subject: mathematics
+  topic: differential_equation
+  source: authored
+  source_id: ''
+  prompt: Solve $\dfrac{dy}{dx} = y + x$ with $y(0) = 1$. Give the numerical value of $y(1)$.
+  expect:
+    kind: numeric
+    abs_tol: 0.02
+    rel_tol: 0.005
+    value: 3.4365636569180906
+  verify:
+    op: evalf
+    expr: -2 + 2*E
+  notes: Closed form y = -x + 2*exp(x) - 1, so y(1) = -2 + 2*e.
+- id: f_at_1
+  subject: mathematics
+  topic: differential_equation
+  source: authored
+  source_id: ''
+  prompt: 'The function $f$ is positive and twice differentiable and satisfies
+
+
+    $$f f'''' - (f'')^2 = f^2 \ln f,$$
+
+
+    with $f(0) = e$ and $f''(0) = 0$. Give the numerical value of $f(1)$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.03
+    rel_tol: 0.005
+    value: 4.678982327128295
+  verify:
+    op: evalf
+    expr: exp(cosh(1))
+  notes: f(x) = exp(cosh x) satisfies the IVP. This scores f, not the integral.
+- id: series_k_over_2k
+  subject: mathematics
+  topic: series
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate the infinite sum
+
+
+    $$S = \sum_{k=1}^{\infty} \frac{k}{2^k}.$$
+
+
+    Give the value of $S$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.01
+    rel_tol: 0.0
+    value: 2.0
+  verify:
+    op: summation
+    expr: k/2**k
+    var: k
+    lo: '1'
+    hi: oo
+- id: binomial_sum_n5
+  subject: mathematics
+  topic: series
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate
+
+
+    $$S = \sum_{k=0}^{5} k \binom{5}{k}.$$
+
+
+    Give the value of $S$.'
+  expect:
+    kind: integer
+    abs_tol: 0.05
+    rel_tol: 0.0
+    value: 80.0
+  verify:
+    op: evalf
+    expr: 5 * 2**(4)
+  notes: sum k*C(n,k) = n*2^(n-1).
+- id: limit_tan_minus_x
+  subject: mathematics
+  topic: limit
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate
+
+
+    $$L = \lim_{x \to 0} \frac{\tan x - x}{x^3}.$$
+
+
+    Give the value of $L$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.015
+    rel_tol: 0.0
+    value: 0.3333333333333333
+  verify:
+    op: limit
+    expr: (tan(x) - x)/x**3
+    var: x
+    point: '0'
+  notes: The limit is 1/3. A common misremember is 1/2.
+- id: cubic_root_in_unit_interval
+  subject: mathematics
+  topic: root
+  source: authored
+  source_id: ''
+  prompt: The equation $x^3 - 3x + 1 = 0$ has a unique real root in the open interval $(0, 1)$. Find that
+    root.
+  expect:
+    kind: numeric
+    abs_tol: 0.0015
+    rel_tol: 0.0
+    value: 0.3472963553338607
+  verify:
+    op: nsolve
+    expr: x**3 - 3*x + 1
+    var: x
+    guess: 0.3
+- id: integral_ln_over_x
+  subject: mathematics
+  topic: definite_integral
+  source: authored
+  source_id: ''
+  prompt: 'Evaluate
+
+
+    $$I = \int_0^1 \frac{\ln(1+x)}{x} \, dx.$$
+
+
+    Give the numerical value of $I$.'
+  expect:
+    kind: numeric
+    abs_tol: 0.02
+    rel_tol: 0.01
+    value: 0.8224670334241132
+  verify:
+    op: integrate
+    expr: log(1+x)/x
+    var: x
+    lo: '0'
+    hi: '1'
+  notes: Equals pi**2/12. pi**2/6 is the trap.
+- id: conditional_two_heads
+  subject: mathematics
+  topic: probability
+  source: authored
+  source_id: ''
+  prompt: Three fair coins are tossed. Given that at least one coin shows heads, let $p$ be the probability
+    of exactly two heads. Find $7p$.
+  expect:
+    kind: integer
+    abs_tol: 0.05
+    rel_tol: 0.0
+    value: 3.0
+  verify:
+    op: evalf
+    expr: 7 * binomial(3, 2) / (2**3 - 1)
+  notes: P(exactly 2 | at least 1) = 3/7, so 7p = 3.
+- id: jee_adv_2015_p2_phy_q03
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2015_p2_phy_q03
+  prompt: The densities of two solid spheres $A$ and $B$ of the same radii $R$ vary with radial distance
+    $r$ as $\rho_A(r) = k \left( \frac{r}{R} \right)$ and $\rho_B(r) = k \left( \frac{r}{R} \right)^5$,
+    respectively, where $k$ is a constant. The moments of inertia of the individual spheres about axes
+    passing through their centres are $I_A$ and $I_B$, respectively. If $\frac{I_B}{I_A} = \frac{n}{10}$,
+    the value of $n$ is
+  expect:
+    kind: integer
+    value: 6.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2015 Paper 2 Q3. Official key: 6.'
+- id: jee_adv_2015_p1_phy_q05
+  subject: physics
+  topic: numeric
+  source: jee_advanced_official
+  source_id: jee_adv_2015_p1_phy_q05
+  prompt: Q.5 Two spherical stars $A$ and $B$ emit blackbody radiation. The radius of $A$ is $400$ times
+    that of $B$ and $A$ emits $10^4$ times the power emitted from $B$. The ratio $\left(\frac{\lambda_A}{\lambda_B}\right)$
+    of their wavelengths $\lambda_A$ and $\lambda_B$ at which the peaks occur in their respective radiation
+    curves is
+  expect:
+    kind: integer
+    value: 2.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2015 Paper 1 Q5. Official key: 2.'
+- id: jee_adv_2015_p2_phy_q02
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2015_p2_phy_q02
+  prompt: The energy of a system as a function of time $t$ is given as $E(t) = A^2 \exp(-\alpha t)$, where
+    $\alpha = 0.2 \text{ s}^{-1}$. The measurement of $A$ has an error of $1.25\%$. If the error in the
+    measurement of time is $1.50\%$, the percentage error in the value of $E(t)$ at $t = 5 \text{ s}$
+    is
+  expect:
+    kind: integer
+    value: 4.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2015 Paper 2 Q2. Official key: 4.'
+- id: jee_adv_2016_p1_phy_q16
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2016_p1_phy_q16
+  prompt: A hydrogen atom in its ground state is irradiated by light of wavelength $970$ $\text{\AA}$.
+    Taking $hc/e = 1.237 \times 10^{-6}$ $\text{eV m}$ and the ground state energy of hydrogen atom as
+    $-13.6$ $\text{eV}$, the number of lines present in the emission spectrum is
+  expect:
+    kind: integer
+    value: 6.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2016 Paper 1 Q16. Official key: (6).'
+- id: jee_adv_2017_p1_phy_q08
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2017_p1_phy_q08
+  prompt: A drop of liquid of radius $R = 10^{-2} \text{ m}$ having surface tension $S = \frac{0.1}{4\pi}
+    \text{ Nm}^{-1}$ divides itself into $K$ identical drops. In this process the total change in the
+    surface energy $\Delta U = 10^{-3} \text{ J}$. If $K = 10^{\alpha}$ then the value of $\alpha$ is
+  expect:
+    kind: integer
+    value: 6.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2017 Paper 1 Q8. Official key: (6).'
+- id: jee_adv_2017_p1_phy_q11
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2017_p1_phy_q11
+  prompt: A stationary source emits sound of frequency $f_0 = 492$ Hz. The sound is reflected by a large
+    car approaching the source with a speed of $2$ m s$^{-1}$. The reflected signal is received by the
+    source and superposed with the original. What will be the beat frequency of the resulting signal in
+    Hz? (Given that the speed of sound in air is $330$ m s$^{-1}$ and the car reflects the sound at the
+    frequency it has received).
+  expect:
+    kind: integer
+    value: 6.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2017 Paper 1 Q11. Official key: (6).'
+- id: jee_adv_2022_p2_phy_q01
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2022_p2_phy_q01
+  prompt: A particle of mass $1\text{ kg}$ is subjected to a force which depends on the position as $\vec{F}
+    = -k(x\hat{i} + y\hat{j})\text{ kg m s}^{-2}$ with $k = 1\text{ kg s}^{-2}$. At time $t = 0$, the
+    particle's position $\vec{r} = \left(\frac{1}{\sqrt{2}}\hat{i} + \sqrt{2}\hat{j}\right) m$ and its
+    velocity $\vec{v} = \left(-\sqrt{2}\hat{i} + \sqrt{2}\hat{j} + \frac{2}{\pi}\hat{k}\right) m\text{
+    s}^{-1}$. Let $v_x$ and $v_y$ denote the $x$ and the $y$ components of the particle's velocity, respectively.
+    **Ignore gravity.** When $z = 0.5\text{ m}$, the value of $(x v_y - y v_x)$ is ____ $m^2s^{-1}$.
+  expect:
+    kind: integer
+    value: 3.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2022 Paper 2 Q1. Official key: 3.'
+- id: jee_adv_2022_p2_phy_q07
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2022_p2_phy_q07
+  prompt: On a frictionless horizontal plane, a bob of mass $m = 0.1\ kg$ is attached to a spring with
+    natural length $l_0 = 0.1\ m$. The spring constant is $k_1 = 0.009\ Nm^{-1}$ when the length of the
+    spring $l > l_0$ and is $k_2 = 0.016\ Nm^{-1}$ when $l < l_0$. Initially the bob is released from
+    $l = 0.15\ m$. Assume that Hooke's law remains valid throughout the motion. If the time period of
+    the full oscillation is $T = (n\ \pi)\ s$, then the integer closest to $n$ is ___.
+  expect:
+    kind: integer
+    value: 6.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2022 Paper 2 Q7. Official key: 6.'
+- id: jee_adv_2023_p1_phy_q11
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2023_p1_phy_q11
+  prompt: A closed container contains a homogeneous mixture of two moles of an ideal monatomic gas ($\gamma
+    = 5/3$) and one mole of an ideal diatomic gas ($\gamma = 7/5$). Here, $\gamma$ is the ratio of the
+    specific heats at constant pressure and constant volume of an ideal gas. The gas mixture does a work
+    of $66$ Joule when heated at constant pressure. The change in its internal energy is ________ Joule.
+  expect:
+    kind: integer
+    value: 121.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2023 Paper 1 Q11. Official key: 121.'
+- id: jee_adv_2023_p1_phy_q12
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2023_p1_phy_q12
+  prompt: A person of height $1.6$ m is walking away from a lamp post of height $4$ m along a straight
+    path on the flat ground. The lamp post and the person are always perpendicular to the ground. If the
+    speed of the person is $60 \text{ cm s}^{-1}$, the speed of the tip of the person's shadow on the
+    ground with respect to the person is ________ $\text{cm s}^{-1}$.
+  expect:
+    kind: integer
+    value: 40.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2023 Paper 1 Q12. Official key: 40.'
+- id: jee_adv_2024_p2_phy_q09
+  subject: physics
+  topic: integer
+  source: jee_advanced_official
+  source_id: jee_adv_2024_p2_phy_q09
+  prompt: A ball is thrown from the location $(x_0, y_0) = (0,0)$ of a horizontal playground with an initial
+    speed $v_0$ at an angle $\theta_0$ from the $+x$-direction. The ball is to be hit by a stone, which
+    is thrown at the same time from the location $(x_1, y_1) = (L, 0)$. The stone is thrown at an angle
+    $(180 - \theta_1)$ from the $+x$-direction with a suitable initial speed. For a fixed $v_0$, when
+    $(\theta_0, \theta_1) = (45^{\circ}, 45^{\circ})$, the stone hits the ball after time $T_1$, and when
+    $(\theta_0, \theta_1) = (60^{\circ}, 30^{\circ})$, it hits the ball after time $T_2$. In such a case,
+    $(T_1/T_2)^2$ is ______.
+  expect:
+    kind: integer
+    value: 2.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2024 Paper 2 Q9. Official key: 2.'
+- id: jee_adv_2025_p1_phy_q08
+  subject: physics
+  topic: numeric
+  source: jee_advanced_official
+  source_id: jee_adv_2025_p1_phy_q08
+  prompt: A person sitting inside an elevator performs a weighing experiment with an object of mass $50\text{
+    kg}$. Suppose that the variation of the height $y$ (in $\text{m}$) of the elevator, from the ground,
+    with time $t$ (in $\text{s}$) is given by $y = 8\left[1 + \sin\left(\frac{2\pi t}{T}\right)\right]$,
+    where $T = 40\pi\text{ s}$. Taking acceleration due to gravity, $g = 10\text{ m/s}^2$, the maximum
+    variation of the object's weight (in $\text{N}$) as observed in the experiment is \_\_\_\_\_
+  expect:
+    kind: integer
+    value: 2.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: 'JEE Advanced 2025 Paper 1 Q8. Official key: 2.'
+- id: mathematics_jee_main_2026_apr_8th_shift_2_q22
+  subject: mathematics
+  topic: Integrals
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_8th_Shift_2#Q22
+  prompt: If $$\int_{\pi/6}^{\pi/4} \left( \cot\left(x - \frac{\pi}{3}\right) \cot\left(x + \frac{\pi}{3}\right)
+    + 1 \right) dx = \alpha \log_e \left(\sqrt{3}-1\right)$$, then $$9\alpha^2$$ is equal to ________.
+  expect:
+    kind: integer
+    value: 12.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_8th_Shift_2 Q22, Integrals, official key 12, difficulty Hard.
+- id: mathematics_jee_main_2026_apr_6th_shift_1_q25
+  subject: mathematics
+  topic: Differential Equations
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_6th_Shift_1#Q25
+  prompt: 'Let $y = y(x)$ be the solution of the differential equation
+
+    $$\left(x^2 - x\sqrt{x^2 - 1}\right) dy + \left(y\left(x - \sqrt{x^2 - 1}\right) - x\right) dx = 0,
+    \quad x \ge 1.$$
+
+    If $y(1) = 1$, then the greatest integer less than $y\left(\sqrt{5}\right)$ is ________.'
+  expect:
+    kind: integer
+    value: 3.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_6th_Shift_1 Q25, Differential Equations, official key 3, difficulty Medium.
+- id: mathematics_jee_main_2026_apr_2nd_shift_1_q22
+  subject: mathematics
+  topic: Sequences and Series
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_2nd_Shift_1#Q22
+  prompt: If $\sum_{k=1}^n a_k = 6n^3$, then $\sum_{k=1}^6 \left( \frac{a_{k+1} - a_k}{36} \right)^2$
+    is equal to _______.
+  expect:
+    kind: integer
+    value: 91.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_2nd_Shift_1 Q22, Sequences and Series, official key 91, difficulty Medium.
+- id: mathematics_jee_main_2026_apr_2nd_shift_2_q24
+  subject: mathematics
+  topic: Application of Integrals
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_2nd_Shift_2#Q24
+  prompt: If the area of the region bounded by $16x^2 - 9y^2 = 144$ and $8x - 3y = 24$ is $A$, then $3(A
+    + 6\log_e(3))$ is equal to ________.
+  expect:
+    kind: integer
+    value: 24.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_2nd_Shift_2 Q24, Application of Integrals, official key 24, difficulty Hard.
+- id: mathematics_jee_main_2026_apr_2nd_shift_1_q25
+  subject: mathematics
+  topic: Integrals
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_2nd_Shift_1#Q25
+  prompt: If $$\alpha = \int_{0}^{2\sqrt{3}} \log_2 (x^2+4) \mathrm{d}x + \int_{2}^{4} \sqrt{2^x-4} \mathrm{d}x$$,
+    then $$\alpha^2$$ is equal to _______.
+  expect:
+    kind: integer
+    value: 192.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_2nd_Shift_1 Q25, Integrals, official key 192, difficulty Hard.
+- id: mathematics_jee_main_2026_apr_5th_shift_2_q25
+  subject: mathematics
+  topic: Differential Equations
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_5th_Shift_2#Q25
+  prompt: "Let $y = y(x)$ be the solution of the differential equation  \n$$(\\tan x)^{1/2} dy = \\left(\
+    \ \\sec^3 x - (\\tan x)^{3/2} y \\right) dx, \\quad 0 < x < \\frac{\\pi}{2}, \\quad y\\left(\\frac{\\\
+    pi}{4}\\right) = \\frac{6\\sqrt{2}}{5}$$  \nIf $y\\left(\\frac{\\pi}{3}\\right) = \\frac{4}{5}\\alpha$,\
+    \ then $\\alpha^4$ equals _______."
+  expect:
+    kind: integer
+    value: 48.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_5th_Shift_2 Q25, Differential Equations, official key 48, difficulty Medium.
+- id: chemistry_jee_main_2026_apr_5th_shift_2_q71
+  subject: chemistry
+  topic: Coordination Compounds
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_5th_Shift_2#Q71
+  prompt: The total number of unpaired electrons present in the $\text{d}^3$, $\text{d}^4$ (low spin),
+    $\text{d}^5$ (high spin), $\text{d}^6$ (high spin) and $\text{d}^7$ (low spin) octahedral complex
+    systems is _____.
+  expect:
+    kind: integer
+    value: 15.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_5th_Shift_2 Q71, Coordination Compounds, official key 15, difficulty Medium.
+- id: chemistry_jee_main_2026_apr_6th_shift_2_q73
+  subject: chemistry
+  topic: Redox Reactions
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_6th_Shift_2#Q73
+  prompt: $500\text{ mL}$ of $0.2\text{ M } \text{MnO}_4^-$ solution in basic medium when mixed with $500\text{
+    mL}$ of $1.5\text{ M } \text{KI}$ solution, oxidises iodide ions to liberate molecular iodine. This
+    liberated iodine is then titrated with a standard $x\text{ M}$ thiosulphate solution in presence of
+    starch till the end point. If $300\text{ mL}$ of thiosulphate was consumed, then the value of $x$
+    is ______.
+  expect:
+    kind: integer
+    value: 1.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_6th_Shift_2 Q73, Redox Reactions, official key 1, difficulty Medium.
+- id: chemistry_jee_main_2026_apr_6th_shift_2_q75
+  subject: chemistry
+  topic: Chemical Kinetics
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_6th_Shift_2#Q75
+  prompt: 'Decomposition of a hydrocarbon follows the equation $k = (5.5 \times 10^{11}\text{ s}^{-1})
+    e^{\frac{-28000\text{K}}{T}}$. The activation energy of reaction is ______ $\text{kJ mol}^{-1}$. (Nearest
+    Integer)
+
+
+    Given : $R = 8.3\text{ J K}^{-1} \text{mol}^{-1}$'
+  expect:
+    kind: integer
+    value: 232.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_6th_Shift_2 Q75, Chemical Kinetics, official key 232, difficulty Easy.
+- id: chemistry_jee_main_2026_apr_8th_shift_2_q75
+  subject: chemistry
+  topic: Equilibrium
+  source: jee_main_official
+  source_id: JEE_Main_2026_Apr_8th_Shift_2#Q75
+  prompt: 'Solid carbon, $\text{CaO}$ and $\text{CaCO}_3$ are mixed and allowed to attain equilibrium
+    at $T\text{ K}$.
+
+    $$
+
+    \begin{array}{ll}
+
+    \text{CaCO}_3(\text{s}) \rightleftharpoons \text{CaO}(\text{s}) + \text{CO}_2(\text{g}) & K_{p1} =
+    0.08\text{ atm} \\
+
+    \text{C}(\text{s}) + \text{CO}_2(\text{g}) \rightleftharpoons 2\text{CO}(\text{g}) & K_{p2} = 2\text{
+    atm}
+
+    \end{array}
+
+    $$
+
+    The partial pressure of $\text{CO}$ is _____ $\times 10^{-1}\text{ atm}$.'
+  expect:
+    kind: integer
+    value: 4.0
+    abs_tol: 0.05
+    rel_tol: 0.0
+  notes: JEE_Main_2026_Apr_8th_Shift_2 Q75, Equilibrium, official key 4, difficulty Medium.

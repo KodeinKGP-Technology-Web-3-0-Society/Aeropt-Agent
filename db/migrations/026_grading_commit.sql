@@ -1,7 +1,7 @@
--- 022_grading_commit.sql
+-- 026_grading_commit.sql
 -- One transactional, idempotent progress write for a graded submission.
 --
--- Apply by hand after 021. Safe to re-run. It does not rewrite historical
+-- Apply by hand after the agent schema through 021. Safe to re-run. It does not rewrite historical
 -- proficiency. timed_attempts starts at 0: old averages keep their stored
 -- value, and the next valid time starts a new measured series instead of
 -- pretending every past attempt was timed.

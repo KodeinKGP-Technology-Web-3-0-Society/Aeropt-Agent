@@ -58,6 +58,15 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
+_LATEX_COMMAND = re.compile(r"\\[A-Za-z]+")
+
+
+def _plain(text: str) -> str:
+    """The query without LaTeX command names. Name matching runs on this: "\\text{M}"
+    read as the word "text" and matched a chemistry title ("Reactions with \\text{PCl}_5")."""
+    return _LATEX_COMMAND.sub(" ", text or "")
+
+
 def _lexicon() -> dict[str, Any]:
     """Alias → concept lookups, rebuilt whenever the store reloads its concept cache."""
     generation = store.cache_generation()  # outside our lock: the store never calls back in here
@@ -91,6 +100,10 @@ def _lexicon() -> dict[str, Any]:
             chapters.setdefault(_norm(c["chapter"]), []).append(c["concept_id"])
             if c["unit"]:
                 units.setdefault(_norm(c["unit"]), []).append(c["concept_id"])
+        linked = {
+            row["concept_id"]
+            for row in store.query("select distinct concept_id from public.chunk_concepts")
+        }
         _cache.update(
             {
                 "concepts": concepts,
@@ -98,6 +111,7 @@ def _lexicon() -> dict[str, Any]:
                 "alias_to_id": alias_to_id,
                 "chapters": chapters,
                 "units": units,
+                "linked": linked,
                 "rows": {c["concept_id"]: int(c["vec_row"]) for c in concepts},
                 "vectors": store.concept_vectors(),  # same generation as `rows`
                 "generation": generation,
@@ -145,15 +159,72 @@ class Resolution:
         }
 
 
-def _lexical_hits(query: str, lex: dict[str, Any]) -> list[tuple[str, int]]:
-    """Concepts named outright in the query: own name first, then longest match."""
+def _lexical_hits(query: str, lex: dict[str, Any]) -> list[tuple[str, str]]:
+    """Concepts named outright in the query, with the text that named them: own name
+    first, then longest match."""
     qn = " " + _norm(query) + " "
-    hits: list[tuple[str, int, int]] = []
+    hits: list[tuple[str, int, str]] = []
     for alias, (cid, rank) in lex["alias_to_id"].items():
         if f" {alias} " in qn:
-            hits.append((cid, rank, len(alias)))
-    hits.sort(key=lambda h: (h[1], -h[2]))
-    return [(cid, length) for cid, _rank, length in hits]
+            hits.append((cid, rank, alias))
+    hits.sort(key=lambda h: (h[1], -len(h[2])))
+    return [(cid, alias) for cid, _rank, alias in hits]
+
+
+_PHRASE_STOP = {
+    "give", "me", "a", "an", "the", "on", "of", "for", "to", "in", "and", "or",
+    "question", "questions", "problem", "problems", "please", "some", "jee",
+    "advanced", "mains", "main", "pyq", "past", "year", "previous",
+}
+
+
+def _contained_name(query: str, lex: dict[str, Any], sims: np.ndarray) -> str:
+    """Concept whose name contains a multi-word phrase from the query.
+
+    "circular motion" is not the concept's name — that is "Uniform circular
+    motion" — so an exact alias miss used to fall through to the nearest
+    meaning, which is simple harmonic motion.
+    """
+    words = [w for w in _norm(query).split() if w not in _PHRASE_STOP and len(w) > 1]
+    if len(words) < 2:
+        return ""
+    labels: list[tuple[str, str, int]] = []
+    for c in lex["concepts"]:
+        texts = [c["name"]]
+        try:
+            texts.extend(json.loads(c.get("aliases") or "[]"))
+        except json.JSONDecodeError:
+            pass
+        row = int(c["vec_row"])
+        for text in texts:
+            key = _norm(str(text))
+            if key:
+                labels.append((c["concept_id"], key, row))
+    for length in range(min(len(words), 6), 1, -1):
+        found: list[tuple[int, float, str]] = []
+        for start in range(len(words) - length + 1):
+            phrase = " ".join(words[start : start + length])
+            if len(phrase) < 8:
+                continue
+            pat = re.compile(rf"(^| ){re.escape(phrase)}( |$)")
+            for cid, name, row in labels:
+                if pat.search(name):
+                    # The tightest label wins. "Uniform and Nonuniform Circular
+                    # Motion" beats a long comparison title that merely mentions it.
+                    extra = len(name.split()) - length
+                    # And the phrase must be most of the label's content words.
+                    # "passing through" inside "line passing through two points" names
+                    # a maths topic no more than the physics problem it came from;
+                    # "circular motion" is most of "uniform and nonuniform circular motion".
+                    content = [w for w in name.split() if w not in _PHRASE_STOP]
+                    if len(content) - length > length:
+                        continue
+                    dense = float(sims[row]) if 0 <= row < len(sims) else 0.0
+                    found.append((extra, -dense, cid))
+        if found:
+            found.sort()
+            return found[0][2]
+    return ""
 
 
 def _chapter_hit(query: str, lex: dict[str, Any]) -> tuple[str, list[str]]:
@@ -164,6 +235,17 @@ def _chapter_hit(query: str, lex: dict[str, Any]) -> tuple[str, list[str]]:
             if len(name) >= 5 and f" {name} " in qn and len(name) > best_len:
                 best_name, best_ids, best_len = name, ids, len(name)
     return best_name, best_ids
+
+
+def _prefer_grounded(candidates: list[dict[str, Any]], linked: set[str]) -> dict[str, Any]:
+    """Nearest concept that has passages, when it is nearly as close as an empty one."""
+    best = candidates[0]
+    if best["concept_id"] in linked or not linked:
+        return best
+    alt = next((c for c in candidates if c["concept_id"] in linked), None)
+    if alt is not None and best["score"] - alt["score"] <= 0.08:
+        return alt
+    return best
 
 
 def resolve(
@@ -216,13 +298,17 @@ def resolve(
     # Every named concept is tried in order: "half deflection method galvanometer
     # resistance" names "resistance" first, and rejecting that one-word match must
     # fall through to the galvanometer topic it also names, not to a vote.
-    for cid, _length in _lexical_hits(text, lex):
+    plain = _plain(text)
+    for cid, alias in _lexical_hits(plain, lex):
         concept = lex["by_id"][cid]
         dense = float(sims[lex["rows"][cid]])
         # A one-word name is a trap: "gauss law problems" contains the magnetic-field
         # unit "gauss", and "power dissipated in a resistor" contains mechanics'
-        # "power". Keep a one-word match only while meaning agrees with it.
-        if " " in _norm(concept["name"]) or best_dense(sims) - dense <= 0.05:
+        # "power". Keep a one-word match only while meaning agrees with it. The test is
+        # on the words that matched, not the concept's name: a one-word alias ("range")
+        # of a long-named concept passed it and filed a physics error-analysis problem
+        # under "Functions: domain, codomain and range".
+        if " " in alias or best_dense(sims) - dense <= 0.05:
             res = _from_concept(
                 concept, max(0.6, min(1.0, 0.55 + dense)), "the query names this concept", lex
             )
@@ -231,7 +317,7 @@ def resolve(
             return res
 
     # 2. The query names a chapter or unit: "teach me rotational motion".
-    chapter_name, chapter_ids = _chapter_hit(text, lex)
+    chapter_name, chapter_ids = _chapter_hit(plain, lex)
     if chapter_ids:
         ranked = sorted(chapter_ids, key=lambda cid: lex["by_id"][cid]["ord"])
         best_in_chapter = max(chapter_ids, key=lambda cid: float(sims[lex["rows"][cid]]))
@@ -249,6 +335,23 @@ def resolve(
         res.evidence = dense
         return res
 
+    # 2b. The query uses the topic's words without its full name ("circular motion"
+    # inside "Uniform circular motion"). A name contains that phrase; meaning
+    # search must not override it.
+    contained = _contained_name(plain, lex, sims)
+    if contained:
+        concept = lex["by_id"][contained]
+        dense = float(sims[lex["rows"][contained]])
+        res = _from_concept(
+            concept,
+            max(0.6, min(1.0, 0.55 + max(dense, 0.0))),
+            "the query names this concept",
+            lex,
+        )
+        res.candidates = _promote(candidates, contained, concept, dense)
+        res.evidence = dense
+        return res
+
     # 3. Let the material vote: the chunks that match the query point at the concept
     #    they teach, which resolves phrasings no concept name contains ("block
     #    sliding down a rough incline, angle of repose").
@@ -258,7 +361,9 @@ def resolve(
 
     # 4. Nothing matched the corpus. Fall back to the nearest concept by name only,
     #    and mark it weak — the tutor must not present this as course material.
-    best = candidates[0]
+    #    An unlinked glossary term ("baryon") must not win when a concept that
+    #    actually has passages is almost as close.
+    best = _prefer_grounded(candidates, lex.get("linked") or set())
     if best["score"] < MIN_DENSE:
         return Resolution(
             in_scope=False,

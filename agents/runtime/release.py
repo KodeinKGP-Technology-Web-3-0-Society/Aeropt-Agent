@@ -42,6 +42,15 @@ def release(text: str, ctx: Optional[Any] = None) -> str:
 
         updates = getattr(ctx, "updates", {}) if hasattr(ctx, "updates") else {}
         chunks = list(updates.get("retrieved_chunks") or []) + list(state.get("retrieved_chunks") or [])
+        for passage in state.get("web_passages") or []:
+            if isinstance(passage, dict) and passage.get("url"):
+                chunks.append(
+                    {
+                        "citation": passage.get("url"),
+                        "source_book": passage.get("title") or "official web",
+                        "source_ref": (passage.get("text") or "")[:400],
+                    }
+                )
         history = [t.get("content") or "" for t in (state.get("recent_turns") or [])]
 
     # 1. Inline TikZ compilation

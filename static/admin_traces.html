@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Traces</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#16181d;--mute:#6b7280;--line:#e3e6eb;--accent:#2f5bea;--ok:#15803d;--bad:#b91c1c;--warn:#b45309;
+--llm:#7c3aed;--tool:#0369a1;--handoff:#c2410c;--check:#0f766e;--note:#6b7280;--code:#f1f3f6}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1013;--panel:#171a1f;--ink:#e8eaee;--mute:#8b93a1;--line:#272b33;--accent:#7b9bff;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24;
+--llm:#a78bfa;--tool:#38bdf8;--handoff:#fb923c;--check:#2dd4bf;--note:#8b93a1;--code:#0e1013}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0}
+#stats{display:flex;gap:18px;flex:1;overflow-x:auto;font-size:12px;color:var(--mute)}
+#stats b{display:block;color:var(--ink);font-size:15px;font-weight:600}
+main{flex:1;display:grid;grid-template-columns:380px 1fr;min-height:0}
+aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+#filters{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;border-bottom:1px solid var(--line)}
+#filters input,#filters select,button{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
+#filters .wide{grid-column:1/-1}
+button{cursor:pointer}button:hover{border-color:var(--accent)}
+#list{overflow:auto;flex:1}
+.row{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+.row:hover{background:var(--bg)}.row.sel{background:var(--bg);box-shadow:inset 3px 0 var(--accent)}
+.row .q{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .m{color:var(--mute);font-size:12px;display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+.pill{border-radius:99px;padding:0 7px;font-size:11px;border:1px solid var(--line)}
+.pill.pass{color:var(--ok)}.pill.revised{color:var(--warn)}.pill.bad{color:var(--bad)}
+section#detail{overflow:auto;padding:16px 20px;min-width:0}
+.empty{color:var(--mute);margin:30vh auto;text-align:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.card h3{margin:0 0 6px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
+.msg{white-space:pre-wrap;word-break:break-word}
+.kv{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--mute)}.kv b{color:var(--ink);font-weight:500}
+.tl{position:relative}
+.step{border-left:3px solid var(--note);margin:0 0 8px;background:var(--panel);border-radius:0 8px 8px 0;border:1px solid var(--line);border-left-width:3px}
+.step.llm{border-left-color:var(--llm)}.step.tool{border-left-color:var(--tool)}.step.handoff{border-left-color:var(--handoff)}.step.check{border-left-color:var(--check)}
+.step.err{border-left-color:var(--bad)}
+.step>summary{list-style:none;cursor:pointer;padding:7px 10px;display:flex;gap:10px;align-items:baseline}
+.step>summary::-webkit-details-marker{display:none}
+.kind{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;min-width:52px}
+.llm .kind{color:var(--llm)}.tool .kind{color:var(--tool)}.handoff .kind{color:var(--handoff)}.check .kind{color:var(--check)}.note .kind{color:var(--note)}
+.step .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}.step .sum{color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:12px}
+.step .ms{color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
+.body{padding:2px 12px 10px}
+.body h4{margin:8px 0 3px;font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+pre{margin:0;background:var(--code);border-radius:6px;padding:8px 10px;overflow:auto;max-height:340px;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}
+.convo .t{padding:6px 0;border-bottom:1px solid var(--line)}.convo .t:last-child{border:0}.convo .r{font-size:11px;color:var(--mute);text-transform:uppercase}
+.convo .t.hit{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--line);margin-top:6px}.bar i{display:block}
+#login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center}
+#login[hidden]{display:none}
+#login form{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:10px;display:grid;gap:10px;width:320px}
+#login input{font:inherit;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+.err-text{color:var(--bad);font-size:12px;min-height:16px}
+@media(max-width:800px){main{grid-template-columns:1fr}aside{max-height:45vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <form id="loginForm"><strong>Agent traces</strong>
+    <input id="tok" type="password" placeholder="Admin token" autocomplete="off" required>
+    <div class="err-text" id="loginErr"></div><button>Open</button></form>
+</div>
+<header><h1>Agent traces</h1><div id="stats"></div><button id="refresh">Refresh</button></header>
+<main>
+  <aside>
+    <div id="filters">
+      <input class="wide" id="fq" placeholder="Search student message…">
+      <input id="fuser" placeholder="user id">
+      <input id="fsession" placeholder="session id">
+      <select id="froute"><option value="">any route</option><option>agent_loop</option><option>fast_path</option></select>
+      <select id="fverdict"><option value="">any verdict</option><option>pass</option><option>revised</option><option>skipped</option></select>
+    </div>
+    <div id="list"></div>
+    <button id="more" hidden style="margin:8px">Load older</button>
+  </aside>
+  <section id="detail"><div class="empty">Pick a turn on the left to see what the agent did.</div></section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let token = sessionStorage.getItem('adminToken') || '';
+let cursor = null, selected = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const json = v => esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2));
+const ago = iso => { const s = (Date.now() - new Date(iso)) / 1000;
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s/60)+'m ago' : s < 86400 ? Math.floor(s/3600)+'h ago' : new Date(iso).toLocaleDateString(); };
+const ms = n => n == null ? '–' : n >= 1000 ? (n/1000).toFixed(1)+'s' : n+'ms';
+
+async function api(path) {
+  const r = await fetch(path, {headers: {'X-Admin-Token': token}});
+  if (r.status === 401) { sessionStorage.removeItem('adminToken'); showLogin('Wrong token'); throw new Error('auth'); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+function showLogin(msg) { $('#login').hidden = false; $('#loginErr').textContent = msg || ''; }
+$('#loginForm').onsubmit = e => { e.preventDefault(); token = $('#tok').value.trim();
+  sessionStorage.setItem('adminToken', token); $('#login').hidden = true; boot(); };
+
+async function loadStats() {
+  const o = await api('/api/v1/admin/overview');
+  const mix = (m) => Object.entries(m).map(([k,v]) => `${esc(k)} ${v}`).join(' · ');
+  $('#stats').innerHTML = [
+    ['Turns (last ' + o.window + ')', o.window], ['p50 latency', ms(o.latency_p50_ms)], ['p95 latency', ms(o.latency_p95_ms)],
+    ['Tools / turn', o.avg_tool_calls],
+    ['LLM calls / turn*', o.avg_llm_calls], ['Tokens in / out*', o.avg_input_tokens + ' / ' + o.avg_output_tokens],
+    ['Checker', mix(o.verdicts)], ['Stops*', mix(o.stop_reasons)],
+  ].map(([k, v]) => `<div>${esc(k)}<b>${typeof v === 'string' ? v : esc(v)}</b></div>`).join('')
+    + `<div title="Turns recorded before token telemetry existed are left out of starred numbers">* from ${o.with_telemetry} turns with telemetry</div>`;
+}
+
+function params(extra) {
+  const p = new URLSearchParams({limit: 40, ...extra});
+  for (const [k, id] of [['q','fq'],['user_id','fuser'],['session_id','fsession'],['route','froute'],['verdict','fverdict']]) {
+    const v = $('#' + id).value.trim(); if (v) p.set(k, v);
+  }
+  return p;
+}
+async function loadList(append) {
+  const d = await api('/api/v1/admin/traces?' + params(append && cursor ? {before: cursor} : {}));
+  if (!append) $('#list').innerHTML = '';
+  if (!d.traces.length && !append) $('#list').innerHTML = '<div class="empty" style="margin:30px">No traces match.</div>';
+  for (const t of d.traces) {
+    const m = t.metrics || {};
+    const el = document.createElement('div');
+    el.className = 'row' + (t.trace_id === selected ? ' sel' : '');
+    el.dataset.id = t.trace_id;
+    const v = t.checker_verdict || '';
+    el.innerHTML = `<div class="q">${esc(m.query || '(no message recorded)')}</div>
+      <div class="m"><span>${ago(t.created_at)}</span><span>${ms(t.latency_ms)}</span><span>${t.tool_calls} tools</span>
+      ${v ? `<span class="pill ${/pass/.test(v) ? 'pass' : /revis/.test(v) ? 'revised' : ''}">${esc(v)}</span>` : ''}
+      ${m.stop_reason && m.stop_reason !== 'answered' ? `<span class="pill bad">${esc(m.stop_reason)}</span>` : ''}
+      <span>${esc(String(t.user_id).slice(0, 8))}</span></div>`;
+    el.onclick = () => openTrace(t.trace_id);
+    $('#list').appendChild(el);
+  }
+  cursor = d.next_before; $('#more').hidden = !cursor;
+}
+
+function stepSummary(s) {
+  if (s.kind === 'llm') return s.text ? s.text.replace(/\s+/g, ' ') : (s.result || '');
+  if (s.kind === 'tool') return s.args ? JSON.stringify(s.args) : '';
+  return typeof s.result === 'string' ? s.result : s.result ? JSON.stringify(s.result) : '';
+}
+function stepHtml(s) {
+  const body = [];
+  if (s.name.length > 80) body.push(`<h4>Full text</h4><pre>${json(s.name)}</pre>`);
+  if (s.text) body.push(`<h4>${s.kind === 'llm' ? 'Model wrote' : 'Text'}</h4><pre>${json(s.text)}</pre>`);
+  if (s.args) body.push(`<h4>Arguments</h4><pre>${json(s.args)}</pre>`);
+  if (s.result !== undefined) body.push(`<h4>${s.kind === 'tool' ? 'Returned' : 'Result'}</h4><pre>${json(s.result)}</pre>`);
+  if (s.error) body.push(`<h4>Error</h4><pre>${json(s.error)}</pre>`);
+  return `<details class="step ${s.kind} ${s.ok === false ? 'err' : ''}" style="margin-left:${(s.depth || 0) * 22}px">
+    <summary><span class="kind">${esc(s.kind)}</span><span class="name">${esc(s.name.length > 80 ? s.name.slice(0, 80) + '…' : s.name)}</span>
+    <span class="sum">${esc(stepSummary(s)).slice(0, 220)}</span><span class="ms">${ms(s.duration_ms)}</span></summary>
+    <div class="body">${body.join('') || '<span class="sum">nothing recorded</span>'}</div></details>`;
+}
+
+async function openTrace(id) {
+  selected = id;
+  document.querySelectorAll('.row').forEach(r => r.classList.toggle('sel', r.dataset.id === id));
+  $('#detail').innerHTML = '<div class="empty">Loading…</div>';
+  let d; try { d = await api('/api/v1/admin/traces/' + encodeURIComponent(id)); } catch (e) { $('#detail').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const t = d.trace, m = t.metrics || {}, steps = t.steps || [];
+  const total = steps.reduce((a, s) => a + (s.duration_ms || 0), 0) || 1;
+  const colors = {llm:'var(--llm)',tool:'var(--tool)',handoff:'var(--handoff)',check:'var(--check)',note:'var(--note)'};
+  const bar = steps.filter(s => s.duration_ms).map(s => `<i title="${esc(s.kind + ':' + s.name)} ${ms(s.duration_ms)}" style="width:${s.duration_ms / total * 100}%;background:${colors[s.kind] || 'gray'}"></i>`).join('');
+  const convo = (d.conversation || []).map(c => `<div class="t ${c.this_turn ? 'hit' : ''}"><div class="r">${esc(c.role)}${c.agent_used ? ' · ' + esc(c.agent_used) : ''}</div><div class="msg">${esc(c.content)}</div></div>`).join('');
+  $('#detail').innerHTML = `
+    <div class="card"><h3>Student message${m.query_recovered ? ' <span class="pill" title="Trace predates query capture; matched from the transcript by time">from transcript</span>' : ''}</h3><div class="msg">${esc(m.query || '(not recorded — turn predates query capture)')}</div></div>
+    <div class="card"><h3>Turn</h3><div class="kv">
+      <span>when <b>${new Date(t.created_at).toLocaleString()}</b></span><span>latency <b>${ms(t.latency_ms)}</b></span>
+      <span>model <b>${esc(t.model_used || '–')}</b></span><span>route <b>${esc(t.route)}</b></span>
+      <span>checker <b>${esc(t.checker_verdict || '–')}</b></span><span>stop <b>${esc(m.stop_reason || '–')}</b></span>
+      <span>LLM calls <b>${m.llm_calls ?? '–'}</b></span><span>tokens in/out <b>${m.input_tokens ?? '–'} / ${m.output_tokens ?? '–'}</b></span>
+      <span>cached <b>${m.cached_tokens ?? '–'}</b></span><span>prompt <b>${esc(m.prompt_version || '–')}</b></span>
+      <span>user <b>${esc(t.user_id)}</b></span><span>session <b>${esc(t.session_id)}</b></span></div>
+      <div class="bar">${bar}</div></div>
+    <div class="card"><h3>What the agent did (${steps.length} steps — click to expand)</h3><div class="tl">${steps.map(stepHtml).join('') || '<span class="sum">No steps recorded.</span>'}</div></div>
+    <div class="card"><h3>Reply the student saw</h3><div class="msg">${d.reply ? esc(d.reply) : '<span class="sum">No assistant reply was saved for this turn.</span>'}</div></div>
+    <details class="card"><summary><h3 style="display:inline">Whole conversation (${(d.conversation || []).length} turns)</h3></summary><div class="convo">${convo || '–'}</div></details>
+    <details class="card"><summary><h3 style="display:inline">Raw trace JSON</h3></summary><pre>${json(t)}</pre></details>`;
+}
+
+let debounce; for (const id of ['fq','fuser','fsession']) $('#' + id).oninput = () => { clearTimeout(debounce); debounce = setTimeout(() => loadList(false), 350); };
+for (const id of ['froute','fverdict']) $('#' + id).onchange = () => loadList(false);
+$('#more').onclick = () => loadList(true);
+$('#refresh').onclick = () => { loadStats(); loadList(false); };
+
+async function boot() { try { await Promise.all([loadStats(), loadList(false)]); } catch (e) { if (e.message !== 'auth') $('#list').innerHTML = `<div class="empty" style="margin:30px">${esc(e.message)}</div>`; } }
+token ? boot() : showLogin();
+</script>
+</body>
+</html>

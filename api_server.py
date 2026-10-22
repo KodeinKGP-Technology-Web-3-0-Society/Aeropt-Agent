@@ -65,7 +65,7 @@ import config  # noqa: F401
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, Header, HTTPException, File, Form, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -76,6 +76,8 @@ from graph.workflow import tutor_graph
 from models.state import TutorState
 
 # ── Session-management helpers — imported from services.turn_service ───────────
+from services import admin_traces
+from services import capacity
 from services.auth import AgentAuthMiddleware, check_production_config
 from services.classroom_evidence import post_turn_evidence, resolve_learner_token
 from services.turn_service import (
@@ -92,8 +94,10 @@ from onboarding_diagnostic import grade_placement_answer, start_placement_diagno
 from sandbox_execute import prepare_sandbox_state_overrides
 from utils.presentation import build_chat_payload
 
+_log_level_name = os.getenv("LOG_LEVEL", os.getenv("AEROPT_LOG_LEVEL", "INFO")).upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
 logging.basicConfig(
-    level=logging.WARNING,
+    level=_log_level,
     format="[%(levelname)s %(name)s] %(message)s",
 )
 
@@ -112,6 +116,8 @@ async def _lifespan(_app: FastAPI):
     try:
         contract = retrieval_store.verify_embedding_contract()
         result = retrieval_service.warm()
+        # Off the startup path: a few connects to the hosted pooler take seconds.
+        threading.Thread(target=retrieval_store.prewarm, name="retrieval-prewarm", daemon=True).start()
         log.warning("retrieval database: %s %s", contract, retrieval_service.status() if result.get("warmed") else result)
     except embedder.EmbeddingMismatch:
         raise  # vectors from another model rank noise; never serve on them
@@ -145,6 +151,8 @@ check_production_config()
 
 app = FastAPI(title="JEE Tutor Agent API", version="1.0.0", lifespan=_lifespan)
 
+app.include_router(admin_traces.router)
+
 # Added before CORS so CORS wraps it: a 401/429 must still carry CORS headers,
 # or the browser hides the status and the frontend cannot refresh the token.
 app.add_middleware(AgentAuthMiddleware)
@@ -169,6 +177,26 @@ app.add_middleware(
 def health() -> Dict[str, str]:
     """Liveness probe for local CI/CD. Does not touch Neo4j or Supabase."""
     return {"status": "ok", "service": "aeropt-agent"}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness probe: 503 when this instance cannot usefully take a turn.
+
+    /health says the process is up. This says it can serve: at least one LLM key
+    is still live and the turn gate is not saturated.
+    """
+    from utils.groq_pool import get_pool
+
+    try:
+        live_keys = get_pool().live_count
+    except Exception:  # noqa: BLE001
+        live_keys = 0
+    gate = capacity.gate.stats()
+    saturated = gate["active"] >= gate["max_active"] and capacity.gate.waiting >= capacity.gate.max_waiting
+    ok = live_keys > 0 and not saturated
+    body = {"status": "ok" if ok else "unavailable", "live_llm_keys": live_keys, "turns": gate}
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -837,6 +865,8 @@ async def _sse_frames(queue: "asyncio.Queue", keepalive_s: float = SSE_KEEPALIVE
             yield f"event: token\ndata: {json.dumps(msg['data'])}\n\n"
         elif msg["type"] == "status":
             yield f"event: status\ndata: {json.dumps(msg['data'])}\n\n"
+        elif msg["type"] == "replace":
+            yield f"event: replace\ndata: {json.dumps(msg['data'])}\n\n"
         elif msg["type"] == "result":
             yield f"event: result\ndata: {msg['data']}\n\n"
             return
@@ -850,6 +880,12 @@ async def chat_message(
     """Process one student message through the LangGraph pipeline with SSE streaming."""
     user_id = req.user_id
     learner_token = resolve_learner_token(req.classroom_token, authorization)
+    if not await capacity.gate.acquire():
+        raise HTTPException(
+            status_code=503,
+            detail="The tutor is busy right now. Please try again in a moment.",
+            headers={"Retry-After": str(capacity.gate.retry_after_s)},
+        )
     raw_input = req.query.strip()
     create_reason = "roadmap" if req.roadmap_node_id else "free"
     # _resolve_session and get_carry are DB calls but short, running in main thread for simplicity before stream starts
@@ -880,6 +916,7 @@ async def chat_message(
             clear_stale_practice_carry(carry)
             save_carry(session_id, carry)
     except Exception as exc:
+        capacity.gate.release()
         raise HTTPException(status_code=500, detail=str(exc))
 
     queue = asyncio.Queue()
@@ -890,10 +927,15 @@ async def chat_message(
         streamed_parts.append(token)
         loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "data": token})
 
+    def sync_replace(text: str):
+        streamed_parts[:] = [text]
+        loop.call_soon_threadsafe(queue.put_nowait, {"type": "replace", "data": text})
+
     def sync_worker():
         from services import progress
-        from utils.stream import stream_callback_var
+        from utils.stream import stream_callback_var, stream_replace_var
         stream_callback_var.set(sync_cb)
+        stream_replace_var.set(sync_replace)
         # Tool and stage events ("Reading your course material…") as SSE `status`
         # frames, the same feed the Study Room shows while the tutor works.
         progress.install(
@@ -1019,7 +1061,13 @@ async def chat_message(
             err = ChatMessageResponse(session_id=session_id, error=_student_facing_error(str(exc)))
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "result", "data": err.model_dump_json()})
 
-    asyncio.create_task(asyncio.to_thread(sync_worker))
+    async def _run_turn() -> None:
+        try:
+            await capacity.gate.run(sync_worker)
+        finally:
+            capacity.gate.release()
+
+    asyncio.create_task(_run_turn())
 
     return StreamingResponse(_sse_frames(queue), media_type="text/event-stream", headers=SSE_HEADERS)
 
@@ -1112,6 +1160,25 @@ def get_concept_proficiency(concept_id: str, user_id: str) -> ConceptProficiency
         cold_start=bool(row.get("is_cold_start")) or int(row.get("attempts") or 0) == 0,
         stored_score=raw,
     )
+
+
+@app.get("/api/v1/concepts/{concept_id}/pyqs")
+def concept_pyqs(concept_id: str) -> Dict[str, Any]:
+    """JEE Advanced questions already linked to this concept. Empty when none are."""
+    from retrieval.store import RetrievalUnavailable
+    from services.concept_pyqs import list_concept_pyqs
+
+    concept_id = concept_id.strip()
+    if not concept_id:
+        raise HTTPException(status_code=400, detail="concept_id required")
+    try:
+        items = list_concept_pyqs(concept_id)
+    except RetrievalUnavailable:
+        raise HTTPException(status_code=503, detail="Retrieval is unavailable")
+    except Exception:
+        logging.exception("concept pyqs failed for %s", concept_id)
+        raise HTTPException(status_code=503, detail="Retrieval is unavailable")
+    return {"concept_id": concept_id, "items": items}
 
 
 @app.post("/api/v1/chat/sessions", response_model=CreateSessionResponse)

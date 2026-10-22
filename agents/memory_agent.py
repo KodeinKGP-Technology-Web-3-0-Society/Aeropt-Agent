@@ -745,7 +745,7 @@ def _skip_replies() -> Tuple[str, ...]:
                     parsed = ast.literal_eval(value)
                     if isinstance(parsed, str):
                         found[target.id] = parsed
-        _SKIP_REPLIES = (found["_PHYSICS_ONLY_REPLY"], found["_FALLBACK_REPLY"])
+        _SKIP_REPLIES = tuple(found.values())
     except Exception:
         logger.warning("could not read tutor skip replies", exc_info=True)
         _SKIP_REPLIES = ()

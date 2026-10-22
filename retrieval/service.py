@@ -21,6 +21,7 @@ Nothing here calls a network service. A cold call is ~15 ms, a warm one ~5 ms.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Sequence
 
@@ -69,7 +70,7 @@ _NOTE_NEIGHBOURS = (
     "concepts in the same chapter. Tell the student that is what you are doing."
 )
 # Content-level caveats: true of the material itself, whatever the student asked.
-_OPTICS_CHAPTER = "Geometric Optics and Image Formation"
+_OPTICS_CHAPTER = "Optics"  # the JEE unit; ray and wave optics are one chapter since the merge
 _NOTE_OPTICS_CONVENTION = (
     "Sign convention: the OpenStax passages use the real-is-positive convention "
     "(1/d_o + 1/d_i = 1/f for mirrors and lenses, concave mirror f > 0). JEE uses the "
@@ -199,6 +200,16 @@ def _confidence(strength: str, chunks: list[dict[str, Any]]) -> str:
     return "ok" if strength == "strong" else "low"
 
 
+def _exam_in_query(query: str) -> str:
+    """The exam the student named in this message, if they named one."""
+    text = (query or "").lower()
+    if re.search(r"\bjee\s+advanced\b|\bjee\s+adv\b", text):
+        return "JEE_ADVANCED"
+    if re.search(r"\bjee\s+mains?\b", text):
+        return "JEE_MAINS"
+    return ""
+
+
 def retrieve(
     query: str,
     *,
@@ -323,11 +334,16 @@ def retrieve(
             pack["took_ms"] = round((time.perf_counter() - started) * 1000, 2)
             return pack
 
+    asked_exam = _exam_in_query(query)
+    exam = asked_exam or (target_exam or "")
+    # "a JEE Advanced question" means an official paper, not a coaching sheet and
+    # not a textbook exercise standing in for one.
+    prefer_official = requested_type == "pyq" and exam.upper() == "JEE_ADVANCED"
     is_question = requested_type in {"practice", "pyq", "example", "question"}
     if difficulty_target is None and is_question:
         # The learner's own proficiency target wins when the planner supplied one
         # (bridge passes it through); this is the fallback when nothing else knows.
-        difficulty_target = EXAM_DIFFICULTY_TARGET.get((target_exam or "").upper())
+        difficulty_target = EXAM_DIFFICULTY_TARGET.get(exam.upper())
     if exclude_seen is None:
         exclude_seen = is_question or bool(decision.notes.get("novelty_required"))
 
@@ -348,12 +364,13 @@ def retrieve(
         content_type=requested_type,
         chapter_concepts=resolution.chapter_concepts,
         prereq_concepts=[p["concept_id"] for p in prereqs],
-        target_exam=target_exam,
+        target_exam=exam,
         top_k=top_k,
         exclude_ids=exclude_ids,
         exclude_fingerprints=exclude_fps,
         difficulty_target=difficulty_target,
         in_syllabus_only=not allow_out_of_syllabus or resolution.in_syllabus,
+        prefer_official=prefer_official,
     )
 
     exhausted = False
@@ -367,10 +384,11 @@ def retrieve(
             content_type=requested_type,
             chapter_concepts=resolution.chapter_concepts,
             prereq_concepts=[p["concept_id"] for p in prereqs],
-            target_exam=target_exam,
+            target_exam=exam,
             top_k=top_k,
             difficulty_target=difficulty_target,
             in_syllabus_only=not allow_out_of_syllabus or resolution.in_syllabus,
+            prefer_official=prefer_official,
         )
         seen_at = store.served_ids(user_id) if user_id else {}
         result.hits.sort(key=lambda h: seen_at.get(h.content_id, 0.0))
@@ -413,7 +431,7 @@ def retrieve(
             },
             "prerequisites": prereqs[:6],
             "difficulty_target": difficulty_target,
-            "exam_scope": (target_exam or "").upper() or "any",
+            "exam_scope": exam.upper() or "any",
             "fts_terms": result.fts_terms,
         }
     )

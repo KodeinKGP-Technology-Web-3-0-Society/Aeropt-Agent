@@ -5,12 +5,6 @@
     "role": "assistant",
     "tool_calls": null
   },
-  "2ea5b5539bc204a9f6d30bdcebd7ccf24c56842da17cb3ca2473ed4d057e12f2": {
-    "content": "Here is a practice problem on rolling motion:\n\n> **Note:** JEE Advanced-level practice problem.\n\nA solid sphere of mass $M$ and radius $R$ rolls down an incline of angle $\\theta$ without slipping. Find its acceleration.",
-    "model": "gemini-3-flash-preview",
-    "role": "assistant",
-    "tool_calls": null
-  },
   "8e1263a37362cd8550b6d352a1a0b7a5c7f073f24518a80cf253029365e88185": {
     "content": "Here is a practice problem on rolling motion:\n\n> **Note:** JEE Advanced-level practice problem.\n\nA solid sphere of mass $M$ and radius $R$ rolls down an incline of angle $\\theta$ without slipping. Find its acceleration.",
     "model": "gemini-3-flash-preview",

@@ -38,14 +38,32 @@ logger = logging.getLogger("aeropt.retrieval.store")
 CACHE_CHECK_SECONDS = 300
 LEDGER_REFRESH_SECONDS = 120
 
+# Difficulty as the tutor should see it. The stored 1-5 labels are uncalibrated: 739 Advanced
+# multi-correct / numeric / comprehension questions are labelled 1-2, and Chemistry and Maths
+# never exceed 3. Official JEE Advanced questions are Advanced by definition, so they are floored
+# at 4 (5 for the multi-answer and comprehension formats); JEE Main papers at 3. Everything else
+# keeps its stored label. Computed per query, so no data changes and it is reversible.
+EFFECTIVE_DIFFICULTY_SQL = """(case
+    when c.target_exam = 'Jee Advanced' and c.content_type = 'PYQ' then greatest(coalesce(c.difficulty, 3),
+        case when c.question_type in ('MULTI_CORRECT', 'multiple_correct', 'COMPREHENSION', 'comprehension', 'matching') then 5 else 4 end)
+    when c.target_exam = 'Jee main' and c.content_type = 'PYQ' then greatest(coalesce(c.difficulty, 2), 3)
+    else c.difficulty end)"""
+
+# A question that points at a figure it does not have cannot be answered, and the options of
+# some (e.g. "the correct MO diagram") are the figure. 265 Advanced questions are in this state.
+# They stay in the corpus; they are not served until their figure is extracted.
+FIGURE_READY_SQL = """(not coalesce(c.is_question, false)
+    or coalesce(c.structured->>'figure', '') <> ''
+    or c.core_text !~* '(figure|diagram|graph|shown below|as shown|circuit shown|refer to)')"""
+
 # The content row as the pipeline reads it. `c` is public.content.
-CHUNK_COLUMNS = """
+CHUNK_COLUMNS = f"""
     c.content_id, c.content_type, c.subject, c.chapter_id, c.chapter, c.unit,
     c.primary_concept_id AS concept_id, c.secondary_concepts AS secondary,
-    c.source_book, c.source_ref, c.license, c.difficulty, c.question_type, c.target_exam,
+    c.source_book, c.source_ref, c.license, {EFFECTIVE_DIFFICULTY_SQL} AS difficulty, c.question_type, c.target_exam,
     coalesce(c.in_syllabus, true)::int AS in_syllabus, coalesce(c.has_solution, false)::int AS has_solution,
     coalesce(c.is_question, false)::int AS is_question, c.heading, c.core_text,
-    coalesce(c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
+    coalesce((select s.worked_solution from public.solutions s where s.question_id = c.content_id), c.solution, '') AS solution, c.fingerprint, c.token_len, c.structured::text AS structured
 """
 
 
@@ -79,8 +97,44 @@ def _get_pool():
                     raise RetrievalUnavailable("RETRIEVAL_DATABASE_URL is not set")
                 from psycopg2.pool import ThreadedConnectionPool
 
-                _pool = ThreadedConnectionPool(1, int(os.getenv("RETRIEVAL_DB_POOL", "8")), url, connect_timeout=10)
+                # Keep the socket alive. A dropped connection to the hosted database
+                # is what turns a 1–2 s query into a multi-ten-second reconnect.
+                size = int(os.getenv("RETRIEVAL_DB_POOL", "8"))
+                pool = ThreadedConnectionPool(
+                    1,
+                    size,
+                    url,
+                    connect_timeout=8,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=3,
+                )
+                # psycopg2 closes every connection handed back above `minconn`. With
+                # minconn=1, any two overlapping requests meant the second paid a fresh
+                # TLS connect (1–2 s to the hosted pooler) and then threw it away.
+                # Raising minconn after construction keeps up to `size` idle
+                # connections without opening them all at startup.
+                pool.minconn = size
+                _pool = pool
     return _pool
+
+
+def prewarm(count: int = 4) -> int:
+    """Open `count` pooled connections now, so the first requests to overlap do not
+    each pay a fresh connect. psycopg2 connects while holding the pool lock, which
+    also stalls every other thread waiting for a connection. Returns how many opened."""
+    pool = _get_pool()
+    held = []
+    try:
+        for _ in range(max(0, min(count, pool.maxconn))):
+            held.append(pool.getconn())
+    except Exception:  # noqa: BLE001
+        logger.warning("retrieval pool prewarm stopped after %d connections", len(held))
+    finally:
+        for conn in held:
+            pool.putconn(conn)
+    return len(held)
 
 
 @contextmanager
@@ -338,9 +392,10 @@ def questions_in_area(
         f"""select {CHUNK_COLUMNS} from public.content c
             where c.{column} = %(v)s and c.content_type = any(%(types)s)
               and c.has_solution and coalesce(c.in_syllabus, true)
+              and {FIGURE_READY_SQL}
               and not (c.content_id = any(%(ex)s))
             order by (lower(c.core_text) like any(%(kw)s)) desc,
-                     abs(coalesce(c.difficulty, 2) - %(d)s), c.content_id
+                     abs(coalesce({EFFECTIVE_DIFFICULTY_SQL}, 2) - %(d)s), c.content_id
             limit %(n)s""",
         {"v": value, "types": list(types), "ex": list(exclude_ids), "kw": patterns or ["\x00"],
          "d": difficulty, "n": limit},
@@ -371,6 +426,58 @@ def unseen_question_count(
         return 0, 0
     served = set(served_ids(user_id)) if user_id else set()
     return sum(1 for cid in ids if cid not in served), len(ids)
+
+
+# Official JEE Advanced papers and the verified JEE-Bench copies of them.
+# Coaching sheets are labelled PYQ in the corpus but are not past papers.
+ADVANCED_PYQ_LICENSES = (
+    "official exam paper (jeeadv.ac.in) with official final answer key",
+    "past exam paper",
+    "JEE Official Examination Questions (Joint Apex Board / NTA); digitized practice set",
+)
+
+
+def linked_pyq_rows(concept_id: str, limit: int = 40) -> list[dict[str, Any]]:
+    """PYQ chunks linked to this concept. Official papers first, then primary links.
+
+    The limit is applied after that order. Sorting by content_id first used to fill
+    the cap with digitized-set rows (`jeechallenger_…`) and drop `pyq_…` papers.
+    """
+    if not concept_id:
+        return []
+    return query(
+        """
+        select content_id, content_type, heading, source_book, source_ref,
+               license, target_exam, core_text, structured, role_rank
+        from (
+            select distinct on (c.content_id)
+                   c.content_id, c.content_type, c.heading, c.source_book, c.source_ref,
+                   c.license, c.target_exam, c.core_text, c.structured::text as structured,
+                   case when cc.role = 'primary' then 0 else 1 end as role_rank,
+                   case
+                     when c.license like 'official exam paper%%' then 0
+                     when c.license = 'past exam paper' then 1
+                     else 2
+                   end as license_rank
+            from public.chunk_concepts cc
+            join public.content c on c.content_id = cc.content_id
+            where cc.concept_id = %(cid)s
+              and c.content_type = 'PYQ'
+              and c.license = any(%(licenses)s)
+              and c.target_exam = %(exam)s
+              and """ + FIGURE_READY_SQL + """
+            order by c.content_id, role_rank
+        ) ranked
+        order by role_rank, license_rank, content_id
+        limit %(n)s
+        """,
+        {
+            "cid": concept_id,
+            "licenses": list(ADVANCED_PYQ_LICENSES),
+            "exam": "Jee Advanced",
+            "n": max(1, int(limit)),
+        },
+    )
 
 
 # ── ledger (novelty) — user-data Supabase, cached per learner ─────────────────

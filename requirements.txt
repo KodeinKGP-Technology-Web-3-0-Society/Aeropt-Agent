@@ -17,3 +17,4 @@ openai>=1.40
 PyYAML>=6.0
 sarvamai>=0.1.36
 python-multipart>=0.0.9
+tzdata>=2024.1

@@ -3,8 +3,9 @@
 Everything the tutor knows, derived from sources by a script, with a retrieval path
 that answers in single-digit milliseconds and refuses to invent grounding.
 
-Selected by `RETRIEVAL_BACKEND=local` in `.env.local`. The deployed service does not
-set it, so Neo4j Aura + Gemini embeddings remain exactly as they were.
+The corpus lives in Supabase Postgres (`RETRIEVAL_DATABASE_URL`, pgvector + full text); Neo4j
+Aura and Gemini embeddings are gone. The current schema and counts are under
+"Postgres + pgvector corpus" below; the sections before it are the design history.
 
 ```bash
 make index            # derive syllabus + corpus, embed, write the index (~4 s)
@@ -317,8 +318,22 @@ derives syllabus → items → concept mapping → embeddings, without any inter
 - `RETRIEVAL_DATABASE_URL=postgresql://… make push`. Rows are written only when their content hash changes,
   so a re-push of an unchanged corpus writes 0 rows. `make push-dry` diffs and rolls back. `PRUNE=1` deletes
   rows of the pushed subjects that the build no longer produces. Non-localhost URLs require `ALLOW_HOSTED=1`.
-- Subjects: Physics (12,933 items) and Chemistry (NCERT Class XI & XII, 19 chapters, 405 concepts, 1,941 items).
-  Concepts are derived strictly per chapter, ensuring 0 cross-subject links.
+- Corpus (deployed, 2026-10-22): 12,074 items, 6,959 questions (4,845 with a worked solution or stored
+  answer), 1,878 concepts, 64 chapters. Physics 20 / Chemistry 28 / Mathematics 16 chapters: every chapter
+  is a JEE unit (`syllabus.merge_to_jee_chapters` folds the source books' chapters into them at build time,
+  after concept mapping, so an item is still matched inside its book chapter). No OpenStax University Physics.
+- Integrity: `023_retrieval_integrity.sql` adds foreign keys (deferred, validated at the end of every push),
+  CHECKs on subject / content_type / question_type / target_exam, and drops the `Physics` default on subject.
+  A push that would leave a dangling link or a bad value fails instead of writing it.
+- Readable layout: `024_retrieval_readable.sql` drops the spreadsheet-era columns and adds descriptions plus
+  the views `theory`, `concept_map`, `chapter_summary`. `025_sources_solutions.sql` adds the tables
+  `sources` (one row per book / paper, with `family` and `kind`) and `solutions` (one row per question with
+  a worked solution or answer), `content.source_id`, and the `questions` view. `content.solution` is a
+  deprecated copy kept for one release; reads prefer `solutions`.
+- Prerequisite edges are kept only between concepts of the same subject whose embeddings agree
+  (cosine ≥ 0.45, `corpus.refine_edges`), and cross-chapter only toward an earlier chapter.
+- `make retrieval-eval` (no LLM, no tokens) scores what retrieval returns for the 33 correctness problems:
+  right subject, right chapter, chunk precision, and how many off-topic packs were labelled `ok`.
 - Full pipeline in Postgres: `gate` → `resolver` (dense cosine similarity against `concepts.embedding`) →
   `search` (pgvector cosine distance for dense scoring + `ts_rank_cd` over `content.fts` for lexical scoring,
   fused via Reciprocal Rank Fusion) → novelty check (`served_items` in user DB) → MMR re-ranking.

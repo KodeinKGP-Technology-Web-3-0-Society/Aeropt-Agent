@@ -60,6 +60,8 @@ class Chapter:
     order: int
     module_ids: list[str] = field(default_factory=list)
     subject: str = "Physics"
+    # Titles of the source chapters merged into this one ("Linear Programming" inside Algebra).
+    former_titles: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -138,7 +140,9 @@ def _jee_scope(chapter_title: str, unit_title: str) -> tuple[str, bool]:
     (it put both thermodynamics chapters under Laws of Motion). Longest alias wins,
     so a specific chapter name beats a one-word alias.
     """
-    index = alias_index()
+    # Physics aliases only: across all subjects "Vectors" is the maths unit and
+    # "Atomic Structure" the chemistry one.
+    index = alias_index("Physics")
     key_tokens = norm(chapter_title).split()
     if not key_tokens:
         return "", False
@@ -275,6 +279,27 @@ def build_chapters() -> list[Chapter]:
                 subject="Mathematics",
             )
         )
+    # On the JEE Advanced syllabus, and no longer a chapter of the rationalised NCERT books.
+    for chapter_id, title, unit in (
+        ("solid_state", "Solid State", "Solid State"),
+        ("surface_chemistry", "Surface Chemistry", "Surface Chemistry"),
+        ("hydrogen", "Hydrogen", "Hydrogen"),
+        ("s_block_elements", "s-Block Elements", "s-Block Elements"),
+        ("p_block_elements", "p-Block Elements", "P-Block Elements"),
+        ("isolation_of_metals", "Isolation of Metals", "Isolation of Metals"),
+        ("qualitative_analysis", "Qualitative Analysis", "Principles Related to Practical Chemistry"),
+        ("environmental_chemistry", "Environmental Chemistry", "Environmental Chemistry"),
+        ("polymers", "Polymers", "Polymers"),
+        ("chemistry_in_everyday_life", "Chemistry in Everyday Life", "Chemistry in Everyday Life"),
+    ):
+        order += 1
+        chapters.append(
+            Chapter(
+                chapter_id=chapter_id, title=title, volume="JEE Advanced syllabus",
+                unit=unit, jee_unit=unit, in_syllabus=True, order=order,
+                module_ids=[], subject="Chemistry",
+            )
+        )
     return chapters
 
 
@@ -397,13 +422,92 @@ def build() -> dict[str, Any]:
     known = {ch.chapter_id for ch in chapters}  # the NCERT catalog's chapters are already listed above
     chapters += [ch for ch in other["chapters"] if ch.chapter_id not in known]
     concepts += other["concepts"]
+    covered = {c.chapter_id for c in concepts}
+    for ch in chapters:
+        if ch.subject != "Chemistry" or ch.chapter_id in covered:
+            continue
+        concepts.append(Concept(
+            concept_id=f"chem_{ch.chapter_id}", name=ch.title, definition=ch.title,
+            chapter_id=ch.chapter_id, chapter=ch.title, unit=ch.jee_unit or ch.unit,
+            in_syllabus=True, module_id="", order=ch.order, source="chapter", subject="Chemistry",
+        ))
+        covered.add(ch.chapter_id)
     requires += other.get("requires", [])
+    # NCERT reuses chapter titles across classes ("Probability" in XI and XII). Two chapters
+    # a student cannot tell apart are named by class; concepts carry the title, so follow it.
+    seen: dict[tuple[str, str], int] = {}
+    for ch in chapters:
+        seen[(ch.subject, norm(ch.title))] = seen.get((ch.subject, norm(ch.title)), 0) + 1
+    renamed: dict[str, str] = {}
+    for ch in chapters:
+        grade = re.search(r"\bClass\s+(XII|XI)\b", ch.volume or "")
+        if seen[(ch.subject, norm(ch.title))] > 1 and grade:
+            ch.title = renamed[ch.chapter_id] = f"{ch.title} (Class {grade.group(1)})"
+    for c in concepts:
+        c.chapter = renamed.get(c.chapter_id, c.chapter)
     return {
         "chapters": chapters,
         "concepts": concepts,
         "requires": requires,
         "modules": parsed,
     }
+
+
+def merge_to_jee_chapters(syllabus: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, str]:
+    """Make each JEE unit one chapter: the 44 OpenStax physics chapters become 20, NCERT's
+    two Relations and Functions chapters become "Sets, Relations and Functions".
+
+    Runs after concept mapping, so an item is still matched against the concepts of the
+    narrow chapter it came from; only the label it is filed under changes. A unit with a
+    single NCERT chapter keeps that chapter's id; a merged unit, or one built on OpenStax
+    chapters, gets the unit's slug, prefixed with the subject if another subject uses it. A
+    chapter outside the JEE syllabus (no unit: Relativity, Particle Physics) is dropped
+    with its concepts — it holds no items. Mutates `syllabus` and `items`; returns the
+    old -> new chapter id map.
+    """
+    chapters: list[Chapter] = syllabus["chapters"]
+    groups: dict[tuple[str, str], list[Chapter]] = {}
+    for ch in chapters:
+        if ch.in_syllabus and ch.jee_unit:
+            groups.setdefault((ch.subject, ch.jee_unit), []).append(ch)
+    dropped = {ch.chapter_id for ch in chapters if not (ch.in_syllabus and ch.jee_unit)}
+    if any(it["chapter_id"] in dropped for it in items):
+        raise SystemExit("an item sits in a chapter outside the JEE syllabus; refusing to drop it")
+
+    other_ids = {ch.chapter_id for ch in chapters}
+    remap: dict[str, str] = {}
+    merged: list[Chapter] = []
+    for (subject, unit), members in sorted(groups.items(), key=lambda kv: min(c.order for c in kv[1])):
+        members.sort(key=lambda c: c.order)
+        openstax = any(c.volume.startswith("University Physics") for c in members)
+        if len(members) == 1 and not openstax:  # an OpenStax id would keep naming the book's chapter
+            new_id = members[0].chapter_id
+        else:
+            new_id = slug(unit)
+            if new_id in other_ids - {c.chapter_id for c in members}:
+                new_id = slug(f"{subject}_{unit}")
+        volumes = [v for v in dict.fromkeys(c.volume for c in members) if not v.startswith("University Physics")]
+        merged.append(Chapter(
+            chapter_id=new_id, title=unit, volume=" · ".join(volumes) or f"JEE {subject}",
+            unit=members[0].unit, jee_unit=unit, in_syllabus=True, order=members[0].order,
+            module_ids=[m for c in members for m in c.module_ids], subject=subject,
+            former_titles=[c.title for c in members if c.title != unit],
+        ))
+        for c in members:
+            remap[c.chapter_id] = new_id
+
+    title = {ch.chapter_id: ch.title for ch in merged}
+    syllabus["chapters"] = merged
+    syllabus["concepts"] = [c for c in syllabus["concepts"] if c.chapter_id not in dropped]
+    for c in syllabus["concepts"]:
+        c.chapter_id = remap.get(c.chapter_id, c.chapter_id)
+        c.chapter = title.get(c.chapter_id, c.chapter)
+    kept = {c.concept_id for c in syllabus["concepts"]}
+    syllabus["requires"] = [e for e in syllabus["requires"] if e["concept_id"] in kept and e["requires"] in kept]
+    for it in items:
+        it["chapter_id"] = remap.get(it["chapter_id"], it["chapter_id"])
+        it["chapter"] = title.get(it["chapter_id"], it["chapter"])
+    return remap
 
 
 if __name__ == "__main__":

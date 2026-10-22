@@ -303,7 +303,7 @@ The LangGraph around this is only structural: `bootstrap → [button click?] →
 | Physics tools | `check_dimensions`, `verify_result`, `check_student_work`, `convert_units` | Connected. `mcp_tools/physics_tools.py`. Dimensional consistency, substitution checks, first broken step, and unit conversion. |
 | Diagram tool | — | Not connected. Retrieved content can include stored figures; the agent cannot generate a diagram. |
 | Curriculum tool | `resolve_concept`, `retrieve_content`, `open_material`, `suggest_next_material` | Connected. Further than the generic plan assumed. Locally (`RETRIEVAL_BACKEND=local`) this runs on a derived 1016-concept syllabus and a 10k-item corpus with citations, novelty tracking and a deterministic retrieval gate — see `RETRIEVAL.md`. The deployed path is unchanged. |
-| Research tool | — | Not connected. |
+| Research tool | official-web fallback on a weak `retrieve_content` pack | Connected. `retrieval/official_web.py`. Allowlist: jeeadv.ac.in, ncert.nic.in. Fetched in the background (3s cap) and attached, with URLs, only if ready before the reply. Not stored in the corpus. |
 | Memory lookup | `get_learner_context` | Connected. Migration `006_learner_memory.sql` is applied, and `service_role` can read and write `learner_memory`. |
 | Learner progress | `get_learner_context` (same call) | Connected. |
 | Save memory | `remember_about_learner` | Connected. Writes `learner_memory`. |
@@ -322,7 +322,7 @@ Experts: composers `worked_solution`, `socratic_guide`, `practice_set`, `quiz_bu
 ### Not yet built (do not pretend they are live)
 
 - Voice, photo, PDF, audio student input
-- Material reader, diagram generation, research
+- Material reader, diagram generation
 - Platform Content Worker
 - Coach actions: change study plan, suggest an activity, start a new conversation
 - Checker loop where the Main Tutor corrects and the checker runs again. The checker rewrites once and returns that text. It does not send the draft back for another tutor pass.

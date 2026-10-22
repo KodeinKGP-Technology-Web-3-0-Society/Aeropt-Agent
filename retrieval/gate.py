@@ -84,6 +84,22 @@ _FOLLOW_UP_DEIXIS = re.compile(
     re.IGNORECASE,
 )
 
+# Conversational steering, identity, small talk, prompt injection / jailbreak
+_CONVERSATIONAL = re.compile(
+    r"\b(my name is|i am called|call me|what is my name|who are you|what are you|"
+    r"how are you|who made you|what can you do|are you (an ai|a bot|chatgpt|gemini)|"
+    r"tell me a joke|tell me about yourself|ignore (all |previous )?instructions|"
+    r"you are (now|a senior)|pretend (you are|to be)|unrestricted ai|admin password|"
+    r"system prompt|jailbreak|hack(ing)? a)\b",
+    re.IGNORECASE,
+)
+
+# Programming code blocks, functions, scripts
+_CODE_SNIPPET = re.compile(
+    r"(```|def\s+\w+\s*\(|class\s+\w+[:\(]|import\s+\w+|from\s+\w+\s+import|function\s+\w+\s*\(|const\s+\w+\s*=|console\.log)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class Decision:
@@ -157,6 +173,12 @@ def decide(
     bare_math = _MATH_PREFIX.sub("", text).strip().rstrip("?").strip()
     if bare_math and _PURE_MATH.match(bare_math) and len(bare_math) < 60:
         return Decision("skip", "pure arithmetic — the calculator answers this", content_type)
+
+    if _CONVERSATIONAL.search(text):
+        return Decision("skip", "conversational or prompt adjustment, no course grounding needed", content_type)
+
+    if _CODE_SNIPPET.search(text):
+        return Decision("skip", "programming code snippet, no course syllabus grounding needed", content_type)
 
     has_context = bool(state.get("retrieved_chunks"))
 

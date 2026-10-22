@@ -26,7 +26,7 @@ Invalid, ungradable, and model-unverified submissions do not change proficiency,
 
 `submission_id` is chosen when the question is shown (`question_instance_id`) unless the client sends one. Retries and double-clicks reuse it. A new attempt uses a new id. The same id with a different answer returns `submission_conflict` and does not write. A retry after the question is closed returns the original committed row when the payload matches.
 
-Migration `db/migrations/022_grading_commit.sql` is required. The service does not fall back to separate inserts when `commit_graded_attempt` is missing.
+Migration `db/migrations/026_grading_commit.sql` is required. The service does not fall back to separate inserts when `commit_graded_attempt` is missing.
 
 ## Scoring that this release keeps
 

@@ -40,8 +40,9 @@ TURNS_PER_DAY = int(os.getenv("AGENT_TURNS_PER_DAY", "60"))
 MAX_QUERY_CHARS = int(os.getenv("AGENT_MAX_QUERY_CHARS", "4000"))
 MAX_BODY_BYTES = int(os.getenv("AGENT_MAX_BODY_BYTES", str(1024 * 1024)))
 
-# No token: liveness probes, voice endpoints, and diagram SVGs
-_PUBLIC = re.compile(r"^/(health|api/v1/health|api/v1/voice/speakers|api/v1/diagrams/[0-9a-f]{20}\.svg)$")
+# No learner token: probes, speaker metadata, diagram SVGs, and the admin
+# surface (which has its own AGENT_ADMIN_TOKEN gate). Paid voice requires auth.
+_PUBLIC = re.compile(r"^/(health|ready|api/v1/health|api/v1/voice/speakers|api/v1/diagrams/[0-9a-f]{20}\.svg|admin/traces|api/v1/admin/.+)$")
 
 # Routes that name the learner in the path. `/plan/settings` is a literal route.
 _PATH_USER = re.compile(

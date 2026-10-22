@@ -20,6 +20,7 @@ if [[ ! -f .env ]]; then
   export GROQ_API_KEY="${GROQ_API_KEY:-gsk_ci}"
   export GEMINI_API_KEY="${GEMINI_API_KEY:-ci-key}"
 fi
+export GEMINI_MODEL="${GEMINI_MODEL:-gemini-3-flash-preview}"
 
 echo "==> [agent] syntax"
 "$PYTHON" -m compileall -q \

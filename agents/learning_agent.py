@@ -30,12 +30,12 @@ from openai import OpenAI
 import config
 from agents.answer_checker import CheckResult, VERDICT_SKIPPED, check_answer_streaming
 from agents.runtime.loop import run_agent_loop
-from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry
+from agents.runtime.toolbelt import TUTOR_SCOPES, ToolContext, Toolbelt, registry, surface_for_state
 from agents.runtime.trace import AgentTrace, TraceStep
 from db.supabase_client import db
 from models.state import TutorState
 from utils.skills import load_skill
-from utils.stream import emit_text, stream_callback_var
+from utils.stream import emit_replace, emit_text, stream_callback_var
 
 logger = logging.getLogger("jee_tutor.learning_agent")
 
@@ -50,18 +50,6 @@ _FALLBACK_REPLY = (
     "exactly where it goes off track."
 )
 
-# Another school subject. This is not a guess about a physics question; it is
-# the syllabus boundary. The tutor still owns the reply, and it does not retrieve.
-_OUTSIDE_PHYSICS = re.compile(
-    r"\b(sn1|sn2|carbocation|organic chemistry|alkyl halide|nucleophilic substitution|"
-    r"grignard|benzene|stoichiometry)\b",
-    re.IGNORECASE,
-)
-_PHYSICS_ONLY_REPLY = (
-    "I only teach physics for JEE. I won't invent a chemistry mechanism or a "
-    "reaction scheme. Ask a physics problem — rotation, electrostatics, or the "
-    "step you're stuck on — and I'll work that properly."
-)
 
 
 def _import_tools() -> None:
@@ -236,6 +224,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         turn_index=state.get("interaction_count"),
         route="agent_loop",
         prompt_version=get_skill_version("learning_agent"),
+        query=query,
     )
 
     def _finalize_trace():
@@ -257,18 +246,6 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             )
         )
 
-    if _OUTSIDE_PHYSICS.search(query):
-        trace.note("outside physics syllabus")
-        trace.checker_verdict = "skipped"
-        _finalize_trace()
-        usage_meter.reset(u_token)
-        return {
-            "response": _PHYSICS_ONLY_REPLY,
-            "agent_used": "learning_agent",
-            "error": None,
-            "agent_trace_path": trace.path(),
-            "primary_concept_id": "",
-        }
 
     # Recall before reasoning: the agent should start the turn already knowing
     # who it is talking to, rather than having to spend a tool call to find out.
@@ -339,8 +316,26 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
 
     from services import progress
 
-    progress.report("stage", "thinking")
+    clean_q = (query[:80] + "...") if len(query) > 80 else query
+    progress.report("stage", "thinking", "start", thought=f"Understanding doubt: '{clean_q}'")
     priming = [sections.dynamic_message(), *sections.recent_turns]
+
+    # The prompt tells the tutor to ground itself, but a fallback model can still
+    # answer from memory. In general chat, the deterministic retrieval gate decides
+    # when skipping is not allowed (greetings and follow-ups on the last answer are).
+    from retrieval.gate import decide as gate_decide
+
+    gate_decision = gate_decide(query, recent_turns=sections.recent_turns, state=working_state)
+    require_tool = None
+    if (
+        surface_for_state(working_state) == "chat"
+        and "retrieve_content" in toolbelt
+        and gate_decision.action == "retrieve"
+    ):
+        require_tool = "retrieve_content"
+    # Overlap a weak-pack fetch with the first model call. Strong packs do not open the web.
+    if gate_decision.action == "retrieve":
+        ctx.web_fallback.schedule_probe(query, working_state)
     result = run_agent_loop(
         system_prompt=sections.stable_system_prompt,
         user_message=query,
@@ -354,6 +349,7 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
         client=_llm_client,
         trace=trace,
         label="tutor",
+        require_tool=require_tool,
     )
 
     if result.stop_reason == "cancelled":
@@ -392,11 +388,27 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             **ctx.updates,
         }
 
-    # Fresh review before the student sees any of it.
+    # The student gets the draft as soon as it is released; the checker runs
+    # beside it. Most drafts pass, so the common case costs the student nothing.
+    # A revision replaces what they have already read (see emit_replace).
     cb = stream_callback_var.get()
+    early = None
+    if cb:
+        import concurrent.futures
+        import contextvars
+        from agents.runtime.release import release as _release
+
+        def _release_and_stream() -> str:
+            text = _release(answer, ctx)
+            emit_text(text, cb)
+            return text
+
+        early = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(
+            contextvars.copy_context().run, _release_and_stream
+        )
     
-    progress.report("stage", "thinking", "done")
-    progress.report("stage", "review")
+    progress.report("stage", "thinking", "done", thought="Synthesized step-by-step solution")
+    progress.report("stage", "review", "start", thought="Verifying mathematical derivations and correctness...")
 
     from agents.answer_checker import has_claims_to_check
 
@@ -421,16 +433,22 @@ def learning_agent_turn(state: TutorState) -> Dict[str, Any]:
             timeout=checker_timeout,
         )
     
-    progress.report("stage", "review", "done")
+    verdict_text = "Verified ✓" if checked.verdict == "pass" else f"Reviewed ({checked.verdict})"
+    progress.report("stage", "review", "done", thought=verdict_text)
 
     # One single release gate on whatever text is final (draft or revision)
     from agents.runtime.release import release
 
-    final_answer = release(checked.answer, ctx)
+    if early is not None:
+        streamed_draft = early.result()
+        if checked.answer.strip() == answer.strip():
+            final_answer = streamed_draft
+        else:
+            final_answer = release(checked.answer, ctx)
+            emit_replace(final_answer)
+    else:
+        final_answer = release(checked.answer, ctx)
     checked.answer = final_answer
-
-    if cb and final_answer:
-        emit_text(final_answer, cb)
 
     updates: Dict[str, Any] = dict(ctx.updates)
     updates.pop("draft_response", None)
