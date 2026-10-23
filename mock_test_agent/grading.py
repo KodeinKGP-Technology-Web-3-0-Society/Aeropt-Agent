@@ -27,7 +27,6 @@ import uuid
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-import config
 # Heavy service/DB imports are done lazily inside functions to avoid
 # triggering services/__init__.py → turn_service → context_manager at
 # module-load time (which requires openai and a live config).

@@ -24,9 +24,9 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-import config
 from db.supabase_client import db
-from models.mock_state import (
+from mock_test_agent import settings as config
+from mock_test_agent.models import (
     FeasibilityGap,
     FeasibilityReport,
     MockTestConfig,

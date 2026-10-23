@@ -1,6 +1,8 @@
 # Mock Test Agent — Architecture & Design Document
 
 > **Audience:** Engineering leads and stakeholders who want to understand what was built, why each decision was made, and how the pieces fit together.
+>
+> **Where it lives:** everything is inside `mock_test_agent/`. The tutor server, shared config, and existing tests are not modified. The HTTP router is written but not mounted, and the SQL migration has not been applied.
 
 ---
 
@@ -28,7 +30,7 @@ Student (via frontend)
         │
         ▼
 ┌─────────────────────────────────────────────────┐
-│               FastAPI  (api_server.py)           │
+│     mock_test_agent/router.py  (not mounted)    │
 │  GET  /mock/catalog   POST /mock/build           │
 │  POST /mock/start     POST /mock/answer          │
 │  POST /mock/submit    GET  /mock/result          │
@@ -36,8 +38,8 @@ Student (via frontend)
            │                          │
            ▼                          ▼
 ┌─────────────────────┐   ┌─────────────────────────┐
-│  services/          │   │  services/              │
-│  mock_test.py       │   │  mock_grading.py        │
+│  mock_test_agent/   │   │  mock_test_agent/       │
+│  assembly.py        │   │  grading.py             │
 │  (assembly)         │   │  (scoring & analytics)  │
 └──────┬──────────────┘   └─────────┬───────────────┘
        │                            │
@@ -57,7 +59,7 @@ Student (via frontend)
            │  (after /submit, once per test)
            ▼
 ┌─────────────────────────────────────────────────┐
-│  agents/mock_debrief.py                         │
+│  mock_test_agent/debrief.py                     │
 │  One LLM call → narrative debrief               │
 │  Cached in mock_tests.debrief                   │
 └─────────────────────────────────────────────────┘
@@ -114,7 +116,7 @@ Row-Level Security is enabled on all three tables with **no public policies** �
 
 ---
 
-## 4. Data Models (`models/mock_state.py`)
+## 4. Data Models (`mock_test_agent/models.py`)
 
 The Python layer mirrors the DB schema with clean dataclasses.
 
@@ -138,7 +140,7 @@ MockTestState      — lightweight TypedDict for the debrief agent
 
 ---
 
-## 5. Assembly Pipeline (`services/mock_test.py`)
+## 5. Assembly Pipeline (`mock_test_agent/assembly.py`)
 
 When `POST /mock/build` is called, `assemble_test()` runs the following sequential pipeline:
 
@@ -177,7 +179,7 @@ The 1.4× candidate buffer (`_CANDIDATE_BUFFER_FACTOR`) exists because the retri
 
 ---
 
-## 6. Grading Engine (`services/mock_grading.py`)
+## 6. Grading Engine (`mock_test_agent/grading.py`)
 
 ### Marking Schemes
 
@@ -271,7 +273,7 @@ built ──/start──▶ in_progress ──/submit──▶ submitted ──(
 
 ---
 
-## 8. Debrief Agent (`agents/mock_debrief.py`)
+## 8. Debrief Agent (`mock_test_agent/debrief.py`)
 
 The debrief is the only place an LLM is involved.
 
@@ -315,32 +317,28 @@ The mock test agent is **additive** — it reuses existing infrastructure and ad
 | `services/answer_key.py` | `grade_submission()` calls `grade_served_question()` — the same grader the quiz flow uses |
 | `services/grading.py` | `commit_progress()` updates the student's proficiency WMA exactly as quiz answers do |
 | `utils/llm.py` | `complete_text()` used for the debrief — same LLM abstraction used by all agents |
-| `config.py` | New constants (`MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT`, `MOCK_TEST_DIFFICULTY_DEFAULTS`, `EXAM_ALLOWED_DB`) follow the same pattern |
+| `config.py` | Read only for the debrief model name. Mock-test limits live in `mock_test_agent/settings.py`. |
 
-The Study Room is not affected: its LangGraph graph, state, and endpoints are unchanged.
+The Study Room is not affected: its LangGraph graph, state, and endpoints are unchanged. This package is not imported by `api_server.py`.
 
 ---
 
 ## 11. File Map
 
 ```
-Aeropt-Agent/
-├── db/
-│   └── migrations/
-│       └── 028_mock_tests.sql         ← 3 new tables, idempotent migration
-├── models/
-│   └── mock_state.py                  ← MockTestConfig, MockTestQuestion,
-│                                         FeasibilityReport, MockTestState
-├── services/
-│   ├── mock_test.py                   ← Assembly pipeline (validate → inventory
-│   │                                     → select → persist)
-│   └── mock_grading.py                ← Marking schemes, grading, analytics
-├── agents/
-│   └── mock_debrief.py                ← LLM debrief (one call, cached)
-├── api_server.py                      ← 6 new routes added (existing file)
-├── config.py                          ← 5 new constants added (existing file)
+mock_test_agent/
+├── README.md                  ← how to run tests, and the two lines that mount the API later
+├── MOCK_TEST_AGENT.md         ← this document
+├── settings.py                ← limits, exam filters, debrief model
+├── models.py                  ← MockTestConfig, questions, feasibility report
+├── assembly.py                ← validate → inventory → select → persist
+├── grading.py                 ← marking schemes, scores, chapter and concept analytics
+├── debrief.py                 ← one LLM narrative, cached on the test row
+├── router.py                  ← six routes, not included by the main app
+├── migrations/
+│   └── 028_mock_tests.sql     ← three new tables; not applied yet
 └── tests/
-    └── test_mock_test.py              ← 53 unit + integration tests (all passing)
+    └── test_mock_test.py      ← 53 unit and integration tests
 ```
 
 ---

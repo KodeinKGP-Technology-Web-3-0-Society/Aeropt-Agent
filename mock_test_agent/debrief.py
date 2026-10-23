@@ -21,8 +21,8 @@ import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-import config
 from db.supabase_client import db
+from mock_test_agent import settings as config
 from utils.llm import complete_text
 
 logger = logging.getLogger("aeropt.mock_debrief")

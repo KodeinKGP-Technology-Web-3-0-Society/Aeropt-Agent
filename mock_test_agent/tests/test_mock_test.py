@@ -1,12 +1,12 @@
 """Tests for the Mock Test system.
 
 Covers:
-  - Config validation (services/mock_test.py::validate_config)
+  - Config validation (mock_test_agent/assembly.py::validate_config)
   - Marking scheme application (services/mock_grading.py)
   - Per-question scoring including partial credit
   - Aggregation and analytics
   - Feasibility report shape
-  - Debrief analytics helpers (agents/mock_debrief.py)
+  - Debrief analytics helpers (mock_test_agent/debrief.py)
   - Integration stub: build→start→answer→submit→result flow using in-memory fakes
 
 These tests run offline with no database or LLM dependencies.
@@ -82,16 +82,16 @@ class TestValidateConfig(unittest.TestCase):
 
     def setUp(self):
         """Patch config constants so tests run without .env."""
-        import config as cfg
+        from mock_test_agent import settings as cfg
         self._orig = cfg.MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT
         cfg.MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT = 60
 
     def tearDown(self):
-        import config as cfg
+        from mock_test_agent import settings as cfg
         cfg.MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT = self._orig
 
     def _cfg(self, **kwargs):
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         defaults = dict(
             user_id="user-1",
             exam="JEE_ADVANCED",
@@ -102,29 +102,29 @@ class TestValidateConfig(unittest.TestCase):
         return MockTestConfig(**defaults)
 
     def test_valid_config_passes(self):
-        from services.mock_test import validate_config
+        from mock_test_agent.assembly import validate_config
         validate_config(self._cfg())  # must not raise
 
     def test_missing_user_id_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
         with self.assertRaises(MockTestConfigError):
             validate_config(self._cfg(user_id=""))
 
     def test_invalid_exam_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
         with self.assertRaises(MockTestConfigError):
             validate_config(self._cfg(exam="JEE_GOD"))
 
     def test_no_subjects_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig
         cfg = MockTestConfig(user_id="u", exam="JEE_MAIN", subjects=[])
         with self.assertRaises(MockTestConfigError):
             validate_config(cfg)
 
     def test_invalid_subject_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u",
             exam="JEE_MAIN",
@@ -134,8 +134,8 @@ class TestValidateConfig(unittest.TestCase):
             validate_config(cfg)
 
     def test_duplicate_subject_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u",
             exam="JEE_MAIN",
@@ -148,8 +148,8 @@ class TestValidateConfig(unittest.TestCase):
             validate_config(cfg)
 
     def test_zero_n_questions_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u", exam="JEE_ADVANCED",
             subjects=[SubjectConfig(subject="Chemistry", n_questions=0)],
@@ -158,8 +158,8 @@ class TestValidateConfig(unittest.TestCase):
             validate_config(cfg)
 
     def test_n_questions_above_max_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u", exam="JEE_ADVANCED",
             subjects=[SubjectConfig(subject="Physics", n_questions=999)],
@@ -168,8 +168,8 @@ class TestValidateConfig(unittest.TestCase):
             validate_config(cfg)
 
     def test_invalid_difficulty_target_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u", exam="JEE_ADVANCED",
             subjects=[SubjectConfig(subject="Physics", n_questions=10, difficulty_target=9)],
@@ -178,13 +178,13 @@ class TestValidateConfig(unittest.TestCase):
             validate_config(cfg)
 
     def test_custom_marking_scheme_invalid_qtype_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
         with self.assertRaises(MockTestConfigError):
             validate_config(self._cfg(marking_scheme={"essay": {"correct": 5}}))
 
     def test_multi_subject_config_valid(self):
-        from services.mock_test import validate_config
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import validate_config
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u", exam="JEE_ADVANCED",
             subjects=[
@@ -196,12 +196,12 @@ class TestValidateConfig(unittest.TestCase):
         validate_config(cfg)  # must not raise
 
     def test_time_limit_too_short_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
         with self.assertRaises(MockTestConfigError):
             validate_config(self._cfg(total_time_minutes=5))
 
     def test_time_limit_too_long_raises(self):
-        from services.mock_test import MockTestConfigError, validate_config
+        from mock_test_agent.assembly import MockTestConfigError, validate_config
         with self.assertRaises(MockTestConfigError):
             validate_config(self._cfg(total_time_minutes=1000))
 
@@ -213,7 +213,7 @@ class TestValidateConfig(unittest.TestCase):
 class TestResolveMarkingScheme(unittest.TestCase):
 
     def test_jee_advanced_scheme_loaded(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         scheme = resolve_marking_scheme("JEE_ADVANCED")
         self.assertEqual(scheme["single_correct"]["correct"], 3)
         self.assertEqual(scheme["single_correct"]["incorrect"], -1)
@@ -221,14 +221,14 @@ class TestResolveMarkingScheme(unittest.TestCase):
         self.assertEqual(scheme["numeric"]["incorrect"], 0)
 
     def test_jee_main_scheme_loaded(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         scheme = resolve_marking_scheme("JEE_MAIN")
         self.assertEqual(scheme["single_correct"]["correct"], 4)
         self.assertEqual(scheme["single_correct"]["incorrect"], -1)
         self.assertEqual(scheme["numeric"]["incorrect"], -1)
 
     def test_custom_overrides_base(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         custom = {"single_correct": {"correct": 5, "incorrect": -2, "unattempted": 0}}
         scheme = resolve_marking_scheme("JEE_ADVANCED", custom)
         self.assertEqual(scheme["single_correct"]["correct"], 5)
@@ -237,7 +237,7 @@ class TestResolveMarkingScheme(unittest.TestCase):
         self.assertEqual(scheme["numeric"]["correct"], 4)
 
     def test_unknown_exam_falls_back_to_advanced(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         scheme = resolve_marking_scheme("SOME_OTHER_EXAM")
         self.assertIn("single_correct", scheme)
 
@@ -249,11 +249,11 @@ class TestResolveMarkingScheme(unittest.TestCase):
 class TestApplyMarkingScheme(unittest.TestCase):
 
     def _scheme(self, exam: str = "JEE_ADVANCED"):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         return resolve_marking_scheme(exam)
 
     def test_correct_single_scores_positive(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="correct", is_correct=True,
             question_type="single_correct", student_choice=["A"],
@@ -262,7 +262,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, 3.0)
 
     def test_incorrect_single_scores_negative(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="incorrect", is_correct=False,
             question_type="single_correct", student_choice=["B"],
@@ -271,7 +271,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, -1.0)
 
     def test_unattempted_scores_zero(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="unattempted", is_correct=None,
             question_type="single_correct", student_choice=None,
@@ -280,7 +280,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, 0.0)
 
     def test_numeric_incorrect_jee_advanced_no_penalty(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="incorrect", is_correct=False,
             question_type="numeric", student_choice=None,
@@ -289,7 +289,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, 0.0)   # JEE Advanced numeric: no negative marking
 
     def test_numeric_incorrect_jee_main_has_penalty(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="incorrect", is_correct=False,
             question_type="numeric", student_choice=None,
@@ -298,7 +298,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, -1.0)  # JEE Main numeric: -1 for wrong
 
     def test_ungradable_scores_zero(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="ungradable", is_correct=None,
             question_type="single_correct", student_choice=None,
@@ -307,7 +307,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, 0.0)
 
     def test_multiple_correct_full_score(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="correct", is_correct=True,
             question_type="multiple_correct", student_choice=["A", "C"],
@@ -316,7 +316,7 @@ class TestApplyMarkingScheme(unittest.TestCase):
         self.assertEqual(score, 4.0)
 
     def test_multiple_correct_wrong_option_is_negative(self):
-        from services.mock_grading import apply_marking_scheme
+        from mock_test_agent.grading import apply_marking_scheme
         score = apply_marking_scheme(
             grade_status="incorrect", is_correct=False,
             question_type="multiple_correct", student_choice=["A", "B"],
@@ -349,11 +349,11 @@ class TestAggregateScores(unittest.TestCase):
         ]
 
     def _scheme(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         return resolve_marking_scheme("JEE_ADVANCED")
 
     def test_all_correct(self):
-        from services.mock_grading import aggregate_scores
+        from mock_test_agent.grading import aggregate_scores
         graded = self._graded([
             ("correct", True, 3.0, "single_correct"),
             ("correct", True, 4.0, "numeric"),
@@ -364,7 +364,7 @@ class TestAggregateScores(unittest.TestCase):
         self.assertEqual(result["accuracy_pct"], 100.0)
 
     def test_all_unattempted(self):
-        from services.mock_grading import aggregate_scores
+        from mock_test_agent.grading import aggregate_scores
         graded = self._graded([
             ("unattempted", None, 0.0, "single_correct"),
             ("unattempted", None, 0.0, "numeric"),
@@ -375,7 +375,7 @@ class TestAggregateScores(unittest.TestCase):
         self.assertEqual(result["raw_score"], 0.0)
 
     def test_negative_score_possible(self):
-        from services.mock_grading import aggregate_scores
+        from mock_test_agent.grading import aggregate_scores
         graded = self._graded([
             ("incorrect", False, -1.0, "single_correct"),
             ("incorrect", False, -1.0, "single_correct"),
@@ -384,7 +384,7 @@ class TestAggregateScores(unittest.TestCase):
         self.assertLess(result["raw_score"], 0)
 
     def test_mixed(self):
-        from services.mock_grading import aggregate_scores
+        from mock_test_agent.grading import aggregate_scores
         graded = self._graded([
             ("correct", True, 3.0, "single_correct"),
             ("incorrect", False, -1.0, "single_correct"),
@@ -430,11 +430,11 @@ class TestAnalytics(unittest.TestCase):
         ]
 
     def _scheme(self):
-        from services.mock_grading import resolve_marking_scheme
+        from mock_test_agent.grading import resolve_marking_scheme
         return resolve_marking_scheme("JEE_ADVANCED")
 
     def test_chapter_analytics_keys(self):
-        from services.mock_grading import build_chapter_analytics
+        from mock_test_agent.grading import build_chapter_analytics
         result = build_chapter_analytics(self._graded(), self._scheme())
         self.assertIn("optics", result)
         self.assertIn("laws_of_motion", result)
@@ -442,24 +442,24 @@ class TestAnalytics(unittest.TestCase):
         self.assertIn("chapter_title", result["optics"])
 
     def test_optics_accuracy_50_percent(self):
-        from services.mock_grading import build_chapter_analytics
+        from mock_test_agent.grading import build_chapter_analytics
         result = build_chapter_analytics(self._graded(), self._scheme())
         self.assertAlmostEqual(result["optics"]["accuracy_pct"], 50.0, places=1)
 
     def test_laws_of_motion_accuracy_100_percent(self):
-        from services.mock_grading import build_chapter_analytics
+        from mock_test_agent.grading import build_chapter_analytics
         result = build_chapter_analytics(self._graded(), self._scheme())
         self.assertAlmostEqual(result["laws_of_motion"]["accuracy_pct"], 100.0, places=1)
 
     def test_concept_analytics_keys(self):
-        from services.mock_grading import build_concept_analytics
+        from mock_test_agent.grading import build_concept_analytics
         result = build_concept_analytics(self._graded())
         self.assertIn("refraction", result)
         self.assertIn("accuracy_pct", result["refraction"])
         self.assertAlmostEqual(result["refraction"]["accuracy_pct"], 50.0, places=1)
 
     def test_subject_scores_split(self):
-        from services.mock_grading import build_subject_scores
+        from mock_test_agent.grading import build_subject_scores
         graded = self._graded() + [
             {
                 "grade_status": "correct", "is_correct": True,
@@ -482,17 +482,17 @@ class TestAnalytics(unittest.TestCase):
 class TestFeasibilityReport(unittest.TestCase):
 
     def test_satisfiable_true_when_enough(self):
-        from models.mock_state import FeasibilityReport
+        from mock_test_agent.models import FeasibilityReport
         r = FeasibilityReport(requested=30, available=35)
         self.assertTrue(r.satisfiable)
 
     def test_satisfiable_false_when_short(self):
-        from models.mock_state import FeasibilityReport
+        from mock_test_agent.models import FeasibilityReport
         r = FeasibilityReport(requested=30, available=20)
         self.assertFalse(r.satisfiable)
 
     def test_to_dict_shape(self):
-        from models.mock_state import FeasibilityReport, FeasibilityGap
+        from mock_test_agent.models import FeasibilityReport, FeasibilityGap
         gap = FeasibilityGap(
             chapter_id="solid_state", chapter_title="Solid State",
             subject="Chemistry", requested=5, available=0,
@@ -505,7 +505,7 @@ class TestFeasibilityReport(unittest.TestCase):
         self.assertEqual(d["gaps"][0]["chapter_id"], "solid_state")
 
     def test_empty_feasibility(self):
-        from models.mock_state import FeasibilityReport
+        from mock_test_agent.models import FeasibilityReport
         r = FeasibilityReport(requested=0, available=0)
         self.assertTrue(r.satisfiable)  # 0 of 0 is always satisfiable
 
@@ -517,7 +517,7 @@ class TestFeasibilityReport(unittest.TestCase):
 class TestMockTestConfigSerialization(unittest.TestCase):
 
     def test_round_trip(self):
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         original = MockTestConfig(
             user_id="user-abc",
             exam="JEE_MAIN",
@@ -539,7 +539,7 @@ class TestMockTestConfigSerialization(unittest.TestCase):
         self.assertTrue(restored.exclude_seen)
 
     def test_total_questions_property(self):
-        from models.mock_state import MockTestConfig, SubjectConfig
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
         cfg = MockTestConfig(
             user_id="u", exam="JEE_ADVANCED",
             subjects=[
@@ -572,14 +572,14 @@ class TestDebriefHelpers(unittest.TestCase):
         ]
 
     def test_follow_up_returns_weakest_concepts(self):
-        from agents.mock_debrief import _follow_up_concepts
+        from mock_test_agent.debrief import _follow_up_concepts
         concepts = _follow_up_concepts(self._graded_questions(), limit=3)
         # newtons_2nd has 0% accuracy — should be first
         self.assertEqual(concepts[0], "newtons_2nd")
         self.assertIn("refraction", concepts)
 
     def test_weak_concept_list_format(self):
-        from agents.mock_debrief import _weak_concept_list
+        from mock_test_agent.debrief import _weak_concept_list
         text = _weak_concept_list(self._graded_questions())
         self.assertIn("Newton's 2nd Law", text)
         # refraction is 50% — below 50% threshold? No, 50% is not < 50%
@@ -587,7 +587,7 @@ class TestDebriefHelpers(unittest.TestCase):
         self.assertNotIn("Refraction", text)
 
     def test_strong_chapters_list(self):
-        from agents.mock_debrief import _strong_chapters_list
+        from mock_test_agent.debrief import _strong_chapters_list
         chapter_scores = {
             "optics": {"chapter_title": "Optics", "accuracy_pct": 80, "questions_attempted": 5},
             "mechanics": {"chapter_title": "Mechanics", "accuracy_pct": 30, "questions_attempted": 5},
@@ -602,7 +602,7 @@ class TestDebriefHelpers(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestMockTestIntegration(unittest.TestCase):
-    """End-to-end flow through services/mock_test.py using patched DB and retrieval.
+    """End-to-end flow through mock_test_agent/assembly.py using patched DB and retrieval.
 
     This does NOT hit the real database or the retrieval Postgres. It verifies
     that the pipeline wires together correctly and produces the right shape of
@@ -610,7 +610,7 @@ class TestMockTestIntegration(unittest.TestCase):
     """
 
     def setUp(self):
-        import config as cfg
+        from mock_test_agent import settings as cfg
         cfg.MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT = 60
         cfg.EXAM_ALLOWED_DB = {
             "JEE_ADVANCED": ("Jee Advanced", "Jee main and Advanced"),
@@ -647,12 +647,12 @@ class TestMockTestIntegration(unittest.TestCase):
                 }
         return FakeHit()
 
-    @patch("services.mock_test.store.chapters")
-    @patch("services.mock_test.store.all_concepts")
-    @patch("services.mock_test.store.concept")
-    @patch("services.mock_test.store.query")
-    @patch("services.mock_test.search.search")
-    @patch("services.mock_test.db")
+    @patch("mock_test_agent.assembly.store.chapters")
+    @patch("mock_test_agent.assembly.store.all_concepts")
+    @patch("mock_test_agent.assembly.store.concept")
+    @patch("mock_test_agent.assembly.store.query")
+    @patch("mock_test_agent.assembly.search.search")
+    @patch("mock_test_agent.assembly.db")
     def test_assemble_test_shape(
         self,
         mock_db,
@@ -662,8 +662,8 @@ class TestMockTestIntegration(unittest.TestCase):
         mock_all_concepts,
         mock_chapters,
     ):
-        from models.mock_state import MockTestConfig, SubjectConfig
-        from services.mock_test import assemble_test
+        from mock_test_agent.models import MockTestConfig, SubjectConfig
+        from mock_test_agent.assembly import assemble_test
 
         # Stub retrieval store
         mock_chapters.return_value = [
@@ -706,7 +706,7 @@ class TestMockTestIntegration(unittest.TestCase):
 
     def test_grade_submission_correct_mcq(self):
         """grade_submission returns correct when student chooses the right option."""
-        from services.mock_grading import grade_submission, resolve_marking_scheme
+        from mock_test_agent.grading import grade_submission, resolve_marking_scheme
 
         question = _q(
             content_id="q1",
@@ -723,7 +723,7 @@ class TestMockTestIntegration(unittest.TestCase):
         self.assertEqual(result["question_score"], 3.0)
 
     def test_grade_submission_incorrect_mcq(self):
-        from services.mock_grading import grade_submission, resolve_marking_scheme
+        from mock_test_agent.grading import grade_submission, resolve_marking_scheme
 
         question = _q(
             content_id="q1",
@@ -740,7 +740,7 @@ class TestMockTestIntegration(unittest.TestCase):
         self.assertEqual(result["question_score"], -1.0)
 
     def test_grade_submission_unattempted(self):
-        from services.mock_grading import grade_submission, resolve_marking_scheme
+        from mock_test_agent.grading import grade_submission, resolve_marking_scheme
 
         question = _q(content_id="q1", question_type="single_correct")
         scheme = resolve_marking_scheme("JEE_ADVANCED")
@@ -749,7 +749,7 @@ class TestMockTestIntegration(unittest.TestCase):
         self.assertEqual(result["question_score"], 0.0)
 
     def test_grade_submission_no_gradekey_is_ungradable(self):
-        from services.mock_grading import grade_submission, resolve_marking_scheme
+        from mock_test_agent.grading import grade_submission, resolve_marking_scheme
 
         question = _q(content_id="q1", has_gradekey=False)
         question["answer"] = None
@@ -767,24 +767,24 @@ class TestMockTestIntegration(unittest.TestCase):
 class TestEdgeCases(unittest.TestCase):
 
     def test_config_from_dict_missing_subjects_returns_empty(self):
-        from models.mock_state import MockTestConfig
+        from mock_test_agent.models import MockTestConfig
         cfg = MockTestConfig.from_dict({"user_id": "u", "exam": "JEE_MAIN"})
         self.assertEqual(cfg.subjects, [])
 
     def test_qtype_normalised_handles_uppercase(self):
-        from services.mock_grading import _qtype_normalised
+        from mock_test_agent.grading import _qtype_normalised
         self.assertEqual(_qtype_normalised("SINGLE_CORRECT"), "single_correct")
         self.assertEqual(_qtype_normalised("MCQ"), "single_correct")
         self.assertEqual(_qtype_normalised("NUMERIC"), "numeric")
 
     def test_max_score_for_scheme(self):
-        from services.mock_grading import max_score_for_scheme, resolve_marking_scheme
+        from mock_test_agent.grading import max_score_for_scheme, resolve_marking_scheme
         scheme = resolve_marking_scheme("JEE_ADVANCED")
         self.assertEqual(max_score_for_scheme(scheme, "single_correct"), 3.0)
         self.assertEqual(max_score_for_scheme(scheme, "numeric"), 4.0)
 
     def test_feasibility_gap_to_dict(self):
-        from models.mock_state import FeasibilityGap
+        from mock_test_agent.models import FeasibilityGap
         gap = FeasibilityGap(
             chapter_id="ch1", chapter_title="Chapter 1",
             subject="Physics", requested=10, available=3,
@@ -795,7 +795,7 @@ class TestEdgeCases(unittest.TestCase):
         self.assertEqual(d["chapter_id"], "ch1")
 
     def test_aggregate_empty_graded(self):
-        from services.mock_grading import aggregate_scores, resolve_marking_scheme
+        from mock_test_agent.grading import aggregate_scores, resolve_marking_scheme
         result = aggregate_scores([], resolve_marking_scheme("JEE_ADVANCED"))
         self.assertEqual(result["questions_total"], 0)
         self.assertEqual(result["raw_score"], 0.0)
