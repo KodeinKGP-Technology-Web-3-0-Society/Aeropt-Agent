@@ -165,3 +165,20 @@ ANSWER_CHECKER_REASONING = os.getenv("ANSWER_CHECKER_REASONING", "low").strip()
 # valid and common outcome, so there is no "N wrong answers triggers X" rule.
 LEARNING_COACH_MODEL = GEMINI_MODEL
 LEARNING_COACH_MAX_STEPS = 4
+
+# ── Mock Test ─────────────────────────────────────────────────────────────────
+# Maximum questions per subject section. Prevents extremely large test builds.
+MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT = 60
+# Default test duration in minutes (used when config omits total_time_minutes).
+MOCK_TEST_DEFAULT_TIME_MINUTES = 180
+# Difficulty defaults per exam (same as EXAM_DIFFICULTY_TARGET in retrieval/service.py).
+MOCK_TEST_DIFFICULTY_DEFAULTS = {"JEE_ADVANCED": 4, "JEE_MAIN": 3, "custom": 3}
+# DB target_exam values allowed per exam key (mirrors retrieval/search.py EXAM_ALLOWED).
+EXAM_ALLOWED_DB = {
+    "JEE_ADVANCED": ("Jee Advanced", "Jee main and Advanced"),
+    "JEE_MAIN": ("Jee main", "Jee main and Advanced"),
+    "custom": (),   # no exam filter — all target_exam values included
+}
+# Model used for the post-test debrief narrative (one LLM call per test result).
+MOCK_DEBRIEF_MODEL = GEMINI_MODEL
+MOCK_DEBRIEF_FALLBACK_MODELS = FALLBACK_MODELS
