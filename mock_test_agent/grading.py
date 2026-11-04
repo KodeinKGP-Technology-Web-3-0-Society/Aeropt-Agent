@@ -138,6 +138,13 @@ def _qtype_normalised(question_type: str) -> str:
     return mapping.get(question_type, question_type.lower())
 
 
+def _correct_letters(answer: Optional[Dict[str, Any]]) -> set:
+    """Set of correct option letters of a `letters` key (alternatives are not partial-creditable)."""
+    if isinstance(answer, dict) and answer.get("kind") == "letters":
+        return set(str(answer.get("letters") or answer.get("value") or "").upper())
+    return set()
+
+
 def apply_marking_scheme(
     *,
     grade_status: str,
@@ -163,16 +170,13 @@ def apply_marking_scheme(
     if grade_status in ("ungradable", "invalid_submission"):
         return 0.0
 
-    # Multiple-correct partial credit
+    # Multiple-correct partial credit (JEE Advanced): no wrong option chosen and some, but not
+    # all, correct ones -> `partial` marks per correct option chosen.
     if qtype == "multiple_correct" and grade_status == "incorrect" and "partial" in rules:
-        # Check if chosen is a non-empty subset of correct options (no wrong ones)
-        if isinstance(answer, dict) and answer.get("kind") == "letters":
-            correct_set = set(str(answer.get("value") or "").upper())
-            chosen_set = set(c.upper() for c in (student_choice or []))
-            if chosen_set and chosen_set.issubset(correct_set) and not chosen_set.symmetric_difference(correct_set) == chosen_set:
-                # some correct options missing but none wrong → partial
-                if not (chosen_set - correct_set):
-                    return float(rules.get("partial", 1))
+        correct_set = _correct_letters(answer)
+        chosen_set = {str(c).strip().strip("()").upper() for c in (student_choice or []) if str(c).strip()}
+        if correct_set and chosen_set and chosen_set < correct_set:
+            return float(rules.get("partial", 1)) * len(chosen_set)
 
     if grade_status == "correct" or is_correct is True:
         return float(rules.get("correct", 4))
@@ -192,14 +196,14 @@ def grade_submission(
 
     Returns a dict with grade_status, is_correct, question_score, answer_text.
     """
-    if not submission:
+    if not submission or not _has_response(submission):
         qtype = _qtype_normalised(question_row.get("question_type") or "")
         rules = scheme.get(qtype, _DEFAULT_SCHEME)
         return {
             "grade_status": "unattempted",
             "is_correct": None,
             "question_score": float(rules.get("unattempted", 0)),
-            "answer_text": "",
+            "answer_text": _key_text(question_row.get("answer")),
         }
 
     # Reconstruct the question dict that answer_key expects
@@ -238,7 +242,10 @@ def grade_submission(
     from services.answer_key import grade_served_question, grade_free_answer  # lazy import
     qtype = (question_row.get("question_type") or "").lower()
     if qtype in ("numeric", "integer", "exercise"):
-        decision = grade_served_question(q_for_grading, value=student_answer_text or str(numeric_val or ""))
+        typed = student_answer_text.strip()
+        if not typed and numeric_val is not None:
+            typed = f"{numeric_val:.10g}"
+        decision = grade_served_question(q_for_grading, value=typed)
     elif isinstance(choice, list) and choice:
         decision = grade_served_question(q_for_grading, choice=choice)
     else:
@@ -264,6 +271,28 @@ def grade_submission(
         "question_score": question_score,
         "answer_text": answer_text,
     }
+
+
+def _key_text(answer: Any) -> str:
+    """Human-readable official answer (shown after submit, e.g. for unattempted questions)."""
+    if isinstance(answer, str):
+        try:
+            answer = json.loads(answer)
+        except (ValueError, TypeError):
+            return ""
+    try:
+        from services.answer_key import answer_text
+        return answer_text(answer) if isinstance(answer, dict) else ""
+    except Exception:
+        return ""
+
+
+def _has_response(submission: Dict[str, Any]) -> bool:
+    return bool(
+        submission.get("choice")
+        or (submission.get("student_answer") or "").strip()
+        or submission.get("numeric_value") is not None
+    )
 
 
 # ── Bulk grading ───────────────────────────────────────────────────────────────
@@ -344,16 +373,13 @@ def grade_all_submissions(
             "submission": sub,
         })
 
-    # Bulk upsert graded submissions
+    # Bulk upsert graded submissions (Supabase is the only store; a failure must surface)
     if submission_updates:
-        try:
-            from db.supabase_client import db as _db
-            _db.client.table("mock_test_submissions").upsert(
-                submission_updates,
-                on_conflict="mock_test_id,content_id,user_id",
-            ).execute()
-        except Exception:
-            logger.warning("bulk submission upsert failed", exc_info=True)
+        from db.supabase_client import db as _db
+        _db.client.table("mock_test_submissions").upsert(
+            submission_updates,
+            on_conflict="mock_test_id,content_id,user_id",
+        ).execute()
 
     return graded_rows
 
@@ -508,19 +534,16 @@ def compute_result(
     weak = _weak_concepts(concept_scores)
     strong_ch, weak_ch = _strong_weak_chapters(chapter_scores)
 
-    # Persist aggregates back to mock_tests
-    try:
-        from db.supabase_client import db as _db
-        _db.client.table("mock_tests").update({  # type: ignore[union-attr]
-            "status": "graded",
-            "raw_score": overall["raw_score"],
-            "max_score": overall["max_score"],
-            "accuracy_pct": overall["accuracy_pct"],
-            "subject_scores": subject_scores,
-            "chapter_scores": chapter_scores,
-        }).eq("mock_test_id", mock_test_id).execute()
-    except Exception:
-        logger.warning("failed to persist mock_tests aggregates", exc_info=True)
+    # Persist aggregates back to mock_tests (raises on failure so the test is not left half-graded)
+    from db.supabase_client import db as _db
+    _db.client.table("mock_tests").update({
+        "status": "graded",
+        "raw_score": overall["raw_score"],
+        "max_score": overall["max_score"],
+        "accuracy_pct": overall["accuracy_pct"],
+        "subject_scores": subject_scores,
+        "chapter_scores": chapter_scores,
+    }).eq("mock_test_id", mock_test_id).execute()
 
     return {
         "mock_test_id": mock_test_id,

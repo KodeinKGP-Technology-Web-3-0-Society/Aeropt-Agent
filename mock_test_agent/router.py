@@ -10,6 +10,7 @@ to api_server.py:
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +45,7 @@ class MockSubjectConfig(BaseModel):
     chapters: List[str] = []           # chapter_ids; empty = all chapters in subject
     n_questions: int = 30
     difficulty_target: Optional[int] = None
+    question_types: List[str] = []     # 'single' | 'multiple' | 'numerical'; empty = all
 
 
 class MockBuildRequest(BaseModel):
@@ -55,6 +57,7 @@ class MockBuildRequest(BaseModel):
     exclude_seen: bool = False
     force_new: bool = False
     allow_fallback: bool = True
+    async_build: bool = False
 
 
 class MockStartRequest(BaseModel):
@@ -84,50 +87,80 @@ def mock_catalog(
     user_id: str,
     subject: Optional[str] = None,
     exam: str = "JEE_ADVANCED",
+    types: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return chapters with their gradeable PYQ counts.
+    """Chapters of the JEE syllabus that have gradeable PYQs, with counts.
 
-    Used by the frontend to let students pick which chapters to include and
-    see whether a chapter has enough questions for a meaningful test.
+    Only chapters a mock test can actually draw from are returned, so the picker never
+    offers an empty chapter. If the syllabus cannot be read this fails with 503 rather than
+    serving some other chapter list: a wrong syllabus is worse than an error.
     """
+    try:
+        from mock_test_agent import syllabus_catalog
+        chapters = syllabus_catalog.get_standard_catalog(exam=exam)
+        if subject:
+            chapters = [c for c in chapters if c.get("subject") == subject]
+        return {
+            "exam": exam,
+            "chapters": chapters,
+            "subjects": ["Physics", "Chemistry", "Mathematics"],
+        }
+    except Exception as exc:
+        logging.getLogger("aeropt.mock").warning("mock catalog fallback to syllabus_catalog failed: %s", exc)
+
     from retrieval import store as ret_store
     from mock_test_agent import settings as cfg
 
     exam_filter = cfg.EXAM_ALLOWED_DB.get(exam, ())
-    all_chapters = ret_store.chapters()
-
+    wanted = [t for t in (types or "").split(",") if t.strip()]
+    unknown = [t for t in wanted if t not in cfg.QUESTION_TYPE_GROUPS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"types must be among {sorted(cfg.QUESTION_TYPE_GROUPS)}")
+    stored_types = sorted({s for t in wanted for s in cfg.QUESTION_TYPE_GROUPS[t]})
+    try:
+        all_chapters = ret_store.chapters()
+    except Exception as exc:
+        logging.getLogger("aeropt.mock").warning("mock catalog: chapters unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="The syllabus is unavailable right now. Please try again shortly.")
     if subject:
         all_chapters = [ch for ch in all_chapters if ch.get("subject") == subject]
 
+    params: Dict[str, Any] = {}
+    exam_clause = ""
+    if exam_filter:
+        params["exams"] = list(exam_filter)
+        exam_clause = "AND c.target_exam = ANY(%(exams)s)"
+    if stored_types:
+        params["qtypes"] = stored_types
+        exam_clause += " AND lower(c.question_type) = ANY(%(qtypes)s)"
+    try:
+        rows = ret_store.query(
+            f"""
+            SELECT c.chapter_id, count(*) AS n
+            FROM public.content c
+            JOIN knowledge_private.solutions sol ON sol.question_id = c.content_id
+            WHERE c.content_type = 'PYQ'
+              AND c.question_type NOT IN ('subjective','matching')
+              AND sol.answer IS NOT NULL
+              AND {ret_store.FIGURE_READY_SQL}
+              {exam_clause}
+            GROUP BY c.chapter_id
+            """,
+            params,
+        )
+    except Exception as exc:
+        logging.getLogger("aeropt.mock").warning("mock catalog: question counts failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Question counts are unavailable right now. Please try again shortly.")
+    counts = {r["chapter_id"]: int(r["n"]) for r in rows}
+
     results = []
     for ch in all_chapters:
-        ch_id = ch["chapter_id"]
-        params: Dict[str, Any] = {"chapter_id": ch_id}
-        exam_clause = ""
-        if exam_filter:
-            params["exams"] = list(exam_filter)
-            exam_clause = "AND c.target_exam = ANY(%(exams)s)"
-        try:
-            rows = ret_store.query(
-                f"""
-                SELECT count(*) AS n
-                FROM public.content c
-                JOIN knowledge_private.solutions sol ON sol.question_id = c.content_id
-                WHERE c.chapter_id = %(chapter_id)s
-                  AND c.content_type = 'PYQ'
-                  AND c.question_type NOT IN ('subjective','matching')
-                  AND sol.answer IS NOT NULL
-                  {exam_clause}
-                """,
-                params,
-            )
-            count = int(rows[0]["n"]) if rows else 0
-        except Exception:
-            count = 0
-
+        count = counts.get(ch["chapter_id"], 0)
+        if count <= 0:
+            continue
         results.append({
-            "chapter_id": ch_id,
-            "title": ch.get("title", ch_id),
+            "chapter_id": ch["chapter_id"],
+            "title": ch.get("title", ch["chapter_id"]),
             "subject": ch.get("subject", ""),
             "in_syllabus": bool(ch.get("in_syllabus", True)),
             "gradeable_pyqs": count,
@@ -141,17 +174,43 @@ def mock_catalog(
     }
 
 
+# ── error mapping ─────────────────────────────────────────────────────────────
+
+def _store_guard(fn):
+    """Turn a Supabase outage into a clear 503 instead of a bare 500."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        from mock_test_agent.assembly import MockStoreError
+        try:
+            return fn(*args, **kwargs)
+        except MockStoreError as exc:
+            logging.getLogger("aeropt.mock").error("mock store error: %s", exc)
+            raise HTTPException(status_code=503, detail="Mock tests are temporarily unavailable. Please try again.")
+    return wrapper
+
+
+def _require_test(mock_test_id: str, user_id: str) -> Dict[str, Any]:
+    from mock_test_agent.assembly import get_test
+    test = get_test(mock_test_id, user_id)
+    if not test:
+        raise HTTPException(status_code=404, detail="Mock test not found")
+    return test
+
+
 # ── /mock/build ───────────────────────────────────────────────────────────────
 
 @router.post("/build")
+@_store_guard
 def mock_build(body: MockBuildRequest) -> Dict[str, Any]:
-    """Validate the config, select questions, persist the test.
+    """Validate the config and build the test.
 
-    Returns the assembled test (questions without answers) and a feasibility
-    report explaining any chapter shortfalls.
+    async_build=false (default): select and persist everything, return the sections
+    (no answers) and a feasibility report.
+    async_build=true: create the row as 'building', run the build in the background and
+    return immediately; poll GET /mock/status/{id}.
     """
     from mock_test_agent.models import MockTestConfig, SubjectConfig
-    from mock_test_agent.assembly import MockTestConfigError, assemble_test
+    from mock_test_agent.assembly import MockTestConfigError, assemble_test, start_background_assembly
 
     if not body.user_id.strip():
         raise HTTPException(status_code=400, detail="user_id is required")
@@ -165,6 +224,7 @@ def mock_build(body: MockBuildRequest) -> Dict[str, Any]:
                 chapters=s.chapters,
                 n_questions=s.n_questions,
                 difficulty_target=s.difficulty_target,
+                question_types=s.question_types,
             )
             for s in body.subjects
         ],
@@ -176,73 +236,127 @@ def mock_build(body: MockBuildRequest) -> Dict[str, Any]:
     )
 
     try:
-        result = assemble_test(cfg_obj)
+        if body.async_build:
+            return start_background_assembly(cfg_obj)
+        return assemble_test(cfg_obj)
     except MockTestConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
+        from mock_test_agent.assembly import MockStoreError
+        if isinstance(exc, MockStoreError):
+            raise
         logging.getLogger("aeropt.mock").error("mock build failed", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Test assembly failed: {exc}")
 
-    return result
+
+# ── /mock/status ──────────────────────────────────────────────────────────────
+
+@router.get("/status/{mock_test_id}")
+@_store_guard
+def mock_status(mock_test_id: str, user_id: str) -> Dict[str, Any]:
+    """Live build progress (and lifecycle status) of one test."""
+    from mock_test_agent.assembly import build_status
+    return build_status(_require_test(mock_test_id, user_id))
+
+
+# ── /mock/history ─────────────────────────────────────────────────────────────
+
+@router.get("/history")
+@_store_guard
+def mock_history(user_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+    """The caller's mock tests, newest first, with score summaries."""
+    from mock_test_agent.assembly import list_tests
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return list_tests(user_id.strip(), limit=max(1, min(limit, 100)), offset=max(0, offset))
 
 
 # ── /mock/start ───────────────────────────────────────────────────────────────
 
-@router.post("/start")
-def mock_start(body: MockStartRequest) -> Dict[str, Any]:
-    """Mark the test as in_progress and return the full question list.
+def _saved_answers(mock_test_id: str, user_id: str) -> List[Dict[str, Any]]:
+    from mock_test_agent.assembly import get_submissions
+    return [
+        {
+            "content_id": s["content_id"],
+            "student_answer": s.get("student_answer"),
+            "choice": s.get("choice"),
+            "numeric_value": s.get("numeric_value"),
+        }
+        for s in get_submissions(mock_test_id, user_id)
+    ]
 
-    The answer field is stripped — students never see answers before submit.
+
+@router.post("/start")
+@_store_guard
+def mock_start(body: MockStartRequest) -> Dict[str, Any]:
+    """Start the test, or resume it. Idempotent.
+
+    started_at is set only on the first start; a reload of an in_progress test returns the
+    original started_at (timer keeps running) plus the student's saved answers. The answer
+    key is never included.
     """
     from datetime import datetime, timezone
-    from mock_test_agent.assembly import get_test, get_test_questions
+    from mock_test_agent.assembly import get_test_questions, _table
 
-    test = get_test(body.mock_test_id, body.user_id)
-    if not test:
-        raise HTTPException(status_code=404, detail="Mock test not found")
-    if test["status"] == "submitted" or test["status"] == "graded":
+    test = _require_test(body.mock_test_id, body.user_id)
+    status = test["status"]
+    if status in ("submitted", "graded"):
         raise HTTPException(status_code=409, detail="Test has already been submitted")
+    if status == "building":
+        raise HTTPException(status_code=409, detail="The test is still being built. Wait until it is ready.")
+    if status == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=test.get("_build_error") or "The test could not be built. Please build a new one.",
+        )
 
-    now = datetime.now(timezone.utc).isoformat()
-    try:
-        db.client.table("mock_tests").update({
-            "status": "in_progress",
-            "started_at": now,
-        }).eq("mock_test_id", body.mock_test_id).execute()
-    except Exception:
-        logging.getLogger("aeropt.mock").warning("could not update status to in_progress", exc_info=True)
+    started_at = test.get("started_at")
+    if status == "built":
+        now = datetime.now(timezone.utc).isoformat()
+        # Conditional on status so two concurrent starts cannot both claim the first start.
+        _table("mock_tests").update({"status": "in_progress", "started_at": now}) \
+            .eq("mock_test_id", body.mock_test_id).eq("status", "built").execute()
+        fresh = _require_test(body.mock_test_id, body.user_id)
+        started_at = fresh.get("started_at") or now
 
     questions = get_test_questions(body.mock_test_id, include_answers=False)
+    if not questions:
+        raise HTTPException(status_code=409, detail="This test has no questions. Please build a new one.")
     return {
         "mock_test_id": body.mock_test_id,
         "status": "in_progress",
-        "started_at": now,
+        "started_at": started_at,
         "time_limit_minutes": test.get("time_limit_minutes", 180),
         "total_questions": len(questions),
         "questions": questions,
+        "answers": _saved_answers(body.mock_test_id, body.user_id),
     }
 
 
 # ── /mock/answer ──────────────────────────────────────────────────────────────
 
 @router.post("/answer")
+@_store_guard
 def mock_answer(body: MockAnswerRequest) -> Dict[str, Any]:
     """Save one student answer.  Grade is not revealed until /submit.
 
     Idempotent: re-submitting the same content_id overwrites the previous answer
     as long as the test has not been submitted.
     """
-    from mock_test_agent.assembly import get_test, save_answer
+    from mock_test_agent.assembly import get_test_questions, save_answer
 
-    test = get_test(body.mock_test_id, body.user_id)
-    if not test:
-        raise HTTPException(status_code=404, detail="Mock test not found")
-    if test["status"] in ("submitted", "graded"):
+    test = _require_test(body.mock_test_id, body.user_id)
+    status = test["status"]
+    if status in ("submitted", "graded"):
         raise HTTPException(status_code=409, detail="Test has already been submitted; answers cannot be changed")
-    if test["status"] == "built":
-        raise HTTPException(status_code=409, detail="Call /mock/start before submitting answers")
+    if status != "in_progress":
+        raise HTTPException(status_code=409, detail=f"Test is {status}; call /mock/start before answering")
+    if body.content_id not in {q["content_id"] for q in get_test_questions(body.mock_test_id)}:
+        raise HTTPException(status_code=404, detail="That question is not part of this test")
 
-    result = save_answer(
+    return save_answer(
         mock_test_id=body.mock_test_id,
         content_id=body.content_id,
         user_id=body.user_id,
@@ -251,12 +365,12 @@ def mock_answer(body: MockAnswerRequest) -> Dict[str, Any]:
         numeric_value=body.numeric_value,
         time_taken_sec=body.time_taken_sec,
     )
-    return result
 
 
 # ── /mock/submit ──────────────────────────────────────────────────────────────
 
 @router.post("/submit")
+@_store_guard
 def mock_submit(body: MockSubmitRequest) -> Dict[str, Any]:
     """Grade all answers, compute analytics, update proficiency, persist scores.
 
@@ -264,31 +378,19 @@ def mock_submit(body: MockSubmitRequest) -> Dict[str, Any]:
     re-grading (to avoid double-counting proficiency updates).
     """
     from datetime import datetime, timezone
-    from mock_test_agent.assembly import get_test, get_test_questions, get_submissions
+    from mock_test_agent.assembly import _table, get_test_questions, get_submissions
     from mock_test_agent.grading import resolve_marking_scheme, compute_result
 
-    test = get_test(body.mock_test_id, body.user_id)
-    if not test:
-        raise HTTPException(status_code=404, detail="Mock test not found")
+    test = _require_test(body.mock_test_id, body.user_id)
     if test["status"] == "graded":
-        # Already graded — return stored result without re-grading
-        return {
-            "mock_test_id": body.mock_test_id,
-            "status": "graded",
-            "already_submitted": True,
-            "raw_score": test.get("raw_score"),
-            "max_score": test.get("max_score"),
-            "accuracy_pct": test.get("accuracy_pct"),
-        }
+        return {"submitted": True, "already_submitted": True, **_result_payload(test, body.user_id)}
+    if test["status"] not in ("in_progress", "submitted"):
+        raise HTTPException(status_code=409, detail=f"Test is {test['status']}; it cannot be submitted yet")
 
-    now = datetime.now(timezone.utc).isoformat()
-    try:
-        db.client.table("mock_tests").update({
-            "status": "submitted",
-            "submitted_at": now,
-        }).eq("mock_test_id", body.mock_test_id).execute()
-    except Exception:
-        logging.getLogger("aeropt.mock").warning("could not mark as submitted", exc_info=True)
+    if test["status"] == "in_progress":
+        now = datetime.now(timezone.utc).isoformat()
+        _table("mock_tests").update({"status": "submitted", "submitted_at": now}) \
+            .eq("mock_test_id", body.mock_test_id).eq("status", "in_progress").execute()
 
     questions = get_test_questions(body.mock_test_id, include_answers=True)
     submissions = get_submissions(body.mock_test_id, body.user_id)
@@ -318,28 +420,12 @@ def mock_submit(body: MockSubmitRequest) -> Dict[str, Any]:
 
 # ── /mock/result ──────────────────────────────────────────────────────────────
 
-@router.get("/result/{mock_test_id}")
-def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) -> Dict[str, Any]:
-    """Return the full result for a graded mock test.
+def _result_payload(test: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """Result built from stored rows (no re-grading)."""
+    from mock_test_agent.assembly import get_test_questions, get_submissions
 
-    If include_debrief=true, triggers the LLM debrief narrative (cached after
-    first generation).  The result is always returned even if debrief generation
-    fails or is skipped.
-    """
-    from mock_test_agent.assembly import get_test, get_test_questions, get_submissions
-
-    test = get_test(mock_test_id, user_id)
-    if not test:
-        raise HTTPException(status_code=404, detail="Mock test not found")
-    if test["status"] not in ("submitted", "graded"):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Test is not yet submitted (status={test['status']!r}). Call /mock/submit first.",
-        )
-
-    # Build result from stored aggregates (no re-grading)
-    questions = get_test_questions(mock_test_id, include_answers=False)
-    submissions = get_submissions(mock_test_id, user_id)
+    questions = get_test_questions(test['mock_test_id'], include_answers=False)
+    submissions = get_submissions(test['mock_test_id'], user_id)
 
     sub_map = {s["content_id"]: s for s in submissions}
     graded_questions = []
@@ -362,10 +448,12 @@ def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) 
             "question_score": (sub or {}).get("question_score"),
             "answer_text": (sub or {}).get("answer_text"),
             "student_answer": (sub or {}).get("student_answer"),
+            "choice": (sub or {}).get("choice"),
+            "numeric_value": (sub or {}).get("numeric_value"),
         })
 
     result: Dict[str, Any] = {
-        "mock_test_id": mock_test_id,
+        "mock_test_id": test["mock_test_id"],
         "status": test["status"],
         "exam": test.get("exam"),
         "time_limit_minutes": test.get("time_limit_minutes"),
@@ -387,6 +475,27 @@ def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) 
         "graded_questions": graded_questions,
         "debrief": test.get("debrief"),
     }
+
+    return result
+
+
+@router.get("/result/{mock_test_id}")
+@_store_guard
+def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) -> Dict[str, Any]:
+    """Return the full result for a submitted mock test.
+
+    If include_debrief=true, triggers the LLM debrief narrative (cached after
+    first generation).  The result is always returned even if debrief generation
+    fails or is skipped.
+    """
+    test = _require_test(mock_test_id, user_id)
+    if test["status"] not in ("submitted", "graded"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Test is not yet submitted (status={test['status']!r}). Call /mock/submit first.",
+        )
+    result = _result_payload(test, user_id)
+    graded_questions = result["graded_questions"]
 
     # Optionally trigger (or return cached) LLM debrief
     if include_debrief and not test.get("debrief"):

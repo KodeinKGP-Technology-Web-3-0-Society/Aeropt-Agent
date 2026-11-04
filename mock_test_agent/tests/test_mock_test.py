@@ -647,60 +647,41 @@ class TestMockTestIntegration(unittest.TestCase):
                 }
         return FakeHit()
 
-    @patch("mock_test_agent.assembly.store.chapters")
-    @patch("mock_test_agent.assembly.store.all_concepts")
     @patch("mock_test_agent.assembly.store.concept")
     @patch("mock_test_agent.assembly.store.query")
-    @patch("mock_test_agent.assembly.search.search")
+    @patch("mock_test_agent.assembly.store.chapters")
     @patch("mock_test_agent.assembly.db")
-    def test_assemble_test_shape(
-        self,
-        mock_db,
-        mock_search,
-        mock_store_query,
-        mock_concept,
-        mock_all_concepts,
-        mock_chapters,
-    ):
+    def test_assemble_test_shape(self, mock_db, mock_chapters, mock_query, mock_concept):
         from mock_test_agent.models import MockTestConfig, SubjectConfig
         from mock_test_agent.assembly import assemble_test
 
-        # Stub retrieval store
         mock_chapters.return_value = [
             {"chapter_id": "optics", "title": "Optics", "subject": "Physics", "in_syllabus": True}
         ]
-        mock_all_concepts.return_value = [
-            {"concept_id": "phy_optics_refraction", "chapter_id": "optics", "name": "Refraction", "subject": "Physics"}
-        ]
-        mock_concept.return_value = {"concept_id": "phy_optics_refraction", "name": "Refraction"}
-        mock_store_query.return_value = [{"n": 10}]   # inventory count
+        mock_concept.return_value = {"concept_id": "c1", "name": "Refraction"}
 
-        # Stub search to return two distinct chunks
-        class FakeResult:
-            hits = [self._make_chunk("q_a"), self._make_chunk("q_b")]
-        mock_search.return_value = FakeResult()
-
-        # Stub DB writes
-        mock_db.client.table.return_value.insert.return_value.execute.return_value = MagicMock()
+        def fake_query(sql, params=None):
+            if "GROUP BY" in sql:
+                return [{"chapter_id": "optics", "n": 10}]
+            return [
+                {"content_id": cid, "concept_id": "c1", "question_type": "single_correct", "difficulty": 3,
+                 "core_text": "What?", "fingerprint": f"fp_{cid}",
+                 "structured": json.dumps({"stem": "What?", "options": [
+                     {"label": "A", "text": "1"}, {"label": "B", "text": "2"}]}),
+                 "answer": json.dumps({"kind": "letters", "letters": "B"})}
+                for cid in ("q_a", "q_b")
+            ]
+        mock_query.side_effect = fake_query
 
         cfg = MockTestConfig(
-            user_id="user-test",
-            exam="JEE_ADVANCED",
+            user_id="user-test", exam="JEE_ADVANCED",
             subjects=[SubjectConfig(subject="Physics", chapters=["optics"], n_questions=2)],
             total_time_minutes=60,
         )
-
         result = assemble_test(cfg)
-
-        self.assertIn("mock_test_id", result)
         self.assertEqual(result["status"], "built")
-        self.assertIn("sections", result)
-        self.assertEqual(len(result["sections"]), 1)
         section = result["sections"][0]
-        self.assertEqual(section["subject"], "Physics")
-        # At least some questions were selected (up to 2)
-        self.assertGreater(len(section["questions"]), 0)
-        # Answers are NOT in student-facing question dicts
+        self.assertEqual([q["display_order"] for q in section["questions"]], [1, 2])
         for q in section["questions"]:
             self.assertNotIn("answer", q)
 

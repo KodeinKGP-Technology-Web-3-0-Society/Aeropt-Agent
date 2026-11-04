@@ -26,6 +26,7 @@ class SubjectConfig:
     chapters: List[str] = field(default_factory=list)   # chapter_ids; empty = all
     n_questions: int = 30                 # questions to include from this subject
     difficulty_target: Optional[int] = None  # 1–5; None → exam default
+    question_types: List[str] = field(default_factory=list)  # 'single' | 'multiple' | 'numerical'; empty = all
 
 
 # ── Top-level config ─────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ class MockTestConfig:
                     "chapters": s.chapters,
                     "n_questions": s.n_questions,
                     "difficulty_target": s.difficulty_target,
+                    "question_types": list(s.question_types),
                 }
                 for s in self.subjects
             ],
@@ -86,6 +88,7 @@ class MockTestConfig:
                 chapters=s.get("chapters") or [],
                 n_questions=int(s.get("n_questions") or 30),
                 difficulty_target=s.get("difficulty_target"),
+                question_types=list(s.get("question_types") or []),
             )
             for s in (data.get("subjects") or [])
         ]

@@ -153,6 +153,9 @@ app = FastAPI(title="JEE Tutor Agent API", version="1.0.0", lifespan=_lifespan)
 
 app.include_router(admin_traces.router)
 
+from mock_test_agent.router import router as mock_test_router  # noqa: E402
+app.include_router(mock_test_router)
+
 # Added before CORS so CORS wraps it: a 401/429 must still carry CORS headers,
 # or the browser hides the status and the frontend cannot refresh the token.
 app.add_middleware(AgentAuthMiddleware)
@@ -162,7 +165,7 @@ app.add_middleware(
         origin.strip()
         for origin in os.getenv(
             "CORS_ALLOWED_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000,http://10.145.27.236:3000",
+            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://10.145.27.236:3000",
         ).split(",")
         if origin.strip()
     ],
