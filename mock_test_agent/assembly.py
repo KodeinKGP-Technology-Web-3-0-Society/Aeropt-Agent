@@ -229,13 +229,23 @@ def _resolve_chapter_ids(
     ]
     if not subj_cfg.chapters:
         return subject_chapters
-    bad = [c for c in subj_cfg.chapters if c not in chapter_map]
+    from mock_test_agent.syllabus_catalog import corpus_ids_for
+
+    resolved: List[str] = []
+    bad: List[str] = []
+    for requested in dict.fromkeys(subj_cfg.chapters):
+        hits = [c for c in corpus_ids_for(requested) if c in chapter_map]
+        if not hits:
+            bad.append(requested)
+        else:
+            resolved.extend(hits)
     if bad:
         raise MockTestConfigError(f"{subj_cfg.subject}: unknown chapter(s) {bad}")
-    wrong = [c for c in subj_cfg.chapters if chapter_map[c].get("subject") != subj_cfg.subject]
+    resolved = list(dict.fromkeys(resolved))
+    wrong = [c for c in resolved if chapter_map[c].get("subject") != subj_cfg.subject]
     if wrong:
         raise MockTestConfigError(f"{subj_cfg.subject}: chapter(s) {wrong} belong to another subject")
-    return [c for c in dict.fromkeys(subj_cfg.chapters) if inventory.get(c, 0) > 0]
+    return [c for c in resolved if inventory.get(c, 0) > 0]
 
 
 def check_inventory(cfg: MockTestConfig) -> FeasibilityReport:

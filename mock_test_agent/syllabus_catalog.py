@@ -279,6 +279,40 @@ def get_sub_ids_for_chapter(chapter_id: str) -> List[str]:
     return [chapter_id]
 
 
+# The picker used to send these syllabus labels. The question bank stores a
+# different chapter_id for the same topic. Values are ids in public.chapters.
+_CORPUS_CHAPTER_IDS: Dict[str, List[str]] = {
+    "units_and_measurement": ["physics_and_measurement"],
+    "work_energy_power": ["work_energy_and_power"],
+    "properties_of_matter_fluids": ["properties_of_solids_and_liquids"],
+    "oscillations_shm": ["oscillations_and_waves"],
+    "waves_sound": ["oscillations_and_waves"],
+    "magnetism": ["magnetic_effects_of_current_and_magnetism"],
+    "emi_ac": ["electromagnetic_induction_and_alternating_currents"],
+    "em_waves": ["electromagnetic_waves"],
+    "modern_physics": ["dual_nature_of_matter_and_radiation", "atoms_and_nuclei"],
+    "redox_reactions": ["redox_reactions_and_electrochemistry"],
+    "electrochemistry": ["redox_reactions_and_electrochemistry"],
+    "alcohols_phenols_and_ethers": ["organic_compounds_containing_oxygen"],
+    "aldehydes_ketones_and_carboxylic_acids": ["organic_compounds_containing_oxygen"],
+    "sets_and_relations": ["sets_relations_and_functions"],
+    "complex_numbers": ["complex_numbers_and_quadratic_equations"],
+    "limits_and_derivatives": ["limit_continuity_and_differentiability"],
+    "integrals": ["integral_calculus"],
+    "application_of_integrals": ["integral_calculus"],
+    "straight_lines": ["coordinate_geometry"],
+    "conic_sections": ["coordinate_geometry"],
+    "probability": ["statistics_and_probability"],
+    "trigonometric_functions": ["trigonometry"],
+    "inverse_trigonometric_functions": ["trigonometry"],
+}
+
+
+def corpus_ids_for(chapter_id: str) -> List[str]:
+    """Question-bank chapter ids for a picker id. Unknown ids are returned unchanged."""
+    return list(_CORPUS_CHAPTER_IDS.get(chapter_id, [chapter_id]))
+
+
 def load_math_questions(chapter_id: str, n_wanted: int, exclude_ids: set) -> List[Dict[str, Any]]:
     """Fetch math questions from questions_mathematics.jsonl."""
     if not os.path.exists(_MATH_JSONL):

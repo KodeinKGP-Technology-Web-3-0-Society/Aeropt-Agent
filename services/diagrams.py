@@ -38,7 +38,7 @@ DIAGRAM_DIR = Path(os.environ.get("AEROPT_DIAGRAM_DIR", str(_ROOT / "var" / "dia
 SVG_DIR = DIAGRAM_DIR / "svg"
 WORK_DIR = DIAGRAM_DIR / "work"
 
-COMPILE_TIMEOUT_S = 60      # first use downloads packages; cached compiles take ~2 s
+COMPILE_TIMEOUT_S = 180     # first use downloads the TeX bundle; a cached compile takes a few seconds
 MAX_SOURCE_CHARS = 8000
 
 _HASH_RE = re.compile(r"^[0-9a-f]{20}$")
@@ -91,8 +91,24 @@ def _restore(diagram_id: str, path: Path) -> bool:
     return True
 
 
+def _exe(name: str) -> Optional[str]:
+    """PATH first, then a binary kept under the project's tools directory.
+
+    pdftocairo needs the DLLs that sit beside it, so the path returned is the
+    real executable, not a copy moved away from those libraries.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    root = _ROOT / "tools"
+    if not root.is_dir():
+        return None
+    matches = sorted(root.glob(f"**/{name}.exe"))
+    return str(matches[0]) if matches else None
+
+
 def available() -> bool:
-    return bool(shutil.which("tectonic") and shutil.which("pdftocairo"))
+    return bool(_exe("tectonic") and _exe("pdftocairo"))
 
 
 def _validate(source: str) -> str:
@@ -150,7 +166,7 @@ def render_tikz(source: str) -> Dict[str, Any]:
     work.mkdir(parents=True, exist_ok=True)
     (work / "d.tex").write_text(_PREAMBLE + src + _POSTAMBLE, encoding="utf-8")
 
-    cmd = ["tectonic", "-X", "compile", "--outdir", str(work), str(work / "d.tex")]
+    cmd = [_exe("tectonic") or "tectonic", "-X", "compile", "--outdir", str(work), str(work / "d.tex")]
     if shutil.which("systemd-run"):
         # Own cgroup: a runaway compile is killed at the cap instead of the box.
         cmd = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=700M", "-p", "CPUQuota=100%", *cmd]
@@ -168,7 +184,7 @@ def render_tikz(source: str) -> Dict[str, Any]:
             raise DiagramError(f"LaTeX error: {_tex_error(log)}")
         svg_tmp = work / "d.svg"
         conv = subprocess.run(
-            ["pdftocairo", "-svg", str(pdf), str(svg_tmp)],
+            [_exe("pdftocairo") or "pdftocairo", "-svg", str(pdf), str(svg_tmp)],
             capture_output=True, text=True, timeout=30,
         )
         if conv.returncode != 0 or not svg_tmp.exists():

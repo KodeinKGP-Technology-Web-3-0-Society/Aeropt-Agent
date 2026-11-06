@@ -50,6 +50,23 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("$$", out)
         self.assertIn(r"\frac{1}{2}MR^2", out)
 
+    def test_ascii_sketch_and_empty_math_are_removed(self):
+        raw = (
+            "The impulse is applied above the centre.\n\n"
+            "```\n"
+            "  ______|____|______\n"
+            " /                 \\\n"
+            "|        C         |\n"
+            " \\_________________/\n"
+            "```\n\n"
+            "$$\n\\\n$$\n\n"
+            "So $h = \\frac{2}{5}R$."
+        )
+        out = release(raw)
+        self.assertNotIn("______", out)
+        self.assertNotIn("```", out)
+        self.assertIn(r"\frac{2}{5}R", out)
+
     def test_inline_tikz_converted(self):
         from services import diagrams
 

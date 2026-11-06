@@ -92,22 +92,9 @@ def mock_catalog(
     """Chapters of the JEE syllabus that have gradeable PYQs, with counts.
 
     Only chapters a mock test can actually draw from are returned, so the picker never
-    offers an empty chapter. If the syllabus cannot be read this fails with 503 rather than
-    serving some other chapter list: a wrong syllabus is worse than an error.
+    offers an empty chapter. Ids are the question bank's own chapter ids. A separate
+    syllabus list used different ids and every build of those chapters failed.
     """
-    try:
-        from mock_test_agent import syllabus_catalog
-        chapters = syllabus_catalog.get_standard_catalog(exam=exam)
-        if subject:
-            chapters = [c for c in chapters if c.get("subject") == subject]
-        return {
-            "exam": exam,
-            "chapters": chapters,
-            "subjects": ["Physics", "Chemistry", "Mathematics"],
-        }
-    except Exception as exc:
-        logging.getLogger("aeropt.mock").warning("mock catalog fallback to syllabus_catalog failed: %s", exc)
-
     from retrieval import store as ret_store
     from mock_test_agent import settings as cfg
 
@@ -481,12 +468,17 @@ def _result_payload(test: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
 @router.get("/result/{mock_test_id}")
 @_store_guard
-def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) -> Dict[str, Any]:
+def mock_result(
+    mock_test_id: str,
+    user_id: str,
+    include_debrief: bool = False,
+    regenerate: bool = False,
+) -> Dict[str, Any]:
     """Return the full result for a submitted mock test.
 
     If include_debrief=true, triggers the LLM debrief narrative (cached after
-    first generation).  The result is always returned even if debrief generation
-    fails or is skipped.
+    first generation). regenerate=true writes a new one over the cache.
+    The result is always returned even if debrief generation fails or is skipped.
     """
     test = _require_test(mock_test_id, user_id)
     if test["status"] not in ("submitted", "graded"):
@@ -498,7 +490,7 @@ def mock_result(mock_test_id: str, user_id: str, include_debrief: bool = False) 
     graded_questions = result["graded_questions"]
 
     # Optionally trigger (or return cached) LLM debrief
-    if include_debrief and not test.get("debrief"):
+    if include_debrief and (regenerate or not test.get("debrief")):
         try:
             from mock_test_agent.debrief import generate_debrief
             debrief_text = generate_debrief(

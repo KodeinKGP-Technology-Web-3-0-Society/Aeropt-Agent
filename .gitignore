@@ -44,5 +44,7 @@ tests/fixtures/routing_baseline*.json
 
 # compiled tutor diagrams (services/diagrams.py)
 var/
+# local tectonic / poppler binaries, not part of the repo
+tools/
 evals/correctness/runs/*
 !evals/correctness/runs/baseline.json

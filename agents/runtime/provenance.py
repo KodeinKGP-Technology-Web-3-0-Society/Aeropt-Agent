@@ -87,6 +87,35 @@ def _widen_to_wrapper(text: str, start: int, end: int) -> Tuple[int, int]:
     return start, end
 
 
+_FENCE_RE = re.compile(r"```[^\n]*\n([\s\S]*?)```")
+_SKETCH_CHAR = re.compile(r"[_|/\\^<>*#=~]|[─│┌┐└┘╭╮╯╰╔╗╚╝═║]")
+_EMPTY_MATH_RE = re.compile(r"\$\$\s*\\?\s*\$\$")
+
+
+def _is_text_sketch(body: str) -> bool:
+    """A fenced block that is a picture made of characters, not a program."""
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    sketchy = 0
+    for ln in lines:
+        marks = len(_SKETCH_CHAR.findall(ln))
+        letters = len(re.findall(r"[A-Za-z]", ln))
+        if marks >= 4 and marks > letters:
+            sketchy += 1
+    return sketchy >= 2 and sketchy * 2 >= len(lines)
+
+
+def strip_text_sketches(text: str) -> str:
+    """Drop ASCII diagrams and empty display-math blocks. They are not readable."""
+    if not text:
+        return text or ""
+    if "```" in text:
+        text = _FENCE_RE.sub(lambda m: "" if _is_text_sketch(m.group(1)) else m.group(0), text)
+    text = _EMPTY_MATH_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def render_inline_tikz(text: str) -> Tuple[str, int, int]:
     """Compile TikZ written straight into the reply, as draw_diagram would.
 

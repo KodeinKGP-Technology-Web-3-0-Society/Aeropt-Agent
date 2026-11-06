@@ -586,6 +586,51 @@ class TestDebriefHelpers(unittest.TestCase):
         # so refraction should not appear; only newtons_2nd (0%) appears
         self.assertNotIn("Refraction", text)
 
+    def test_evidence_brief_names_the_miss_and_the_skip(self):
+        from mock_test_agent.debrief import build_evidence_brief
+        text = build_evidence_brief(
+            exam="JEE_ADVANCED",
+            raw_score=-1,
+            max_score=12,
+            accuracy=25,
+            graded_questions=[
+                {
+                    "concept_name": "Refraction",
+                    "chapter_title": "Optics",
+                    "section": "Physics",
+                    "question_type": "single_correct",
+                    "grade_status": "incorrect",
+                    "is_correct": False,
+                    "question_score": -1,
+                    "choice": ["B"],
+                    "answer_text": "C",
+                },
+                {
+                    "concept_name": "Capacitance",
+                    "chapter_title": "Electrostatics",
+                    "section": "Physics",
+                    "grade_status": "unattempted",
+                    "is_correct": None,
+                    "question_score": 0,
+                },
+                {
+                    "concept_name": "Coulomb's law",
+                    "chapter_title": "Electrostatics",
+                    "section": "Physics",
+                    "question_type": "single_correct",
+                    "grade_status": "correct",
+                    "is_correct": True,
+                    "question_score": 3,
+                },
+            ],
+            subject_scores={"Physics": {"raw_score": -1, "max_score": 12, "accuracy_pct": 25}},
+        )
+        self.assertIn("Marks lost to wrong answers: -1.0", text)
+        self.assertIn("you chose B", text)
+        self.assertIn("key C", text)
+        self.assertIn("Capacitance", text)
+        self.assertIn("Correct 1, wrong 1, skipped 1", text)
+
     def test_strong_chapters_list(self):
         from mock_test_agent.debrief import _strong_chapters_list
         chapter_scores = {
