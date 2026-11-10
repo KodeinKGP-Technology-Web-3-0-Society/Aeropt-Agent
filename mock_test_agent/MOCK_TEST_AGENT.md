@@ -2,7 +2,7 @@
 
 > **Audience:** Engineering leads and stakeholders who want to understand what was built, why each decision was made, and how the pieces fit together.
 >
-> **Where it lives:** everything is inside `mock_test_agent/`. The tutor server, shared config, and existing tests are not modified. The HTTP router is written but not mounted, and the SQL migration has not been applied.
+> **Current behaviour:** generation is `engine.py` with three modes (smart, custom, pyq). The router is mounted from `api_server.py`. New paper metadata is stored in the existing `mock_tests.config` jsonb, so old attempts stay readable without a new column. The sections below this banner describe the first PYQ-only version and are not the live selection path.
 
 ---
 

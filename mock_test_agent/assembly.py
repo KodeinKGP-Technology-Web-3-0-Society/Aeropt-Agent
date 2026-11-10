@@ -1,20 +1,8 @@
-"""Mock Test assembly pipeline — entirely deterministic, no LLM.
+"""Persist a mock paper. Question choice is engine.compose, not the old PYQ picker.
 
-Responsibilities:
-  validate_config        Check the incoming MockTestConfig for correctness.
-  check_inventory        Count gradeable PYQs available per chapter; return a
-                         FeasibilityReport without touching the user database.
-  select_questions       Retrieve questions for one subject section using the
-                         existing retrieval/search.py pipeline.
-  assemble_test          Orchestrate the full build: validate → inventory →
-                         select per section → persist to mock_tests +
-                         mock_test_questions → return the built test dict.
-  build_feasibility_report  Public helper that returns the inventory check
-                             result without actually assembling a test.
-
-Only PYQs with a discrete answer key (has_solution=True, has_gradekey=True)
-are eligible for inclusion.  Practice Questions (NCERT/HC Verma/OpenStax)
-have no answer keys and are excluded from mock tests.
+Smart and Custom use every gradeable question (PYQ, practice, solved example
+with an answer key). JEE PYQ Mock uses official Advanced papers only.
+Existing mock_tests rows are left in place.
 """
 
 from __future__ import annotations
@@ -68,6 +56,21 @@ def validate_config(cfg: MockTestConfig) -> None:
         raise MockTestConfigError("user_id is required")
     if cfg.exam not in VALID_EXAMS:
         raise MockTestConfigError(f"exam must be one of {sorted(VALID_EXAMS)}, got {cfg.exam!r}")
+    if cfg.mock_type not in ("smart", "custom", "pyq"):
+        raise MockTestConfigError("mock_type must be smart, custom, or pyq")
+    if cfg.coverage not in ("learned", "all"):
+        raise MockTestConfigError("coverage must be learned or all")
+    if cfg.year is not None and (int(cfg.year) < 2000 or int(cfg.year) > 2100):
+        raise MockTestConfigError("year is not a real examination year")
+    if cfg.paper is not None and int(cfg.paper) not in (1, 2):
+        raise MockTestConfigError("paper must be 1, 2, or omitted")
+    if cfg.mock_type == "pyq":
+        if cfg.exam not in ("JEE_MAIN", "JEE_ADVANCED"):
+            raise MockTestConfigError("A PYQ mock must be JEE Main or JEE Advanced")
+        if (cfg.pyq_length or "full") not in ("full", "short"):
+            raise MockTestConfigError("pyq_length must be full or short")
+        if cfg.pyq_length == "short" and (not cfg.short_questions or int(cfg.short_questions) < 1):
+            raise MockTestConfigError("A shortened PYQ mock needs a question count")
     if not cfg.subjects:
         raise MockTestConfigError("at least one subject section is required")
 
@@ -81,7 +84,10 @@ def validate_config(cfg: MockTestConfig) -> None:
             raise MockTestConfigError(f"duplicate subject section: {s.subject!r}")
         seen_subjects.add(s.subject)
 
-        if s.n_questions < 1:
+        if cfg.mock_type == "pyq":
+            if s.n_questions < 0:
+                raise MockTestConfigError(f"{s.subject}: n_questions cannot be negative")
+        elif s.n_questions < 1:
             raise MockTestConfigError(
                 f"{s.subject}: n_questions must be >= 1, got {s.n_questions}"
             )
@@ -131,12 +137,14 @@ _ALL_GRADEABLE = tuple(sorted(_GRADEABLE_TYPES))
 
 
 def normalise_qtype(raw: Optional[str]) -> str:
-    """Student-facing question type: single_correct | multiple_correct | numeric."""
+    """Student-facing question type."""
     low = (raw or "").strip().lower()
     if low in ("numeric", "numerical", "integer", "exercise"):
         return "numeric"
     if low in ("multiple_correct", "multi_correct"):
         return "multiple_correct"
+    if low in ("matching", "match_list", "matrix_match"):
+        return "matching"
     return "single_correct"
 
 
@@ -565,60 +573,94 @@ def _create_building_row(cfg: MockTestConfig) -> _Build:
     return build
 
 
-def _run_build(build: _Build) -> List[MockTestSection]:
-    """Select and persist questions section by section, updating progress as they land.
-
-    Raises on any failure; finishing with zero questions is a failure.
-    """
-    cfg = build.cfg
-    exclude_ids: set = set()
-    exclude_fingerprints: set = set()
+def _seen_ids(cfg: MockTestConfig) -> set:
+    """Questions to treat as already shown. Hard-excluded only when exclude_seen is set."""
+    seen: set = set()
     if cfg.exclude_seen:
         try:
-            exclude_ids = set(store.served_ids(cfg.user_id).keys())
-            exclude_fingerprints = store.served_fingerprints(cfg.user_id)
+            seen.update(store.served_ids(cfg.user_id).keys())
+            seen.update(store.served_fingerprints(cfg.user_id))
         except Exception:
-            logger.warning("could not load seen questions; continuing without exclusion", exc_info=True)
+            logger.warning("could not load seen questions; continuing without that exclusion", exc_info=True)
+    try:
+        resp = _table("mock_tests").select("mock_test_id").eq("user_id", cfg.user_id).limit(40).execute()
+        rows = resp.data if isinstance(getattr(resp, "data", None), list) else []
+        tids = [r["mock_test_id"] for r in rows if isinstance(r, dict) and r.get("mock_test_id")]
+        if tids:
+            qresp = _table("mock_test_questions").select("content_id").in_("mock_test_id", tids).limit(2000).execute()
+            qrows = qresp.data if isinstance(getattr(qresp, "data", None), list) else []
+            seen.update(r["content_id"] for r in qrows if isinstance(r, dict) and r.get("content_id"))
+    except Exception:
+        logger.warning("could not load earlier mock questions", exc_info=True)
+    return seen
 
-    build.stage = "Checking available questions"
+
+def _run_build(build: _Build) -> List[MockTestSection]:
+    """Select and persist one paper. Smart, Custom, and official PYQ share this path."""
+    from mock_test_agent.engine import MockBuildError, compose
+    from mock_test_agent.learner import load_states
+    from mock_test_agent.pool import fetch
+
+    cfg = build.cfg
+    build.stage = "Reading your learning record"
     build.flush()
-    chapter_map = _chapter_map()
-    inventories: Dict[Optional[frozenset], Dict[str, int]] = {}
+    learner_rows = load_states(cfg.user_id) if cfg.mock_type != "pyq" else []
+    build.stage = "Selecting questions"
+    build.flush()
+    try:
+        rows = fetch(cfg, store_mod=store)
+    except Exception as exc:
+        raise MockStoreError(f"could not read the question bank: {exc}") from exc
+    try:
+        paper = compose(cfg, rows, learner_rows, seen=_seen_ids(cfg))
+    except MockBuildError as exc:
+        raise MockTestConfigError(str(exc)) from exc
 
-    sections: List[MockTestSection] = []
-    order = 1
-    for entry, subj_cfg in zip(build.by_subject, cfg.subjects):
-        build.stage = f"Picking {subj_cfg.subject} questions"
-        build.flush()
-        allowed = _allowed_types(subj_cfg)
-        if allowed not in inventories:
-            inventories[allowed] = _inventory(cfg.exam, allowed)
-
-        def persist(qs: List[MockTestQuestion], entry=entry) -> None:
-            try:
-                _table("mock_test_questions").insert([_question_row(build.id, q) for q in qs]).execute()
-            except Exception as exc:
-                raise MockStoreError(f"could not save questions: {exc}") from exc
-            entry["prepared"] += len(qs)
-            build.flush()
-
-        section = select_questions(
-            subj_cfg, exam=cfg.exam, exclude_ids=exclude_ids, exclude_fingerprints=exclude_fingerprints,
-            order_start=order, allow_fallback=cfg.allow_fallback,
-            chapter_map=chapter_map, inventory=inventories[allowed], on_chapter=persist,
-        )
-        order += len(section.questions)
-        sections.append(section)
-        if len(section.questions) < subj_cfg.n_questions:
-            build.shortfall.append({
-                "subject": subj_cfg.subject, "requested": subj_cfg.n_questions, "got": len(section.questions),
-            })
-
-    if build.prepared == 0:
+    sections: List[MockTestSection] = paper["sections"]
+    questions: List[MockTestQuestion] = paper["questions"]
+    if not questions:
         raise MockTestConfigError(
-            "No questions could be found for the selected subjects, chapters and question types. "
-            "Pick more chapters or relax the filters."
+            "No questions could be found for this mock. Change the subject, chapters, or exam."
         )
+
+    by_subject = {s.subject: s for s in sections}
+    build.by_subject = [
+        {"subject": subject, "prepared": 0, "total": len(by_subject.get(subject, MockTestSection(subject, [])).questions)}
+        for subject in [s.subject for s in cfg.subjects]
+    ]
+    for entry in build.by_subject:
+        section = by_subject.get(entry["subject"])
+        if not section or not section.questions:
+            if cfg.mock_type != "smart":
+                build.shortfall.append({"subject": entry["subject"], "requested": entry["total"], "got": 0})
+            continue
+        build.stage = f"Saving {entry['subject']}"
+        build.flush()
+        try:
+            _table("mock_test_questions").insert([_question_row(build.id, q) for q in section.questions]).execute()
+        except Exception as exc:
+            raise MockStoreError(f"could not save questions: {exc}") from exc
+        entry["prepared"] = len(section.questions)
+        wanted = next((s.n_questions for s in cfg.subjects if s.subject == entry["subject"]), entry["prepared"])
+        if cfg.mock_type != "pyq" and entry["prepared"] < wanted:
+            build.shortfall.append({"subject": entry["subject"], "requested": wanted, "got": entry["prepared"]})
+        build.flush()
+
+    meta = paper["meta"]
+    cfg.marking_scheme = meta.get("marking_scheme") or cfg.marking_scheme
+    stored = cfg.to_dict()
+    stored.update({k: v for k, v in meta.items() if k != "marking_scheme"})
+    stored["marking_scheme"] = cfg.marking_scheme
+    stored["_build"] = build.block()
+    try:
+        _table("mock_tests").update({
+            "config": stored,
+            "total_questions": len(questions),
+            "questions_requested": cfg.total_questions or len(questions),
+            "time_limit_minutes": cfg.total_time_minutes,
+        }).eq("mock_test_id", build.id).execute()
+    except Exception as exc:
+        raise MockStoreError(f"could not store the paper: {exc}") from exc
     return sections
 
 
@@ -663,7 +705,6 @@ def assemble_test(cfg: MockTestConfig) -> Dict[str, Any]:
     Raises MockTestConfigError for invalid configs or when no question could be found.
     """
     validate_config(cfg)
-    feasibility = check_inventory(cfg)
     build = _create_building_row(cfg)
     try:
         sections = _run_build(build)
@@ -679,7 +720,11 @@ def assemble_test(cfg: MockTestConfig) -> Dict[str, Any]:
         "total_questions": build.prepared,
         "time_limit_minutes": cfg.total_time_minutes,
         "sections": [s.to_dict() for s in sections],
-        "feasibility": feasibility.to_dict(),
+        "feasibility": {
+            "requested": cfg.total_questions,
+            "available": build.prepared,
+            "shortfall": build.shortfall,
+        },
         "shortfall": build.shortfall,
     }
 

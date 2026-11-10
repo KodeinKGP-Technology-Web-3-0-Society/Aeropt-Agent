@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import uuid
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -133,9 +134,43 @@ def _qtype_normalised(question_type: str) -> str:
         "NUMERIC": "numeric",
         "INTEGER": "integer",
         "COMPREHENSION": "comprehension",
+        "MATCHING": "matching",
+        "MATCH_LIST": "matching",
         "exercise": "numeric",          # OpenStax exercises — treated as numeric
     }
     return mapping.get(question_type, question_type.lower())
+
+
+def _nearest_integer(value: float) -> int:
+    """Round half away from zero, which is the usual nearest-integer exam rule."""
+    if value >= 0:
+        return int(math.floor(value + 0.5))
+    return int(math.ceil(value - 0.5))
+
+
+def prepare_numeric_text(marks: Dict[str, Any], student_answer: str, numeric_value: Optional[float]) -> str:
+    """Apply a section's numeric rule before the answer key is checked."""
+    typed = (student_answer or "").strip()
+    if isinstance(marks, dict) and marks.get("numeric_mode") == "nearest_integer":
+        raw = numeric_value
+        if raw is None and typed:
+            try:
+                raw = float(typed)
+            except ValueError:
+                raw = None
+        if raw is not None:
+            return str(_nearest_integer(float(raw)))
+    if not typed and numeric_value is not None:
+        return f"{float(numeric_value):.10g}"
+    return typed
+
+
+def _rules_for(question: Dict[str, Any], scheme: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    marks = question.get("marks")
+    if isinstance(marks, dict) and marks.get("correct") is not None:
+        return marks
+    qtype = _qtype_normalised(question.get("question_type") or "")
+    return scheme.get(qtype, _DEFAULT_SCHEME)
 
 
 def _correct_letters(answer: Optional[Dict[str, Any]]) -> set:
@@ -197,8 +232,7 @@ def grade_submission(
     Returns a dict with grade_status, is_correct, question_score, answer_text.
     """
     if not submission or not _has_response(submission):
-        qtype = _qtype_normalised(question_row.get("question_type") or "")
-        rules = scheme.get(qtype, _DEFAULT_SCHEME)
+        rules = _rules_for(question_row, scheme)
         return {
             "grade_status": "unattempted",
             "is_correct": None,
@@ -241,10 +275,11 @@ def grade_submission(
 
     from services.answer_key import grade_served_question, grade_free_answer  # lazy import
     qtype = (question_row.get("question_type") or "").lower()
+    if isinstance(question_row.get("marks"), dict):
+        scheme = {**scheme, _qtype_normalised(qtype): question_row["marks"]}
     if qtype in ("numeric", "integer", "exercise"):
-        typed = student_answer_text.strip()
-        if not typed and numeric_val is not None:
-            typed = f"{numeric_val:.10g}"
+        marks = question_row.get("marks") if isinstance(question_row.get("marks"), dict) else {}
+        typed = prepare_numeric_text(marks, student_answer_text, numeric_val)
         decision = grade_served_question(q_for_grading, value=typed)
     elif isinstance(choice, list) and choice:
         decision = grade_served_question(q_for_grading, choice=choice)
@@ -316,6 +351,9 @@ def grade_all_submissions(
 
     graded_rows: List[Dict[str, Any]] = []
     submission_updates: List[Dict[str, Any]] = []
+    # One proficiency write per concept per paper. A repeat of a question the student
+    # already saw is scored, but it does not move proficiency again.
+    updated_concepts: set = set()
 
     for q in questions:
         content_id = q["content_id"]
@@ -325,8 +363,15 @@ def grade_all_submissions(
         graded_at_iso = _now_iso()
         attempt_id = str(uuid.uuid4())
 
-        # Persist attempt to learner proficiency if answer is authoritative
-        if result["grade_status"] in ("correct", "incorrect") and q.get("concept_id"):
+        concept_id = q.get("concept_id")
+        informative = (
+            result["grade_status"] in ("correct", "incorrect")
+            and concept_id
+            and not q.get("previously_seen")
+            and concept_id not in updated_concepts
+        )
+        if informative:
+            updated_concepts.add(concept_id)
             try:
                 from services.grading import commit_progress as _commit  # lazy import
                 gresult = _commit(  # type: ignore[call-arg]
@@ -397,8 +442,7 @@ def aggregate_scores(
     correct = 0
 
     for g in graded:
-        qtype = _qtype_normalised(g.get("question_type") or "")
-        rules = scheme.get(qtype, _DEFAULT_SCHEME)
+        rules = _rules_for(g, scheme)
         max_q = float(rules.get("correct", 4))
         max_score += max_q
         raw_score += float(g.get("question_score") or 0)

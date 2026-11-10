@@ -182,7 +182,7 @@ def _choice_letters(choice: Iterable[str]) -> dict:
             families.add("letter")
             letters.append(upper)
             continue
-        if token in "1234":
+        if token in {"1", "2", "3", "4"}:
             families.add("number")
             letters.append("ABCD"[int(token) - 1])
             continue

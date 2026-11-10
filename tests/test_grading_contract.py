@@ -36,6 +36,15 @@ def test_malformed_structured_key_does_not_use_solution_text():
     assert decision["correct"] is None
 
 
+def test_multi_digit_answer_is_a_number_not_an_option():
+    question = {"structured": {"answer": {"kind": "integer", "value": 25}}}
+    for typed in ("12", "34", "123", "900"):
+        decision = grade_free_answer(question, typed)
+        assert decision["grade_status"] == "incorrect"
+        assert decision["correct"] is False
+    assert grade_free_answer(question, "25")["correct"] is True
+
+
 def test_long_worked_solution_is_ungradable():
     decision = grade_free_answer(
         {"solution": "Integrate both sides, then the speed is 4 m/s."},

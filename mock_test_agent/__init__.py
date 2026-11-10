@@ -1,8 +1,8 @@
-"""Dedicated mock-test package.
+"""Mock tests: Smart, Custom, and official JEE PYQ papers.
 
-Nothing in the running tutor imports this package. The HTTP routes live in
-``router.py`` and stay unmounted until someone explicitly includes that router
-on the FastAPI app.
+Question selection lives in engine.py. The HTTP routes are mounted from api_server.py.
+Attempt rows in mock_tests stay; a new paper stores its blueprint and section
+instructions inside the existing config jsonb.
 """
 
 __all__ = ["settings"]

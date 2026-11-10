@@ -710,7 +710,8 @@ class TestMockTestIntegration(unittest.TestCase):
                 return [{"chapter_id": "optics", "n": 10}]
             return [
                 {"content_id": cid, "concept_id": "c1", "question_type": "single_correct", "difficulty": 3,
-                 "core_text": "What?", "fingerprint": f"fp_{cid}",
+                 "content_type": "Practice Question", "subject": "Physics", "chapter_id": "optics",
+                 "chapter": "Optics", "core_text": "What?", "fingerprint": f"fp_{cid}",
                  "structured": json.dumps({"stem": "What?", "options": [
                      {"label": "A", "text": "1"}, {"label": "B", "text": "2"}]}),
                  "answer": json.dumps({"kind": "letters", "letters": "B"})}

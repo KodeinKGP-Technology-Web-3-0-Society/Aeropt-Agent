@@ -583,6 +583,73 @@ class GradePracticeArgs(BaseModel):
     )
 
 
+def _ensure_concept_row(user_id: str, concept_id: str, concept_name: str, chapter: str) -> None:
+    """A graded answer can only update proficiency when this concept has a row.
+
+    Most of the syllabus is not created at signup. The first real attempt
+    opens the row at the neutral starting score, then the grade moves it.
+    """
+    if not user_id or not concept_id:
+        return
+    try:
+        existing = db.read_user_concept_state(user_id, concept_id)
+        if existing:
+            return
+    except Exception:
+        existing = None
+    subject = ""
+    try:
+        from retrieval import store
+        info = store.concept(concept_id) or {}
+        subject = info.get("subject") or ""
+        chapter = chapter or info.get("chapter") or ""
+    except Exception:
+        info = {}
+    try:
+        db.client.table("user_concept_state").insert({
+            "user_id": user_id,
+            "concept_id": concept_id,
+            "subject": subject or "Physics",
+            "chapter": chapter or concept_name or concept_id,
+            "proficiency_score": 0.5,
+            "attempts": 0,
+            "correct": 0,
+            "flagged_weak": False,
+            "struggle_streak": 0,
+            "is_cold_start": True,
+        }).execute()
+    except Exception:
+        logger.debug("could not open a concept record", exc_info=True)
+
+
+def _ensure_attempt_counted(
+    ssid: str,
+    user_id: str,
+    saved: Any,
+    question: Dict[str, Any],
+    concept_id: str,
+    served_before: int,
+) -> None:
+    """The score strip reads study_sessions. Keep it in step when the grading
+    function saved the attempt but did not move that row."""
+    session = db.read_study_session(ssid) or {}
+    served_now = int(session.get("questions_served") or 0)
+    correct_now = int(session.get("questions_correct") or 0)
+    if served_now <= served_before:
+        served_now = served_before + 1
+        correct_now += 1 if saved.is_correct else 0
+        difficulty = int(session.get("difficulty_level") or 1)
+        db.update_study_session_stats(ssid, served_now, correct_now, difficulty)
+        db.insert_study_event(
+            ssid, user_id, "question_attempted",
+            concept_id=concept_id or None,
+            content_id=question.get("content_id") or None,
+            payload={"is_correct": bool(saved.is_correct), "student_answer": ""},
+        )
+    saved.questions_served = served_now
+    saved.questions_correct = correct_now
+
+
 @tool(
     name="grade_practice_answer",
     description=(
@@ -620,6 +687,12 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
         }
     content_id = question.get("content_id", "")
     instance_id = question.get("question_instance_id") or ""
+    _ensure_concept_row(
+        ctx.user_id,
+        concept_id,
+        ctx.state.get("concept_name") or concept_id,
+        ctx.state.get("chapter") or "",
+    )
     from services.answer_key import grade_free_answer
     from services.grading import answer_fingerprint, commit_progress
 
@@ -666,6 +739,8 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
         question_difficulty=question.get("difficulty"),
         answer_text=decision.get("answer_text") or "",
     )
+    if saved.recorded and not saved.replayed and ssid:
+        _ensure_attempt_counted(ssid, ctx.user_id, saved, question, concept_id, int(ctx.state.get("questions_served") or 0))
     public = saved.to_public()
     if saved.recorded:
         staged = {
@@ -691,6 +766,8 @@ def grade_practice_answer(args: GradePracticeArgs, ctx: ToolContext) -> Dict[str
         ctx.state.update(ctx.updates)
     public["student_message"] = saved.student_message
     public["solution_available"] = bool(question.get("solution")) and saved.grade_status == "incorrect"
+    public["key"] = decision.get("key") or []
+    public["chosen"] = decision.get("chosen") or []
     return public
 
 

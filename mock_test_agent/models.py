@@ -24,6 +24,7 @@ class SubjectConfig:
     """Per-subject section of a MockTestConfig."""
     subject: str                          # 'Physics' | 'Chemistry' | 'Mathematics'
     chapters: List[str] = field(default_factory=list)   # chapter_ids; empty = all
+    concepts: List[str] = field(default_factory=list)  # concept_ids; empty = every concept in the chapters
     n_questions: int = 30                 # questions to include from this subject
     difficulty_target: Optional[int] = None  # 1–5; None → exam default
     question_types: List[str] = field(default_factory=list)  # 'single' | 'multiple' | 'numerical'; empty = all
@@ -42,6 +43,15 @@ class MockTestConfig:
     exclude_seen: bool = False            # skip questions already in served_items
     force_new: bool = False               # ignore any in-progress test for this user
     allow_fallback: bool = True           # fill gaps from adjacent chapters
+    mock_type: str = "custom"             # smart | custom | pyq
+    coverage: str = "all"                 # learned | all (custom). Smart is always learned.
+    year: Optional[int] = None            # legacy; PYQ mocks do not build one historical paper from this
+    paper: Optional[int] = None           # legacy paper number; not the PYQ syllabus filter
+    paper_key: Optional[str] = None       # legacy paper identity
+    pyq_length: str = "full"              # full | short (pyq only)
+    short_questions: Optional[int] = None # total questions for a shortened PYQ mock
+    blueprint_id: Optional[str] = None    # verified blueprint; None = the exam default
+    pyq_seed: Optional[int] = None        # selection seed; None draws one at build time
 
     # ── Convenience ───────────────────────────────────────────────────────────
     @property
@@ -67,6 +77,7 @@ class MockTestConfig:
                 {
                     "subject": s.subject,
                     "chapters": s.chapters,
+                    "concepts": list(s.concepts),
                     "n_questions": s.n_questions,
                     "difficulty_target": s.difficulty_target,
                     "question_types": list(s.question_types),
@@ -78,6 +89,15 @@ class MockTestConfig:
             "exclude_seen": self.exclude_seen,
             "force_new": self.force_new,
             "allow_fallback": self.allow_fallback,
+            "mock_type": self.mock_type,
+            "coverage": self.coverage,
+            "year": self.year,
+            "paper": self.paper,
+            "paper_key": self.paper_key,
+            "pyq_length": self.pyq_length,
+            "short_questions": self.short_questions,
+            "blueprint_id": self.blueprint_id,
+            "pyq_seed": self.pyq_seed,
         }
 
     @classmethod
@@ -86,7 +106,8 @@ class MockTestConfig:
             SubjectConfig(
                 subject=s["subject"],
                 chapters=s.get("chapters") or [],
-                n_questions=int(s.get("n_questions") or 30),
+                concepts=list(s.get("concepts") or []),
+                n_questions=int(s["n_questions"]) if "n_questions" in s and s["n_questions"] is not None else 30,
                 difficulty_target=s.get("difficulty_target"),
                 question_types=list(s.get("question_types") or []),
             )
@@ -101,6 +122,15 @@ class MockTestConfig:
             exclude_seen=bool(data.get("exclude_seen", False)),
             force_new=bool(data.get("force_new", False)),
             allow_fallback=bool(data.get("allow_fallback", True)),
+            mock_type=data.get("mock_type") or "custom",
+            coverage=data.get("coverage") or "all",
+            year=data.get("year"),
+            paper=data.get("paper"),
+            paper_key=data.get("paper_key"),
+            pyq_length=data.get("pyq_length") or "full",
+            short_questions=data.get("short_questions"),
+            blueprint_id=data.get("blueprint_id"),
+            pyq_seed=data.get("pyq_seed"),
         )
 
 
@@ -121,6 +151,10 @@ class MockTestQuestion:
     stem: str
     options: Optional[List[Dict[str, str]]] = None   # [{"label": "A", "text": "…"}, …]
     has_gradekey: bool = True             # False → ungradable (subjective/matching)
+    paper_section: str = ""               # blueprint section label, e.g. "Physics · Section A"
+    instructions: str = ""
+    source_type: str = ""                 # PYQ | Practice Question | Solved Example
+    previously_seen: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -136,6 +170,9 @@ class MockTestQuestion:
             "stem": self.stem,
             "options": self.options,
             "has_gradekey": self.has_gradekey,
+            "paper_section": self.paper_section,
+            "instructions": self.instructions,
+            "source_type": self.source_type,
         }
 
 

@@ -5,6 +5,9 @@ names are read from the app config only when a debrief is actually generated.
 """
 
 MOCK_TEST_MAX_QUESTIONS_PER_SUBJECT = 60
+# How many worked solutions a single mock build may ask a model to read.
+# Results are cached, so later builds reuse them instead of calling again.
+MOCK_SOLUTION_READS = 12
 MOCK_TEST_DEFAULT_TIME_MINUTES = 180
 MOCK_TEST_DIFFICULTY_DEFAULTS = {"JEE_ADVANCED": 4, "JEE_MAIN": 3, "custom": 3}
 # What the student picks (single / multiple / numerical) -> the stored question_type values.

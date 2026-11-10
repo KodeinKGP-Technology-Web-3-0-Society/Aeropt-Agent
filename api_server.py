@@ -2039,10 +2039,15 @@ def study_answer(body: StudyAnswerRequest) -> Dict[str, Any]:
     solution = ""
     if graded.get("graded"):
         solution = question.get("solution") or ""
+    study_payload = _study_state_payload(fresh, session_runtime(ssid))
+    # The pane swaps Submit for Next from this payload. A graded question is closed
+    # even when the event log still lists it as the open one.
+    if graded.get("graded"):
+        study_payload["practice_question"] = None
     return {
         **graded,
         "solution": solution,
-        "study": _study_state_payload(fresh, session_runtime(ssid)),
+        "study": study_payload,
     }
 
 
@@ -2070,9 +2075,6 @@ def study_next(body: StudyNextRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Study session not found")
     ssid = session["study_session_id"]
     runtime = session_runtime(ssid)
-    if runtime.get("current_question") and runtime.get("awaiting_answer"):
-        fresh = db.read_study_session(ssid) or session
-        return {"served": False, "reason": "a question is already open", "study": _study_state_payload(fresh, runtime)}
     agent_session = session.get("agent_session_id") or ""
     state: Dict[str, Any] = {
         "user_id": user_id, "session_id": agent_session, "study_session_id": ssid,
